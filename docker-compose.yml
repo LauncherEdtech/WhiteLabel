@@ -1,0 +1,131 @@
+# docker-compose.yml
+# Orquestra todos os serviços necessários para desenvolvimento local.
+# SEGURANÇA: Nunca use estas credenciais em produção. Use Secrets Manager na AWS.
+
+services:
+
+  # ─── Banco de Dados ────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: concurso_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-concurso_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_password_change_in_prod}
+      POSTGRES_DB: ${POSTGRES_DB:-concurso_platform}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Script de inicialização: cria extensões necessárias
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    # SEGURANÇA: Healthcheck garante que o API só sobe após o banco estar pronto
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-concurso_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - concurso_net
+
+  # ─── Cache / Message Broker ────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: concurso_redis
+    restart: unless-stopped
+    # SEGURANÇA: Redis com senha mesmo em dev, evita acesso não autorizado
+    command: redis-server --requirepass ${REDIS_PASSWORD:-dev_redis_pass} --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-dev_redis_pass}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - concurso_net
+
+  # ─── Flask API ─────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: concurso_api
+    restart: unless-stopped
+    working_dir: /workspace
+    volumes:
+      # Hot reload: monta código local dentro do container
+      - ./api:/workspace
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=${FLASK_ENV:-development}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-concurso_user}:${POSTGRES_PASSWORD:-dev_password_change_in_prod}@postgres:5432/${POSTGRES_DB:-concurso_platform}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-dev_redis_pass}@redis:6379/0
+      - SECRET_KEY=${SECRET_KEY:-CHANGE_THIS_IN_PRODUCTION_USE_256_BIT_KEY}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-CHANGE_THIS_IN_PRODUCTION_TOO}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - concurso_net
+
+  # ─── Celery Worker (tarefas assíncronas: IA, e-mails, etc.) ───────────────
+  celery_worker:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: concurso_celery
+    restart: unless-stopped
+    working_dir: /workspace
+    volumes:
+      - ./api:/workspace
+    # SEGURANÇA: Worker roda com usuário não-root definido no Dockerfile
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=4
+    environment:
+      - FLASK_ENV=${FLASK_ENV:-development}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-concurso_user}:${POSTGRES_PASSWORD:-dev_password_change_in_prod}@postgres:5432/${POSTGRES_DB:-concurso_platform}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-dev_redis_pass}@redis:6379/0
+      - SECRET_KEY=${SECRET_KEY:-CHANGE_THIS_IN_PRODUCTION_USE_256_BIT_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    depends_on:
+      - api
+    networks:
+      - concurso_net
+
+  # ─── Flower: Monitor visual do Celery ─────────────────────────────────────
+  flower:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: concurso_flower
+    restart: unless-stopped
+    working_dir: /workspace
+    volumes:
+      - ./api:/workspace
+    command: >
+      celery -A app.celery_app flower
+      --port=5555
+      --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-flowerpass}
+    ports:
+      - "5555:5555"
+    depends_on:
+      - celery_worker
+    networks:
+      - concurso_net
+
+# ─── Volumes persistentes ──────────────────────────────────────────────────
+volumes:
+  postgres_data:
+  redis_data:
+
+# ─── Rede interna isolada ──────────────────────────────────────────────────
+# SEGURANÇA: Todos os serviços comunicam pela rede interna, sem exposição desnecessária
+networks:
+  concurso_net:
+    driver: bridge
