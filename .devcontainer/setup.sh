@@ -73,3 +73,4 @@ echo "  Ver logs:  docker compose logs -f api"
 echo "  Verificar: bash scripts/check.sh"
 echo "================================================"
 echo ""
+
