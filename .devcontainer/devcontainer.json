@@ -1,6 +1,6 @@
 {
   "name": "Concurso Platform",
-  "image": "mcr.microsoft.com/devcontainers/python:3.12-bullseye",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12-bookworm",
   "features": {
     "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
       "version": "latest",
@@ -10,12 +10,29 @@
     "ghcr.io/devcontainers/features/git:1": {}
   },
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
-  "forwardPorts": [5000, 5432, 6379, 5555],
+  "forwardPorts": [
+    5000,
+    5432,
+    6379,
+    5555
+  ],
   "portsAttributes": {
-    "5000": { "label": "Flask API",  "onAutoForward": "notify" },
-    "5432": { "label": "PostgreSQL", "onAutoForward": "silent" },
-    "6379": { "label": "Redis",      "onAutoForward": "silent" },
-    "5555": { "label": "Flower",     "onAutoForward": "silent" }
+    "5000": {
+      "label": "Flask API",
+      "onAutoForward": "notify"
+    },
+    "5432": {
+      "label": "PostgreSQL",
+      "onAutoForward": "silent"
+    },
+    "6379": {
+      "label": "Redis",
+      "onAutoForward": "silent"
+    },
+    "5555": {
+      "label": "Flower",
+      "onAutoForward": "silent"
+    }
   },
   "customizations": {
     "vscode": {

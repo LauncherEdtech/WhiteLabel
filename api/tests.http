@@ -1,0 +1,195 @@
+### ============================================================
+### VARIÁVEIS — preencha após o login
+### ============================================================
+
+@base_url = http://localhost:5000/api/v1
+@tenant_demo = concurso-demo
+@tenant_platform = platform
+
+### ── Tokens (cole após fazer login) ────────────────────────
+@token_admin =
+@token_producer =
+@token_student =
+
+
+### ============================================================
+### HEALTH
+### ============================================================
+
+### Health básico
+GET http://localhost:5000/health
+
+### Health com DB
+GET http://localhost:5000/health/ready
+
+
+### ============================================================
+### AUTH — SUPER ADMIN
+### ============================================================
+
+### Login super_admin
+# @name login_admin
+POST {{base_url}}/auth/login
+Content-Type: application/json
+X-Tenant-Slug: {{tenant_platform}}
+
+{
+  "email": "admin@platform.com",
+  "password": "Admin@123456"
+}
+
+
+### ============================================================
+### AUTH — PRODUTOR
+### ============================================================
+
+### Login produtor
+# @name login_producer
+POST {{base_url}}/auth/login
+Content-Type: application/json
+X-Tenant-Slug: {{tenant_demo}}
+
+{
+  "email": "produtor@concursodemo.com",
+  "password": "Produtor@123456"
+}
+
+
+### ============================================================
+### AUTH — ALUNO
+### ============================================================
+
+### Login aluno
+# @name login_student
+POST {{base_url}}/auth/login
+Content-Type: application/json
+X-Tenant-Slug: {{tenant_demo}}
+
+{
+  "email": "aluno@teste.com",
+  "password": "Aluno@123456"
+}
+
+### Me — dados do usuário autenticado
+GET {{base_url}}/auth/me
+Authorization: Bearer {{token_student}}
+X-Tenant-Slug: {{tenant_demo}}
+
+
+### ============================================================
+### AUTH — SEGURANÇA
+### ============================================================
+
+### Senha errada — deve retornar 401
+POST {{base_url}}/auth/login
+Content-Type: application/json
+X-Tenant-Slug: {{tenant_demo}}
+
+{
+  "email": "aluno@teste.com",
+  "password": "senhaerrada"
+}
+
+### Tenant errado — deve retornar 404
+POST {{base_url}}/auth/login
+Content-Type: application/json
+X-Tenant-Slug: tenant-que-nao-existe
+
+{
+  "email": "aluno@teste.com",
+  "password": "Aluno@123456"
+}
+
+### Aluno tentando logar no tenant errado — deve retornar 401
+POST {{base_url}}/auth/login
+Content-Type: application/json
+X-Tenant-Slug: {{tenant_platform}}
+
+{
+  "email": "aluno@teste.com",
+  "password": "Aluno@123456"
+}
+
+### Refresh token
+POST {{base_url}}/auth/refresh
+Authorization: Bearer {{token_student}}
+
+### Forgot password
+POST {{base_url}}/auth/forgot-password
+Content-Type: application/json
+X-Tenant-Slug: {{tenant_demo}}
+
+{
+  "email": "aluno@teste.com"
+}
+
+### Forgot password — e-mail inexistente (deve retornar 200 igual)
+POST {{base_url}}/auth/forgot-password
+Content-Type: application/json
+X-Tenant-Slug: {{tenant_demo}}
+
+{
+  "email": "naoexiste@teste.com"
+}
+
+### Registro de novo aluno
+POST {{base_url}}/auth/register
+Content-Type: application/json
+X-Tenant-Slug: {{tenant_demo}}
+
+{
+  "name": "Pedro Novo",
+  "email": "pedro@teste.com",
+  "password": "Pedro@123456"
+}
+
+### Registro com senha fraca — deve retornar 400
+POST {{base_url}}/auth/register
+Content-Type: application/json
+X-Tenant-Slug: {{tenant_demo}}
+
+{
+  "name": "Pedro Novo",
+  "email": "pedro2@teste.com",
+  "password": "123"
+}
+
+
+### ============================================================
+### TENANTS — apenas super_admin
+### ============================================================
+
+### Listar tenants
+GET {{base_url}}/tenants/
+Authorization: Bearer {{token_admin}}
+X-Tenant-Slug: {{tenant_platform}}
+
+### Criar novo tenant
+POST {{base_url}}/tenants/
+Content-Type: application/json
+Authorization: Bearer {{token_admin}}
+X-Tenant-Slug: {{tenant_platform}}
+
+{
+  "name": "Curso de TI",
+  "slug": "curso-ti",
+  "plan": "pro",
+  "admin_name": "Carlos TI",
+  "admin_email": "admin@cursoti.com",
+  "admin_password": "Admin@123456"
+}
+
+### Tentar criar tenant como aluno — deve retornar 403
+POST {{base_url}}/tenants/
+Content-Type: application/json
+Authorization: Bearer {{token_student}}
+X-Tenant-Slug: {{tenant_demo}}
+
+{
+  "name": "Tentativa Indevida",
+  "slug": "tentativa",
+  "plan": "basic",
+  "admin_name": "Hacker",
+  "admin_email": "hacker@teste.com",
+  "admin_password": "Hacker@123456"
+}
