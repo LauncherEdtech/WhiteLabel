@@ -1,0 +1,99 @@
+# ==============================
+# PYTHON
+# ==============================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribuição / build
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtualenv
+venv/
+.env/
+.venv/
+ENV/
+env/
+
+# ==============================
+# FLASK
+# ==============================
+instance/
+.webassets-cache
+
+# Arquivos locais do Flask
+*.db
+*.sqlite3
+
+# ==============================
+# AMBIENTE / SEGURANÇA
+# ==============================
+.env
+.env.*
+*.env
+
+# Arquivos de credenciais
+*.pem
+*.key
+*.crt
+*.p12
+
+# AWS / GCP / Secrets
+*.json
+secrets/
+credentials/
+
+# ==============================
+# BANCO DE DADOS
+# ==============================
+*.sql
+*.dump
+*.backup
+
+# ==============================
+# LOGS
+# ==============================
+*.log
+logs/
+*.out
+
+# ==============================
+# DOCKER
+# ==============================
+docker-compose.override.yml
+*.tar
+
+# ==============================
+# VSCODE / CODESPACES
+# ==============================
+.vscode/
+.devcontainer/
+.history/
+
+# ==============================
+# SISTEMA OPERACIONAL
+# ==============================
+.DS_Store
+Thumbs.db
+
+# ==============================
+# NODE (caso use frontend junto)
+# ==============================
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# ==============================
+# TESTES / CACHE
+# ==============================
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ==============================
+# MIGRATIONS (OPCIONAL)
+# ==============================
+# migrations/  <-- só ignore se NÃO quiser versionar migrations
