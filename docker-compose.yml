@@ -1,72 +1,82 @@
 # docker-compose.yml
-# Orquestra todos os serviços necessários para desenvolvimento local.
-# SEGURANÇA: Nunca use estas credenciais em produção. Use Secrets Manager na AWS.
+# Serviços da aplicação — gerenciado pelo terminal do devcontainer.
+# SEGURANÇA: apenas para desenvolvimento local.
 
 services:
 
-  # ─── Banco de Dados ────────────────────────────────────────────────────────
+  # ── PostgreSQL ─────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: concurso_postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-concurso_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_password_change_in_prod}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_pass_123}
       POSTGRES_DB: ${POSTGRES_DB:-concurso_platform}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      # Script de inicialização: cria extensões necessárias
-      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
     ports:
       - "5432:5432"
-    # SEGURANÇA: Healthcheck garante que o API só sobe após o banco estar pronto
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-concurso_user}"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-concurso_user} -d ${POSTGRES_DB:-concurso_platform}"]
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 10s
     networks:
       - concurso_net
 
-  # ─── Cache / Message Broker ────────────────────────────────────────────────
+  # ── Redis ──────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: concurso_redis
     restart: unless-stopped
-    # SEGURANÇA: Redis com senha mesmo em dev, evita acesso não autorizado
-    command: redis-server --requirepass ${REDIS_PASSWORD:-dev_redis_pass} --appendonly yes
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:-redis_dev_pass}
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
     ports:
       - "6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-dev_redis_pass}", "ping"]
-      interval: 10s
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_dev_pass}", "ping"]
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 5s
     networks:
       - concurso_net
 
-  # ─── Flask API ─────────────────────────────────────────────────────────────
+  # ── Flask API ──────────────────────────────────────────────
   api:
     build:
       context: ./api
       dockerfile: Dockerfile
+      target: development
     container_name: concurso_api
     restart: unless-stopped
-    working_dir: /workspace
     volumes:
-      # Hot reload: monta código local dentro do container
-      - ./api:/workspace
+      # Hot reload: código local refletido no container
+      - ./api:/workspace:cached
     ports:
       - "5000:5000"
     environment:
-      - FLASK_ENV=${FLASK_ENV:-development}
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-concurso_user}:${POSTGRES_PASSWORD:-dev_password_change_in_prod}@postgres:5432/${POSTGRES_DB:-concurso_platform}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-dev_redis_pass}@redis:6379/0
-      - SECRET_KEY=${SECRET_KEY:-CHANGE_THIS_IN_PRODUCTION_USE_256_BIT_KEY}
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-CHANGE_THIS_IN_PRODUCTION_TOO}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      FLASK_APP: app
+      FLASK_ENV: ${FLASK_ENV:-development}
+      FLASK_DEBUG: "1"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-concurso_user}:${POSTGRES_PASSWORD:-dev_pass_123}@postgres:5432/${POSTGRES_DB:-concurso_platform}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-prod-32bytes!!}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-jwt-key-change-in-prod-32bytes!!!}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
     depends_on:
       postgres:
         condition: service_healthy
@@ -74,58 +84,68 @@ services:
         condition: service_healthy
     networks:
       - concurso_net
+    command: flask run --host=0.0.0.0 --port=5000 --debug
 
-  # ─── Celery Worker (tarefas assíncronas: IA, e-mails, etc.) ───────────────
-  celery_worker:
+  # ── Celery Worker ──────────────────────────────────────────
+  celery:
     build:
       context: ./api
       dockerfile: Dockerfile
+      target: development
     container_name: concurso_celery
     restart: unless-stopped
-    working_dir: /workspace
     volumes:
-      - ./api:/workspace
-    # SEGURANÇA: Worker roda com usuário não-root definido no Dockerfile
-    command: celery -A app.celery_app worker --loglevel=info --concurrency=4
+      - ./api:/workspace:cached
     environment:
-      - FLASK_ENV=${FLASK_ENV:-development}
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-concurso_user}:${POSTGRES_PASSWORD:-dev_password_change_in_prod}@postgres:5432/${POSTGRES_DB:-concurso_platform}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-dev_redis_pass}@redis:6379/0
-      - SECRET_KEY=${SECRET_KEY:-CHANGE_THIS_IN_PRODUCTION_USE_256_BIT_KEY}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      FLASK_APP: app
+      FLASK_ENV: ${FLASK_ENV:-development}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-concurso_user}:${POSTGRES_PASSWORD:-dev_pass_123}@postgres:5432/${POSTGRES_DB:-concurso_platform}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-prod-32bytes!!}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-jwt-key-change-in-prod-32bytes!!!}
+      PYTHONUNBUFFERED: "1"
     depends_on:
-      - api
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - concurso_net
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=2
 
-  # ─── Flower: Monitor visual do Celery ─────────────────────────────────────
+  # ── Flower ─────────────────────────────────────────────────
   flower:
     build:
       context: ./api
       dockerfile: Dockerfile
+      target: development
     container_name: concurso_flower
     restart: unless-stopped
-    working_dir: /workspace
     volumes:
-      - ./api:/workspace
+      - ./api:/workspace:cached
+    ports:
+      - "5555:5555"
+    environment:
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      - redis
+    networks:
+      - concurso_net
     command: >
       celery -A app.celery_app flower
       --port=5555
-      --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-flowerpass}
-    ports:
-      - "5555:5555"
-    depends_on:
-      - celery_worker
-    networks:
-      - concurso_net
+      --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-flower_pass}
 
-# ─── Volumes persistentes ──────────────────────────────────────────────────
+# ── Volumes ────────────────────────────────────────────────
 volumes:
   postgres_data:
   redis_data:
 
-# ─── Rede interna isolada ──────────────────────────────────────────────────
-# SEGURANÇA: Todos os serviços comunicam pela rede interna, sem exposição desnecessária
+# ── Rede ───────────────────────────────────────────────────
 networks:
   concurso_net:
     driver: bridge
