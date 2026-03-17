@@ -1,13 +1,13 @@
 # api/Dockerfile
-# Imagem multistage: base para dev com hot-reload
 
+# ── Base compartilhada ─────────────────────────────────────
 FROM python:3.12-slim AS base
 
-# SEGURANÇA: Não rode como root
-RUN groupadd --gid 1001 appgroup && \
-    useradd --uid 1001 --gid appgroup --shell /bin/bash --create-home appuser
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Dependências de sistema (mínimas)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
@@ -16,18 +16,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /workspace
 
-# Instala dependências Python antes de copiar código (cache de layers)
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# SEGURANÇA: Muda para usuário não-root antes de qualquer execução
-USER appuser
+# ── Development ────────────────────────────────────────────
+FROM base AS development
 
-# Em dev, o código é montado via volume (não copiado aqui)
-# Em produção, adicionar: COPY --chown=appuser:appgroup . .
-
+# Em dev: código vem via volume, roda como root (sem problema no Codespaces)
 EXPOSE 5000
 
-# Dev: Flask com hot-reload | Prod: substituir por Gunicorn no ECS task definition
-CMD ["flask", "--app", "app", "run", "--host=0.0.0.0", "--port=5000", "--debug"]
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:5000/health || exit 1
+
+CMD ["flask", "run", "--host=0.0.0.0", "--port=5000", "--debug"]
+
+# ── Production ─────────────────────────────────────────────
+FROM base AS production
+
+# SEGURANÇA: usuário não-root em produção
+RUN groupadd --gid 1001 appgroup && \
+    useradd --uid 1001 --gid appgroup --shell /bin/bash --create-home appuser
+
+COPY --chown=appuser:appgroup . .
+
+USER appuser
+EXPOSE 5000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:5000/health || exit 1
+
+CMD ["gunicorn", "app:app", \
+    "--bind", "0.0.0.0:5000", \
+    "--workers", "4", \
+    "--timeout", "120", \
+    "--access-logfile", "-"]

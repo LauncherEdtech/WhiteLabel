@@ -1,21 +1,33 @@
-// .devcontainer/devcontainer.json
 {
-  "name": "Concurso Platform API",
-  "dockerComposeFile": "../docker-compose.yml",
-  "service": "api",
-  "workspaceFolder": "/workspace",
-
-  // Extensões recomendadas para o VS Code / Codespaces
+  "name": "Concurso Platform",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12-bullseye",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+      "version": "latest",
+      "enableNonRootDocker": true,
+      "moby": false
+    },
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "forwardPorts": [5000, 5432, 6379, 5555],
+  "portsAttributes": {
+    "5000": { "label": "Flask API",  "onAutoForward": "notify" },
+    "5432": { "label": "PostgreSQL", "onAutoForward": "silent" },
+    "6379": { "label": "Redis",      "onAutoForward": "silent" },
+    "5555": { "label": "Flower",     "onAutoForward": "silent" }
+  },
   "customizations": {
     "vscode": {
       "extensions": [
         "ms-python.python",
-        "ms-python.flake8",
         "ms-python.black-formatter",
+        "humao.rest-client",
         "mtxr.sqltools",
         "mtxr.sqltools-driver-pg",
-        "humao.rest-client",
-        "eamodio.gitlens"
+        "eamodio.gitlens",
+        "ms-azuretools.vscode-docker",
+        "GitHub.vscode-pull-request-github"
       ],
       "settings": {
         "python.defaultInterpreterPath": "/usr/local/bin/python",
@@ -26,16 +38,6 @@
       }
     }
   },
-
-  // Portas expostas para desenvolvimento
-  "forwardPorts": [5000, 5432, 6379, 5555],
-  "portsAttributes": {
-    "5000": { "label": "Flask API" },
-    "5432": { "label": "PostgreSQL" },
-    "6379": { "label": "Redis" },
-    "5555": { "label": "Flower (Celery Monitor)" }
-  },
-
-  // Comando executado após o container subir
-  "postCreateCommand": "cd api && pip install -r requirements.txt && cp ../.env.example ../.env"
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "remoteUser": "vscode"
 }
