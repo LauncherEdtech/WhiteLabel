@@ -28,7 +28,8 @@ export interface Tenant {
     id: string;
     name: string;
     slug: string;
-    custom_domain: string | null;
+    domain_verified?: boolean;
+  custom_domain: string | null;
     plan: "basic" | "pro" | "enterprise";
     is_active: boolean;
     branding: TenantBranding;

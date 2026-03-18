@@ -360,3 +360,40 @@ def me():
         ),
         200,
     )
+
+
+@auth_bp.route("/profile", methods=["PUT"])
+@jwt_required()
+@require_tenant
+def update_profile():
+    """Atualiza nome do usuário autenticado."""
+    user_id = get_jwt_identity()
+    user = User.query.filter_by(
+        id=user_id, tenant_id=g.tenant.id, is_deleted=False
+    ).first_or_404()
+
+    data = request.get_json() or {}
+    name = data.get("name", "").strip()
+
+    if not name:
+        return jsonify({"error": "bad_request", "message": "Nome obrigatório."}), 400
+    if len(name) < 2:
+        return jsonify({"error": "bad_request", "message": "Nome muito curto."}), 400
+
+    user.name = name
+    db.session.commit()
+
+    return (
+        jsonify(
+            {
+                "message": "Perfil atualizado.",
+                "user": {
+                    "id": str(user.id),
+                    "name": user.name,
+                    "email": user.email,
+                    "role": user.role,
+                },
+            }
+        ),
+        200,
+    )

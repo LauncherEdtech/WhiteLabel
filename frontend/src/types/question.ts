@@ -1,1 +1,4 @@
-// frontend/src/types/question.ts
+export type DifficultyLevel = "easy"|"medium"|"hard";
+export interface Alternative { key:string;text:string;distractor_justification?:string; }
+export interface Question { id:string;statement:string;context?:string;discipline?:string;topic?:string;difficulty?:DifficultyLevel;exam_board?:string;exam_year?:number;correct_alternative_key:string;correct_justification?:string;alternatives:Alternative[];ai_generated:boolean;stats:{total_attempts:number;correct_attempts:number;accuracy_rate:number;avg_response_time_seconds?:number}; }
+export interface AnswerResult { result:{is_correct:boolean;chosen_key:string;correct_key:string;response_time_seconds?:number;xp_earned:number};feedback:{correct_justification?:string;distractor_justification?:string};question_stats:{total_attempts:number;accuracy_rate:number}; }
