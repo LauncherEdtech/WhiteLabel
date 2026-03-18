@@ -1,42 +1,62 @@
 // frontend/src/lib/api/client.ts
-// Cliente HTTP base com interceptors de auth e tenant.
-// SEGURANÇA: Token JWT injetado automaticamente em toda requisição.
-
 import axios, { AxiosError, AxiosInstance } from "axios";
 import Cookies from "js-cookie";
 
 const API_URL =
     process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api/v1";
 
-// Cria instância base
+// Em dev/Codespaces sempre usa este tenant
+const DEFAULT_TENANT = "concurso-demo";
+
+function resolveTenantSlug(): string {
+    if (typeof window === "undefined") return DEFAULT_TENANT;
+
+    const hostname = window.location.hostname;
+
+    // Codespaces ou localhost → sempre concurso-demo
+    const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
+    const isCodespaces = hostname.includes("app.github.dev");
+
+    if (isLocal || isCodespaces) {
+        // Força o valor correto no cookie
+        Cookies.set("tenant_slug", DEFAULT_TENANT, { sameSite: "lax", expires: 1 });
+        return DEFAULT_TENANT;
+    }
+
+    // Produção: extrai do subdomínio (ex: cursojuridico.plataforma.com → cursojuridico)
+    const parts = hostname.split(".");
+    // Precisa ter pelo menos 3 partes (sub.dominio.com)
+    if (parts.length >= 3) {
+        const slug = parts[0];
+        Cookies.set("tenant_slug", slug, { sameSite: "lax", expires: 1 });
+        return slug;
+    }
+
+    return DEFAULT_TENANT;
+}
+
 export const apiClient: AxiosInstance = axios.create({
     baseURL: API_URL,
     timeout: 30000,
     headers: {
         "Content-Type": "application/json",
+        "X-Tenant-Slug": DEFAULT_TENANT,
     },
 });
 
-// ── Request interceptor ───────────────────────────────────────────────────────
-// Injeta token JWT e header de tenant em toda requisição
 apiClient.interceptors.request.use((config) => {
-    // Token JWT do cookie ou localStorage
     const token = Cookies.get("access_token");
     if (token) {
         config.headers.Authorization = `Bearer ${token}`;
     }
 
-    // Tenant slug do cookie (resolvido pelo middleware Next.js)
-    const tenantSlug = Cookies.get("tenant_slug");
-    if (tenantSlug) {
-        config.headers["X-Tenant-Slug"] = tenantSlug;
-    }
+    // Sempre resolve o tenant corretamente
+    const tenantSlug = resolveTenantSlug();
+    config.headers["X-Tenant-Slug"] = tenantSlug;
 
     return config;
 });
 
-// ── Response interceptor ──────────────────────────────────────────────────────
-// Trata expiração de token e erros globais
 apiClient.interceptors.response.use(
     (response) => response,
     async (error: AxiosError) => {
@@ -44,49 +64,38 @@ apiClient.interceptors.response.use(
             _retry?: boolean;
         };
 
-        // Token expirado → tenta renovar com refresh_token
         if (error.response?.status === 401 && !originalRequest._retry) {
             originalRequest._retry = true;
-
             const refreshToken = Cookies.get("refresh_token");
             if (refreshToken) {
                 try {
-                    const tenantSlug = Cookies.get("tenant_slug");
                     const res = await axios.post(
                         `${API_URL}/auth/refresh`,
                         {},
                         {
                             headers: {
                                 Authorization: `Bearer ${refreshToken}`,
-                                ...(tenantSlug && { "X-Tenant-Slug": tenantSlug }),
+                                "X-Tenant-Slug": DEFAULT_TENANT,
                             },
                         }
                     );
-
                     const { access_token } = res.data;
                     Cookies.set("access_token", access_token, {
-                        expires: 1 / 24, // 1 hora
+                        expires: 1 / 24,
                         secure: process.env.NODE_ENV === "production",
                         sameSite: "lax",
                     });
-
-                    // Retenta a requisição original com o novo token
                     if (originalRequest.headers) {
                         originalRequest.headers.Authorization = `Bearer ${access_token}`;
                     }
                     return apiClient(originalRequest);
                 } catch {
-                    // Refresh falhou → limpa sessão e redireciona para login
                     Cookies.remove("access_token");
                     Cookies.remove("refresh_token");
-                    Cookies.remove("user");
-                    if (typeof window !== "undefined") {
-                        window.location.href = "/login";
-                    }
+                    window.location.href = "/login";
                 }
             }
         }
-
         return Promise.reject(error);
     }
 );

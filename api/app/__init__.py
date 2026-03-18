@@ -58,28 +58,24 @@ def _configure_logging(app: Flask) -> None:
 
 
 def _init_extensions(app: Flask) -> None:
-    """Inicializa todas as extensões com a instância do app."""
-
     db.init_app(app)
     migrate.init_app(app, db)
     jwt.init_app(app)
     mail.init_app(app)
-
-    # Rate limiter usa Redis como storage (compartilhado entre workers)
     limiter.init_app(app)
 
-    # CORS: Em produção, origens são controladas pelo middleware de tenant.
-    # Aqui, abrimos para dev; a configuração real por tenant fica no middleware.
+    # CORS: em dev abre tudo, em prod restringe por tenant
+    # supports_credentials=False é obrigatório quando origins="*"
     cors.init_app(
         app,
-        resources={r"/api/*": {"origins": "*"}},  # Restringir em produção
-        supports_credentials=True,
+        resources={r"/api/*": {"origins": "*"}},
+        supports_credentials=False,
+        allow_headers=["Content-Type", "Authorization", "X-Tenant-Slug"],
+        methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     )
 
-    # ── JWT Callbacks ──────────────────────────────────────────────────────────
     @jwt.expired_token_loader
     def expired_token_callback(jwt_header, jwt_payload):
-        # SEGURANÇA: Mensagem genérica, não revela detalhes internos do token
         return jsonify({"error": "token_expired", "message": "Token expirado."}), 401
 
     @jwt.invalid_token_loader
@@ -88,7 +84,12 @@ def _init_extensions(app: Flask) -> None:
 
     @jwt.unauthorized_loader
     def missing_token_callback(error):
-        return jsonify({"error": "authorization_required", "message": "Token necessário."}), 401
+        return (
+            jsonify(
+                {"error": "authorization_required", "message": "Token necessário."}
+            ),
+            401,
+        )
 
 
 def _register_blueprints(app: Flask) -> None:
@@ -105,14 +106,14 @@ def _register_blueprints(app: Flask) -> None:
     from .routes.simulados import simulados_bp
     from .routes.analytics import analytics_bp
 
-    app.register_blueprint(health_bp)                          # /health (sem prefixo)
-    app.register_blueprint(auth_bp,       url_prefix="/api/v1/auth")
-    app.register_blueprint(tenants_bp,    url_prefix="/api/v1/tenants")
-    app.register_blueprint(courses_bp,    url_prefix="/api/v1/courses")
-    app.register_blueprint(questions_bp,  url_prefix="/api/v1/questions")
-    app.register_blueprint(schedule_bp,   url_prefix="/api/v1/schedule")
-    app.register_blueprint(simulados_bp,  url_prefix="/api/v1/simulados")
-    app.register_blueprint(analytics_bp,  url_prefix="/api/v1/analytics")
+    app.register_blueprint(health_bp)  # /health (sem prefixo)
+    app.register_blueprint(auth_bp, url_prefix="/api/v1/auth")
+    app.register_blueprint(tenants_bp, url_prefix="/api/v1/tenants")
+    app.register_blueprint(courses_bp, url_prefix="/api/v1/courses")
+    app.register_blueprint(questions_bp, url_prefix="/api/v1/questions")
+    app.register_blueprint(schedule_bp, url_prefix="/api/v1/schedule")
+    app.register_blueprint(simulados_bp, url_prefix="/api/v1/simulados")
+    app.register_blueprint(analytics_bp, url_prefix="/api/v1/analytics")
 
 
 def _register_error_handlers(app: Flask) -> None:
@@ -135,17 +136,33 @@ def _register_error_handlers(app: Flask) -> None:
 
     @app.errorhandler(404)
     def not_found(e):
-        return jsonify({"error": "not_found", "message": "Recurso não encontrado."}), 404
+        return (
+            jsonify({"error": "not_found", "message": "Recurso não encontrado."}),
+            404,
+        )
 
     @app.errorhandler(429)
     def rate_limit_exceeded(e):
-        return jsonify({"error": "rate_limit_exceeded", "message": "Muitas requisições. Tente novamente."}), 429
+        return (
+            jsonify(
+                {
+                    "error": "rate_limit_exceeded",
+                    "message": "Muitas requisições. Tente novamente.",
+                }
+            ),
+            429,
+        )
 
     @app.errorhandler(500)
     def internal_error(e):
         # SEGURANÇA: Nunca expõe o erro real em produção
         app.logger.error(f"Erro interno: {e}", exc_info=True)
-        return jsonify({"error": "internal_error", "message": "Erro interno. Tente novamente."}), 500
+        return (
+            jsonify(
+                {"error": "internal_error", "message": "Erro interno. Tente novamente."}
+            ),
+            500,
+        )
 
 
 def _configure_celery(app: Flask) -> None:
