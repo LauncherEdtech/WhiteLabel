@@ -97,3 +97,14 @@ htmlcov/
 # MIGRATIONS (OPCIONAL)
 # ==============================
 # migrations/  <-- só ignore se NÃO quiser versionar migrations
+
+# frontend/.gitignore
+.next/
+node_modules/
+.env.local
+.env*.local
+out/
+build/
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
