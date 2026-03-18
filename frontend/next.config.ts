@@ -4,23 +4,24 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
     output: "standalone",
     turbopack: {
-        root: __dirname,   // ← Fix do warning de workspace root
+        root: __dirname,
     },
     images: {
         remotePatterns: [
             { protocol: "https", hostname: "**.amazonaws.com" },
             { protocol: "https", hostname: "**.cloudfront.net" },
+            { protocol: "https", hostname: "**" }, // dev/Codespaces
         ],
     },
     async rewrites() {
-        return process.env.NODE_ENV === "development"
-            ? [
-                {
-                    source: "/api/:path*",
-                    destination: `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api/v1"}/:path*`,
-                },
-            ]
-            : [];
+        // Proxy server-side: browser chama /api/* → Next.js repassa para Flask
+        // Funciona em dev (Codespaces) e produção sem CORS
+        return [
+            {
+                source: "/api/:path*",
+                destination: "http://localhost:5000/api/:path*", // direto, sem /v1 duplicado
+            },
+        ];
     },
 };
 

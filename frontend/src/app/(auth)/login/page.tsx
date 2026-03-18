@@ -6,10 +6,11 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import Link from "next/link";
-import { Eye, EyeOff, GraduationCap, Loader2 } from "lucide-react";
+import { Eye, EyeOff, GraduationCap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTenantStore } from "@/lib/stores/tenantStore";
 import { useLogin } from "@/lib/hooks/useAuth";
+import { TenantSwitcher } from "@/components/dev/TenantSwitcher";
 import { cn } from "@/lib/utils/cn";
 import { AxiosError } from "axios";
 
@@ -49,7 +50,7 @@ export default function LoginPage() {
 
     return (
         <div className="min-h-screen flex">
-            {/* Lado esquerdo — decorativo */}
+            {/* ── Lado esquerdo — decorativo ── */}
             <div className="hidden lg:flex lg:w-1/2 bg-primary flex-col justify-between p-12">
                 <div className="flex items-center gap-3">
                     <div className="h-10 w-10 rounded-xl bg-white/20 flex items-center justify-center">
@@ -79,18 +80,17 @@ export default function LoginPage() {
                         { value: "98%", label: "Satisfação" },
                     ].map(({ value, label }) => (
                         <div key={label}>
-                            <p className="font-display text-2xl font-bold text-white">
-                                {value}
-                            </p>
+                            <p className="font-display text-2xl font-bold text-white">{value}</p>
                             <p className="text-white/60 text-sm">{label}</p>
                         </div>
                     ))}
                 </div>
             </div>
 
-            {/* Lado direito — formulário */}
-            <div className="flex-1 flex items-center justify-center p-8 bg-background">
+            {/* ── Lado direito — formulário ── */}
+            <div className="flex-1 flex items-center justify-center p-8 bg-background overflow-y-auto">
                 <div className="w-full max-w-sm">
+
                     {/* Mobile: logo */}
                     <div className="flex items-center gap-3 mb-8 lg:hidden">
                         <div className="h-9 w-9 rounded-lg bg-primary flex items-center justify-center">
@@ -125,9 +125,7 @@ export default function LoginPage() {
                                     "w-full h-10 px-3 rounded-lg border bg-background text-sm",
                                     "focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary",
                                     "transition-colors placeholder:text-muted-foreground",
-                                    errors.email
-                                        ? "border-destructive"
-                                        : "border-input hover:border-ring"
+                                    errors.email ? "border-destructive" : "border-input hover:border-ring"
                                 )}
                             />
                             {errors.email && (
@@ -138,13 +136,8 @@ export default function LoginPage() {
                         {/* Senha */}
                         <div className="space-y-1.5">
                             <div className="flex items-center justify-between">
-                                <label className="text-sm font-medium text-foreground">
-                                    Senha
-                                </label>
-                                <Link
-                                    href="/forgot-password"
-                                    className="text-xs text-primary hover:underline"
-                                >
+                                <label className="text-sm font-medium text-foreground">Senha</label>
+                                <Link href="/forgot-password" className="text-xs text-primary hover:underline">
                                     Esqueceu a senha?
                                 </Link>
                             </div>
@@ -158,9 +151,7 @@ export default function LoginPage() {
                                         "w-full h-10 px-3 pr-10 rounded-lg border bg-background text-sm",
                                         "focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary",
                                         "transition-colors placeholder:text-muted-foreground",
-                                        errors.password
-                                            ? "border-destructive"
-                                            : "border-input hover:border-ring"
+                                        errors.password ? "border-destructive" : "border-input hover:border-ring"
                                     )}
                                 />
                                 <button
@@ -168,17 +159,11 @@ export default function LoginPage() {
                                     onClick={() => setShowPassword(!showPassword)}
                                     className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
                                 >
-                                    {showPassword ? (
-                                        <EyeOff className="h-4 w-4" />
-                                    ) : (
-                                        <Eye className="h-4 w-4" />
-                                    )}
+                                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                                 </button>
                             </div>
                             {errors.password && (
-                                <p className="text-xs text-destructive">
-                                    {errors.password.message}
-                                </p>
+                                <p className="text-xs text-destructive">{errors.password.message}</p>
                             )}
                         </div>
 
@@ -189,12 +174,7 @@ export default function LoginPage() {
                             </div>
                         )}
 
-                        <Button
-                            type="submit"
-                            className="w-full"
-                            size="lg"
-                            loading={login.isPending}
-                        >
+                        <Button type="submit" className="w-full" size="lg" loading={login.isPending}>
                             {login.isPending ? "Entrando..." : "Entrar"}
                         </Button>
                     </form>
@@ -205,6 +185,10 @@ export default function LoginPage() {
                             Criar conta
                         </Link>
                     </p>
+
+                    {/* ✅ Seletor de tenant — client-side com useEffect, sem hydration error */}
+                    <TenantSwitcher />
+
                 </div>
             </div>
         </div>

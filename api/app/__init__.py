@@ -64,14 +64,17 @@ def _init_extensions(app: Flask) -> None:
     mail.init_app(app)
     limiter.init_app(app)
 
-    # CORS: em dev abre tudo, em prod restringe por tenant
-    # supports_credentials=False é obrigatório quando origins="*"
+    # CORS — abre para qualquer origem em dev
+    # Em produção, restringir para domínios dos tenants
     cors.init_app(
         app,
-        resources={r"/api/*": {"origins": "*"}},
-        supports_credentials=False,
-        allow_headers=["Content-Type", "Authorization", "X-Tenant-Slug"],
-        methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        resources={r"/*": {
+            "origins": "*",
+            "allow_headers": ["Content-Type", "Authorization", "X-Tenant-Slug", "X-Requested-With"],
+            "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            "supports_credentials": False,
+            "max_age": 3600,
+        }},
     )
 
     @jwt.expired_token_loader

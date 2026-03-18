@@ -1,1 +1,4 @@
-// frontend/src/types/simulado.ts
+export interface Simulado { id:string;title:string;course_id:string;total_questions:number;time_limit_minutes:number;is_active:boolean;is_ai_generated:boolean;settings?:{passing_score:number;show_answers_after:boolean;randomize_questions:boolean}; }
+export interface SimuladoAttempt { id:string;simulado_id:string;started_at:string;finished_at?:string;time_limit_minutes:number;status:"in_progress"|"finished"|"time_expired";score?:number;passed?:boolean;questions:AttemptQuestion[]; }
+export interface AttemptQuestion { id:string;question_id:string;statement:string;context?:string;discipline?:string;difficulty?:string;alternatives:{key:string;text:string}[];chosen_key?:string;correct_key?:string;is_correct?:boolean;correct_justification?:string; }
+export interface SimuladoResult { attempt:SimuladoAttempt;score:number;passed:boolean;time_spent_seconds:number;by_discipline:{discipline:string;total:number;correct:number;accuracy:number}[]; }

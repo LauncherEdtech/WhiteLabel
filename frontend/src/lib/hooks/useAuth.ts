@@ -67,6 +67,10 @@ export function useLogout() {
     const router = useRouter();
 
     return () => {
+        // Limpa tokens
+        Cookies.remove("access_token");
+        Cookies.remove("refresh_token");
+        // Mantém o tenant_slug (não limpa — o usuário pode querer logar no mesmo tenant)
         logout();
         queryClient.clear();
         router.push("/login");

@@ -790,3 +790,70 @@ def _serialize_question(
         data["correct_justification"] = question.correct_justification
 
     return data
+
+
+# ── Pipeline Gemini ────────────────────────────────────────────────────────────
+
+@questions_bp.route("/extract-text", methods=["POST"])
+@jwt_required()
+@require_tenant
+@require_feature("ai_features")
+def extract_questions_from_text():
+    """Extrai questões de texto usando Gemini."""
+    data = request.get_json() or {}
+    context = data.get("context", "").strip()
+    course_id = data.get("course_id")
+
+    if not context or len(context) < 50:
+        return jsonify({"error": "bad_request",
+                        "message": "Forneça pelo menos 50 caracteres de contexto."}), 400
+
+    from app.services.gemini_service import GeminiService
+    svc = GeminiService()
+    questions = svc.extract_questions(context)
+
+    return jsonify({"questions": questions, "total": len(questions)}), 200
+
+
+@questions_bp.route("/extract", methods=["POST"])
+@jwt_required()
+@require_tenant
+@require_feature("ai_features")
+def extract_questions_from_file():
+    """Extrai questões de PDF/arquivo usando Gemini."""
+    if "file" not in request.files:
+        return jsonify({"error": "bad_request", "message": "Arquivo não enviado."}), 400
+
+    file = request.files["file"]
+    course_id = request.form.get("course_id")
+    context_hint = request.form.get("context", "")
+
+    # Lê conteúdo
+    content = file.read()
+    filename = file.filename or ""
+
+    # Extrai texto do PDF
+    if filename.lower().endswith(".pdf"):
+        try:
+            import io
+            import pypdf
+            reader = pypdf.PdfReader(io.BytesIO(content))
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        except Exception:
+            return jsonify({"error": "bad_request",
+                            "message": "Não foi possível ler o PDF."}), 400
+    else:
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            text = content.decode("latin-1")
+
+    if len(text.strip()) < 50:
+        return jsonify({"error": "bad_request",
+                        "message": "Arquivo sem conteúdo suficiente."}), 400
+
+    from app.services.gemini_service import GeminiService
+    svc = GeminiService()
+    questions = svc.extract_questions(text[:15000])  # máx 15k chars
+
+    return jsonify({"questions": questions, "total": len(questions)}), 200

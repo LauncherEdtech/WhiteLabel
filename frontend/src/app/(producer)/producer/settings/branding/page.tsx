@@ -1,6 +1,7 @@
 // frontend/src/app/(producer)/producer/settings/branding/page.tsx
 "use client";
 
+import { apiClient } from "@/lib/api/client";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -37,21 +38,46 @@ export default function BrandingSettingsPage() {
     // watch retorna os valores atuais do formulário
     const currentName = watch("platform_name");
 
-    const handleSave = async (data: BrandingForm) => {
-        setSaving(true);
-        try {
-            // Preview instantâneo via CSS vars
-            const root = document.documentElement;
-            const hsl = hexToHslString(primaryColor);
-            root.style.setProperty("--primary", hsl);
-            document.title = data.platform_name;
-            toast.success("Configurações salvas!", "Alterações aplicadas.");
-        } catch {
-            toast.error("Erro ao salvar configurações");
-        } finally {
-            setSaving(false);
-        }
-    };
+const handleSave = async (data: BrandingForm) => {
+  setSaving(true);
+  try {
+    // 1. Aplica preview instantâneo via CSS vars
+    const hsl = hexToHslString(primaryColor);
+    document.documentElement.style.setProperty("--primary", hsl);
+    document.title = data.platform_name;
+
+    // 2. Tenta salvar na API (pode não ter o endpoint ainda)
+    try {
+      await apiClient.put("/tenants/branding", {
+        primary_color: primaryColor,
+        platform_name: data.platform_name,
+        support_email: data.support_email,
+      });
+    } catch {
+      // Endpoint pode não existir ainda — salva só no store local
+    }
+
+    // 3. Atualiza o tenantStore local para persistir no reload
+    const { tenant, setTenant } = useTenantStore.getState();
+    if (tenant) {
+      setTenant({
+        ...tenant,
+        branding: {
+          ...tenant.branding,
+          primary_color: primaryColor,
+          platform_name: data.platform_name,
+          support_email: data.support_email || "",
+        },
+      });
+    }
+
+    toast.success("Configurações salvas!", "Alterações aplicadas em tempo real.");
+  } catch {
+    toast.error("Erro ao salvar configurações");
+  } finally {
+    setSaving(false);
+  }
+};
 
     return (
         <div className="max-w-2xl space-y-6 animate-fade-in">
