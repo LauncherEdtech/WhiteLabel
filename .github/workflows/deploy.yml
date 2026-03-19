@@ -1,0 +1,125 @@
+# .github/workflows/deploy.yml
+name: Deploy — Produção
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Ambiente de deploy"
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+
+env:
+  AWS_REGION: sa-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.sa-east-1.amazonaws.com
+
+jobs:
+  # ── Build e Push para ECR ──────────────────────────────────────────────────
+  build:
+    name: Build & Push Docker Images
+    runs-on: ubuntu-latest
+    outputs:
+      api_image: ${{ steps.meta-api.outputs.tags }}
+      frontend_image: ${{ steps.meta-frontend.outputs.tags }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & Push API
+        id: meta-api
+        run: |
+          IMAGE=$ECR_REGISTRY/concurso-platform-api:${{ github.sha }}
+          docker build -f api/Dockerfile --target production -t $IMAGE api/
+          docker push $IMAGE
+          echo "tags=$IMAGE" >> $GITHUB_OUTPUT
+
+      - name: Build & Push Frontend
+        id: meta-frontend
+        run: |
+          IMAGE=$ECR_REGISTRY/concurso-platform-frontend:${{ github.sha }}
+          docker build -f frontend/Dockerfile -t $IMAGE frontend/ \
+            --build-arg NEXT_PUBLIC_API_URL=https://api.plataforma.com/api/v1
+          docker push $IMAGE
+          echo "tags=$IMAGE" >> $GITHUB_OUTPUT
+
+  # ── Deploy via Terraform ───────────────────────────────────────────────────
+  deploy:
+    name: Deploy to AWS
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'production' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6"
+
+      - name: Terraform Init
+        run: cd infra && terraform init
+
+      - name: Terraform Plan
+        run: |
+          cd infra
+          terraform plan \
+            -var-file="environments/production.tfvars" \
+            -var="api_image=${{ needs.build.outputs.api_image }}" \
+            -var="frontend_image=${{ needs.build.outputs.frontend_image }}" \
+            -var="db_password=${{ secrets.DB_PASSWORD }}" \
+            -var="redis_auth_token=${{ secrets.REDIS_AUTH_TOKEN }}" \
+            -var="secret_key=${{ secrets.SECRET_KEY }}" \
+            -var="jwt_secret_key=${{ secrets.JWT_SECRET_KEY }}" \
+            -var="gemini_api_key=${{ secrets.GEMINI_API_KEY }}" \
+            -out=tfplan
+
+      - name: Terraform Apply
+        run: cd infra && terraform apply -auto-approve tfplan
+
+      # ── Migrations pós-deploy ────────────────────────────────────────────
+      - name: Run database migrations
+        run: |
+          CLUSTER=$(cd infra && terraform output -raw ecs_cluster_name)
+          aws ecs run-task \
+            --cluster $CLUSTER \
+            --task-definition concurso-platform-api \
+            --launch-type FARGATE \
+            --overrides '{"containerOverrides":[{"name":"api","command":["flask","db","upgrade"]}]}' \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ secrets.PRIVATE_SUBNET_IDS }}],securityGroups=[${{ secrets.ECS_SG_ID }}]}"
+
+      # ── Notificação ──────────────────────────────────────────────────────
+      - name: Notify deploy success
+        if: success()
+        run: |
+          echo "✅ Deploy concluído: ${{ github.sha }}"
+          echo "Ambiente: ${{ github.event.inputs.environment || 'production' }}"
+
+      - name: Notify deploy failure
+        if: failure()
+        run: |
+          echo "❌ Deploy falhou: ${{ github.sha }}"
+          exit 1
