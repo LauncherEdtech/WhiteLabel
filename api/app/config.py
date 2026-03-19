@@ -113,3 +113,20 @@ config_by_name = {
     "production": ProductionConfig,
     "testing": TestingConfig,
 }
+
+
+class TestingConfig(Config):
+    TESTING = True
+    SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
+    WTF_CSRF_ENABLED = False
+    RATELIMIT_ENABLED = False
+    JWT_SECRET_KEY = "test-jwt-secret-key"
+    SECRET_KEY = "test-secret-key"
+    CELERY_TASK_ALWAYS_EAGER = True   # Tasks executam sincronamente
+    MAIL_SUPPRESS_SEND = True
+
+config_by_name = {
+    "development": DevelopmentConfig,
+    "production":  ProductionConfig,
+    "testing":     TestingConfig,     # ← adiciona esta linha
+}
