@@ -108,3 +108,19 @@ build/
 *.tsbuildinfo
 next-env.d.ts
 .DS_Store
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# tfvars sensíveis
+*.auto.tfvars
+production.tfvars
+terraform.tfvars
+terraform.tfvars.json
