@@ -25,7 +25,19 @@ export default function ProducerDashboardPage() {
     if (isLoading) return <ProducerDashboardSkeleton />;
     if (!data) return null;
 
-    const { overview, at_risk_students, class_discipline_performance, insights } = data;
+    // API retorna estrutura plana (sem chave 'overview')
+    // overview é construído a partir dos campos do próprio data
+    const overview = data.overview ?? {
+        total_students: data.total_students ?? 0,
+        active_last_7_days: data.active_last_7_days ?? 0,
+        engagement_rate: data.engagement_rate ?? 0,
+        at_risk_count: data.at_risk_count ?? 0,
+        avg_accuracy: data.avg_accuracy ?? 0,
+        total_questions_answered: data.total_questions_answered ?? 0,
+    };
+    const at_risk_students = data.at_risk_students ?? [];
+    const class_discipline_performance = data.class_discipline_performance ?? [];
+    const insights = data.insights ?? [];
 
     return (
         <div className="space-y-6 animate-fade-in">

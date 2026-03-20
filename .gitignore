@@ -1,126 +1,79 @@
-# ==============================
-# PYTHON
-# ==============================
+cat > /workspaces/WhiteLabel/.gitignore << 'EOF'
+# ── Python ──────────────────────────────
 __pycache__/
 *.py[cod]
-*$py.class
-
-# Distribuição / build
-build/
-dist/
+*.pyo
+*.pyd
+.Python
+*.egg
 *.egg-info/
+dist/
+build/
 .eggs/
-
-# Virtualenv
-venv/
-.env/
-.venv/
-ENV/
-env/
-
-# ==============================
-# FLASK
-# ==============================
-instance/
-.webassets-cache
-
-# Arquivos locais do Flask
-*.db
-*.sqlite3
-
-# ==============================
-# AMBIENTE / SEGURANÇA
-# ==============================
-.env
-.env.*
-*.env
-
-# Arquivos de credenciais
-*.pem
-*.key
-*.crt
-*.p12
-
-# AWS / GCP / Secrets
-*.json
-secrets/
-credentials/
-
-# ==============================
-# BANCO DE DADOS
-# ==============================
-*.sql
-*.dump
-*.backup
-
-# ==============================
-# LOGS
-# ==============================
-*.log
-logs/
-*.out
-
-# ==============================
-# DOCKER
-# ==============================
-docker-compose.override.yml
-*.tar
-
-# ==============================
-# VSCODE / CODESPACES
-# ==============================
-.vscode/
-.devcontainer/
-.history/
-
-# ==============================
-# SISTEMA OPERACIONAL
-# ==============================
-.DS_Store
-Thumbs.db
-
-# ==============================
-# NODE (caso use frontend junto)
-# ==============================
-node_modules/
-npm-debug.log
-yarn-error.log
-
-# ==============================
-# TESTES / CACHE
-# ==============================
+pip-wheel-metadata/
 .pytest_cache/
 .coverage
 htmlcov/
+.mypy_cache/
 
-# ==============================
-# MIGRATIONS (OPCIONAL)
-# ==============================
-# migrations/  <-- só ignore se NÃO quiser versionar migrations
+# ── Ambiente virtual ────────────────────
+venv/
+env/
+.venv/
+.env/
 
-# frontend/.gitignore
-.next/
+# ── Node.js ─────────────────────────────
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ── Next.js ─────────────────────────────
+frontend/.next/
+frontend/out/
+frontend/.turbo/
+
+# ── Variáveis de ambiente ───────────────
+.env
 .env.local
-.env*.local
-out/
-build/
-*.tsbuildinfo
-next-env.d.ts
+.env.development.local
+.env.test.local
+.env.production.local
+api/.env
+frontend/.env.local
+
+# ── Terraform ───────────────────────────
+infra/.terraform/
+infra/.terraform.lock.hcl
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+infra/*.tfvars
+!infra/environments/staging.tfvars
+infra/environments/production.tfvars
+
+# ── Docker ──────────────────────────────
+.docker/
+
+# ── IDEs ────────────────────────────────
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
 .DS_Store
+Thumbs.db
 
-# Terraform
-.terraform/
-*.tfstate
-*.tfstate.*
-crash.log
-override.tf
-override.tf.json
-*_override.tf
-*_override.tf.json
+# ── Logs ────────────────────────────────
+*.log
+logs/
 
-# tfvars sensíveis
-*.auto.tfvars
-production.tfvars
-terraform.tfvars
-terraform.tfvars.json
+# ── Arquivos temporários ─────────────────
+*.tmp
+*.temp
+/tmp/
+
+# ── Arquivos acidentais ──────────────────
+"ecs list-tasks \\"
+EOF
+
+echo "✓ .gitignore criado"
