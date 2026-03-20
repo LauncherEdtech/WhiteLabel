@@ -26,10 +26,9 @@ from app.models.simulado import (
     Simulado, SimuladoQuestion, SimuladoAttempt, SimuladoAnswer
 )
 from app.models.course import Subject, CourseEnrollment
-from app.middleware.tenant import resolve_tenant, require_tenant, get_current_tenant
+from app.middleware.tenant import resolve_tenant, require_tenant, require_feature, get_current_tenant
 
 simulados_bp = Blueprint("simulados", __name__)
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -40,14 +39,12 @@ def _is_producer_or_above(claims: dict) -> bool:
         UserRole.PRODUCER_STAFF.value,
     )
 
-
 def _get_simulado_or_404(simulado_id: str, tenant_id: str):
     return Simulado.query.filter_by(
         id=simulado_id,
         tenant_id=tenant_id,
         is_deleted=False,
     ).first()
-
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
@@ -73,7 +70,6 @@ class CreateSimuladoSchema(Schema):
     class Meta:
         unknown = EXCLUDE
 
-
 class AnswerQuestionSchema(Schema):
     """Resposta do aluno a uma questão durante o simulado."""
     question_id = fields.Str(required=True)
@@ -90,13 +86,11 @@ class AnswerQuestionSchema(Schema):
     class Meta:
         unknown = EXCLUDE
 
-
 # ── Before request ────────────────────────────────────────────────────────────
 
 @simulados_bp.before_request
 def before_request():
     resolve_tenant()
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CRUD DE SIMULADOS (produtor)
@@ -192,7 +186,6 @@ def create_simulado():
         "simulado": _serialize_simulado(simulado, total_questions=added),
     }), 201
 
-
 @simulados_bp.route("/auto-generate", methods=["POST"])
 @jwt_required()
 @require_tenant
@@ -263,7 +256,6 @@ def auto_generate_simulado():
         "simulado": _serialize_simulado(simulado, total_questions=len(question_ids)),
     }), 201
 
-
 @simulados_bp.route("/", methods=["GET"])
 @jwt_required()
 @require_tenant
@@ -315,7 +307,6 @@ def list_simulados():
 
     return jsonify({"simulados": result}), 200
 
-
 @simulados_bp.route("/<string:simulado_id>", methods=["GET"])
 @jwt_required()
 @require_tenant
@@ -363,7 +354,6 @@ def get_simulado(simulado_id: str):
             "questions": questions_data,
         }
     }), 200
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TENTATIVAS (aluno)
@@ -431,7 +421,6 @@ def start_attempt(simulado_id: str):
         "attempt": _serialize_attempt_detail(attempt, simulado),
         "time_remaining_seconds": simulado.time_limit_minutes * 60,
     }), 201
-
 
 @simulados_bp.route("/attempts/<string:attempt_id>/answer", methods=["POST"])
 @jwt_required()
@@ -528,7 +517,6 @@ def answer_question(attempt_id: str):
         "time_remaining_seconds": _get_time_remaining(attempt, simulado),
     }), 200
 
-
 @simulados_bp.route("/attempts/<string:attempt_id>/finish", methods=["POST"])
 @jwt_required()
 @require_tenant
@@ -576,7 +564,6 @@ def finish_attempt(attempt_id: str):
         "timed_out": timed_out,
         "result": result,
     }), 200
-
 
 @simulados_bp.route("/attempts/<string:attempt_id>", methods=["GET"])
 @jwt_required()
@@ -715,7 +702,6 @@ def get_attempt_result(attempt_id: str):
         "answers": detailed_answers,
     }), 200
 
-
 @simulados_bp.route("/my-attempts", methods=["GET"])
 @jwt_required()
 @require_tenant
@@ -736,7 +722,6 @@ def my_attempts():
         "completed": sum(1 for a in attempts if a.status == "completed"),
     }), 200
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPERS INTERNOS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -756,7 +741,6 @@ def _is_attempt_expired(attempt: SimuladoAttempt, simulado: Simulado) -> bool:
     except (ValueError, TypeError):
         return False
 
-
 def _get_time_remaining(attempt: SimuladoAttempt, simulado: Simulado) -> int:
     """Retorna segundos restantes do simulado (mínimo 0)."""
     if not attempt.started_at:
@@ -768,7 +752,6 @@ def _get_time_remaining(attempt: SimuladoAttempt, simulado: Simulado) -> int:
         return max(0, int(remaining))
     except (ValueError, TypeError):
         return 0
-
 
 def _finalize_attempt(attempt: SimuladoAttempt, simulado: Simulado,
                        timed_out: bool = False) -> dict:
@@ -896,7 +879,6 @@ def _finalize_attempt(attempt: SimuladoAttempt, simulado: Simulado,
         ],
     }
 
-
 def _auto_select_questions(tenant_id: str, filters: dict) -> list:
     """
     Seleciona questões automaticamente por filtros.
@@ -931,7 +913,6 @@ def _auto_select_questions(tenant_id: str, filters: dict) -> list:
     random.shuffle(questions)
     return [q.id for q in questions[:count]]
 
-
 # ── Serializers ───────────────────────────────────────────────────────────────
 
 def _serialize_simulado(simulado: Simulado, total_questions: int = 0) -> dict:
@@ -948,7 +929,6 @@ def _serialize_simulado(simulado: Simulado, total_questions: int = 0) -> dict:
         "created_at": simulado.created_at.isoformat() if simulado.created_at else None,
     }
 
-
 def _serialize_attempt_summary(attempt: SimuladoAttempt) -> dict:
     return {
         "id": attempt.id,
@@ -961,7 +941,6 @@ def _serialize_attempt_summary(attempt: SimuladoAttempt) -> dict:
         "started_at": attempt.started_at,
         "finished_at": attempt.finished_at,
     }
-
 
 def _serialize_attempt_detail(attempt: SimuladoAttempt,
                                simulado: Simulado) -> dict:

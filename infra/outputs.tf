@@ -34,3 +34,9 @@ output "api_url" {
   description = "URL pública da API via ALB"
   value       = "http://${aws_lb.main.dns_name}"
 }
+
+output "frontend_url" {
+  description = "URL do frontend"
+  value       = "http://${aws_lb.main.dns_name}"
+}
+

@@ -2,8 +2,12 @@
 import axios, { AxiosError, AxiosInstance } from "axios";
 import Cookies from "js-cookie";
 
-const API_URL =
-    process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api/v1";
+// URL relativa no browser → Next.js proxia via rewrite /api/* → Flask
+// URL absoluta no servidor (SSR) → direto para o Flask
+const isServer = typeof window === "undefined";
+const API_URL = isServer
+    ? (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api/v1")
+    : "/api/v1";
 
 // Em dev/Codespaces sempre usa este tenant
 const DEFAULT_TENANT = "concurso-demo";
@@ -18,14 +22,22 @@ function resolveTenantSlug(): string {
     const isCodespaces = hostname.includes("app.github.dev");
 
     if (isLocal || isCodespaces) {
-        // Força o valor correto no cookie
         Cookies.set("tenant_slug", DEFAULT_TENANT, { sameSite: "lax", expires: 1 });
         return DEFAULT_TENANT;
     }
 
-    // Produção: extrai do subdomínio (ex: cursojuridico.plataforma.com → cursojuridico)
+    // Domínio do ALB da AWS — usa cookie ou default
+    const isALB = hostname.includes(".elb.amazonaws.com");
+    if (isALB) {
+        const cookieSlug = Cookies.get("tenant_slug");
+        if (cookieSlug) return cookieSlug;
+        Cookies.set("tenant_slug", DEFAULT_TENANT, { sameSite: "lax", expires: 1 });
+        return DEFAULT_TENANT;
+    }
+
+    // Produção com domínio customizado: extrai do subdomínio
+    // Ex: cursojuridico.plataforma.com → cursojuridico
     const parts = hostname.split(".");
-    // Precisa ter pelo menos 3 partes (sub.dominio.com)
     if (parts.length >= 3) {
         const slug = parts[0];
         Cookies.set("tenant_slug", slug, { sameSite: "lax", expires: 1 });
@@ -70,12 +82,12 @@ apiClient.interceptors.response.use(
             if (refreshToken) {
                 try {
                     const res = await axios.post(
-                        `${API_URL}/auth/refresh`,
+                        `/api/v1/auth/refresh`,
                         {},
                         {
                             headers: {
                                 Authorization: `Bearer ${refreshToken}`,
-                                "X-Tenant-Slug": DEFAULT_TENANT,
+                                "X-Tenant-Slug": resolveTenantSlug(),
                             },
                         }
                     );

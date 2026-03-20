@@ -15,10 +15,9 @@ from app.models.user import User, UserRole
 from app.models.course import Course, Subject, Lesson, LessonProgress, CourseEnrollment
 from app.models.question import Question, QuestionAttempt
 from app.models.schedule import StudySchedule, ScheduleItem, ScheduleCheckIn
-from app.middleware.tenant import resolve_tenant, require_tenant, get_current_tenant
+from app.middleware.tenant import resolve_tenant, require_tenant, require_feature, get_current_tenant
 
 analytics_bp = Blueprint("analytics", __name__)
-
 
 # ── Helpers de autorização ────────────────────────────────────────────────────
 
@@ -29,15 +28,12 @@ def _is_producer_or_above(claims: dict) -> bool:
         UserRole.PRODUCER_STAFF.value,
     )
 
-
 def _is_student(claims: dict) -> bool:
     return claims.get("role") == UserRole.STUDENT.value
-
 
 @analytics_bp.before_request
 def before_request():
     resolve_tenant()
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DASHBOARD DO ALUNO
@@ -124,7 +120,6 @@ def student_dashboard():
         "generated_at": now.isoformat(),
     }), 200
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # ANALYTICS DO PRODUTOR (visão da turma)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -162,8 +157,18 @@ def producer_overview():
 
     if total_students == 0:
         return jsonify({
-            "total_students": 0,
-            "message": "Nenhum aluno cadastrado ainda.",
+            "overview": {
+                "total_students": 0,
+                "active_last_7_days": 0,
+                "engagement_rate": 0.0,
+                "at_risk_count": 0,
+            },
+            "at_risk_students": [],
+            "class_discipline_performance": [],
+            "hardest_questions": [],
+            "student_rankings": {"top_performers": [], "needs_attention": []},
+            "insights": [],
+            "generated_at": datetime.now(timezone.utc).isoformat(),
         }), 200
 
     student_ids = [s.id for s in students_query.all()]
@@ -217,7 +222,6 @@ def producer_overview():
         "insights": producer_insights,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }), 200
-
 
 @analytics_bp.route("/producer/students", methods=["GET"])
 @jwt_required()
@@ -276,7 +280,6 @@ def producer_student_list():
         },
     }), 200
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPERS DE CÁLCULO
 # ══════════════════════════════════════════════════════════════════════════════
@@ -325,7 +328,6 @@ def _get_questions_stats(user_id: str, tenant_id: str,
             "accuracy": round((week_correct / week_total) * 100, 1) if week_total else 0,
         },
     }
-
 
 def _get_discipline_stats(user_id: str, tenant_id: str) -> list:
     """
@@ -376,7 +378,6 @@ def _get_discipline_stats(user_id: str, tenant_id: str) -> list:
     # Ordena por taxa de acerto (pontos fracos primeiro)
     return sorted(result, key=lambda x: x["accuracy_rate"])
 
-
 def _performance_label(accuracy: float) -> str:
     """Classifica performance em forte, regular ou fraco."""
     if accuracy >= 70:
@@ -385,7 +386,6 @@ def _performance_label(accuracy: float) -> str:
         return "regular"
     else:
         return "fraco"
-
 
 def _get_lesson_progress_stats(user_id: str, tenant_id: str) -> dict:
     """Progresso geral nas aulas."""
@@ -438,7 +438,6 @@ def _get_lesson_progress_stats(user_id: str, tenant_id: str) -> dict:
         "total_available": total_available,
         "completion_rate": completion_rate,
     }
-
 
 def _get_time_stats(user_id: str, tenant_id: str,
                     today_start: datetime, week_start: datetime) -> dict:
@@ -507,7 +506,6 @@ def _get_time_stats(user_id: str, tenant_id: str,
         "weekly_progress_percent": min(weekly_progress_pct, 100),
     }
 
-
 def _get_todays_pending(user_id: str, tenant_id: str, today_start: datetime) -> list:
     """Pendências do dia do cronograma."""
     today_str = today_start.date().isoformat()
@@ -544,7 +542,6 @@ def _get_todays_pending(user_id: str, tenant_id: str, today_start: datetime) -> 
         result.append(data)
 
     return result
-
 
 def _get_at_risk_students(student_ids: list, tenant_id: str) -> list:
     """
@@ -625,7 +622,6 @@ def _get_at_risk_students(student_ids: list, tenant_id: str) -> list:
     # Ordena por risco (maior primeiro)
     return sorted(at_risk, key=lambda x: x["risk_score"], reverse=True)
 
-
 def _get_class_discipline_stats(student_ids: list, tenant_id: str) -> list:
     """Performance da turma por disciplina."""
     attempts = QuestionAttempt.query.filter(
@@ -658,7 +654,6 @@ def _get_class_discipline_stats(student_ids: list, tenant_id: str) -> list:
 
     return sorted(result, key=lambda x: x["accuracy_rate"])
 
-
 def _get_hardest_questions(tenant_id: str) -> list:
     """Questões com menor taxa de acerto (temas mais problemáticos da turma)."""
     questions = Question.query.filter_by(
@@ -684,7 +679,6 @@ def _get_hardest_questions(tenant_id: str) -> list:
         for q in questions
     ]
 
-
 def _get_student_rankings(student_ids: list, tenant_id: str) -> dict:
     """Top alunos e alunos com mais dificuldade."""
     student_stats = []
@@ -706,7 +700,6 @@ def _get_student_rankings(student_ids: list, tenant_id: str) -> dict:
         "top_performers": sorted_by_accuracy[:5],
         "needs_attention": sorted_by_accuracy[-5:] if len(sorted_by_accuracy) > 5 else [],
     }
-
 
 def _get_student_quick_stats(user_id: str, tenant_id: str) -> dict:
     """Estatísticas rápidas de um aluno (para listagem)."""
@@ -742,7 +735,6 @@ def _get_student_quick_stats(user_id: str, tenant_id: str) -> dict:
         "is_at_risk": is_at_risk,
     }
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # INSIGHTS AUTOMÁTICOS VIA GEMINI
 # ══════════════════════════════════════════════════════════════════════════════
@@ -770,7 +762,6 @@ def _generate_insights(user, questions_stats: dict, discipline_stats: list,
     # Fallback: regras determinísticas
     return _rule_based_insights(questions_stats, discipline_stats,
                                  lesson_progress, time_stats)
-
 
 def _gemini_student_insights(api_key: str, user, questions_stats: dict,
                                discipline_stats: list, lesson_progress: dict,
@@ -823,7 +814,6 @@ FORMATO OBRIGATÓRIO:
     data = json.loads(text)
     return data.get("insights", [])[:3]
 
-
 def _generate_producer_insights(total_students: int, engagement_rate: float,
                                   at_risk_count: int,
                                   class_discipline_stats: list) -> list:
@@ -874,7 +864,6 @@ def _generate_producer_insights(total_students: int, engagement_rate: float,
         })
 
     return insights[:3]
-
 
 def _rule_based_insights(questions_stats: dict, discipline_stats: list,
                           lesson_progress: dict, time_stats: dict) -> list:

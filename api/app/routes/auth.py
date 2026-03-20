@@ -12,16 +12,20 @@ from flask_jwt_extended import (
     create_refresh_token,
     jwt_required,
     get_jwt_identity,
-    get_jwt,
+    get_jwt
 )
 from marshmallow import Schema, fields, validate, ValidationError, EXCLUDE
 
 from app.extensions import db, limiter
 from app.models.user import User, UserRole
-from app.middleware.tenant import resolve_tenant, require_tenant, get_current_tenant
+from app.middleware.tenant import (
+    resolve_tenant,
+    require_tenant,
+    require_feature,
+    get_current_tenant
+)
 
 auth_bp = Blueprint("auth", __name__)
-
 
 # ── Schemas de Validação ───────────────────────────────────────────────────────
 

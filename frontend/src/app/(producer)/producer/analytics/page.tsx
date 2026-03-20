@@ -35,7 +35,14 @@ export default function ProducerAnalyticsPage() {
     );
   }
 
-  if (!data) return null;
+  if (isLoading || !data || !data.overview) return (
+        <div className="space-y-6 animate-pulse">
+            <div className="h-8 w-40 bg-muted rounded" />
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                {[...Array(4)].map((_, i) => <div key={i} className="h-28 bg-muted rounded-xl" />)}
+            </div>
+        </div>
+    );
 
   const { overview, at_risk_students, class_discipline_performance, hardest_questions, student_rankings, insights } = data;
 

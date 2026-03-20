@@ -14,13 +14,17 @@ from app.models.course import (
     Module,
     Lesson,
     LessonProgress,
-    CourseEnrollment,
+    CourseEnrollment
 )
 from app.models.user import User, UserRole
-from app.middleware.tenant import resolve_tenant, require_tenant, get_current_tenant
+from app.middleware.tenant import (
+    resolve_tenant,
+    require_tenant,
+    require_feature,
+    get_current_tenant
+)
 
 courses_bp = Blueprint("courses", __name__)
-
 
 # ── Helpers de autorização ────────────────────────────────────────────────────
 

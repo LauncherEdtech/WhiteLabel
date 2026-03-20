@@ -1,42 +1,54 @@
-// frontend/src/components/dev/TenantSwitcher.tsx
 "use client";
 
 import { useState, useEffect } from "react";
+import Cookies from "js-cookie";
 
 const TENANTS = [
   {
-    slug: "concurso-demo", label: "Produtor / Aluno", icon: "👨‍🏫",
-    credentials: "produtor@concursodemo.com ou aluno@teste.com"
+    slug: "concurso-demo",
+    label: "Concurso Demo",
+    icon: "👨‍🏫",
+    credentials: "aluno@teste.com ou produtor@concursodemo.com",
   },
   {
-    slug: "platform", label: "Super Admin", icon: "🔑",
-    credentials: "admin@platform.com / Admin@123456"
+    slug: "platform",
+    label: "Super Admin",
+    icon: "🔑",
+    credentials: "admin@platform.com",
   },
 ];
 
 export function TenantSwitcher() {
   const [current, setCurrent] = useState("concurso-demo");
+  const [visible, setVisible] = useState(false);
 
   useEffect(() => {
-    const match = document.cookie.match(/tenant_slug=([^;]+)/);
-    if (match) setCurrent(match[1]);
+    const slug = Cookies.get("tenant_slug") || "concurso-demo";
+    setCurrent(slug);
+
+    // Mostra em dev sempre, em produção mostra no domínio ALB (sem domínio customizado)
+    const hostname = window.location.hostname;
+    const isDev = hostname === "localhost" || hostname.includes("app.github.dev");
+    const isALB = hostname.includes(".elb.amazonaws.com");
+    setVisible(isDev || isALB);
   }, []);
 
   const switchTenant = (slug: string) => {
-    document.cookie = "access_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
-    document.cookie = "refresh_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
-    document.cookie = `tenant_slug=${slug}; path=/; samesite=lax; max-age=86400`;
+    // Limpa tokens e troca o tenant
+    Cookies.remove("access_token");
+    Cookies.remove("refresh_token");
+    Cookies.set("tenant_slug", slug, { expires: 1, sameSite: "lax" });
     localStorage.clear();
     setCurrent(slug);
-    window.location.reload();
+    window.location.href = "/login";
   };
 
-  if (process.env.NODE_ENV !== "development") return null;
+  if (!visible) return null;
 
   return (
     <div className="mt-6 p-4 rounded-xl border border-dashed border-amber-200 bg-amber-50/50">
-      <p className="text-xs font-bold text-amber-700 mb-3 flex items-center gap-1">
-        🛠 Modo desenvolvimento — Trocar tenant
+      <p className="text-xs font-bold text-amber-700 mb-3">
+        🏢 Selecionar plataforma
       </p>
       <div className="space-y-2">
         {TENANTS.map(({ slug, label, icon, credentials }) => (
@@ -44,10 +56,11 @@ export function TenantSwitcher() {
             key={slug}
             type="button"
             onClick={() => switchTenant(slug)}
-            className={`w-full text-left p-3 rounded-lg border-2 transition-all ${current === slug
-              ? "border-amber-400 bg-amber-100"
-              : "border-transparent bg-white hover:border-amber-200"
-              }`}
+            className={`w-full text-left p-3 rounded-lg border-2 transition-all ${
+              current === slug
+                ? "border-amber-400 bg-amber-100"
+                : "border-transparent bg-white hover:border-amber-200"
+            }`}
           >
             <div className="flex items-center gap-2">
               <span className="text-lg">{icon}</span>
@@ -64,6 +77,9 @@ export function TenantSwitcher() {
           </button>
         ))}
       </div>
+      <p className="text-xs text-amber-600 mt-2 text-center">
+        Ao trocar, você será redirecionado para o login
+      </p>
     </div>
   );
 }

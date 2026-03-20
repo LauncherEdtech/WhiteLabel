@@ -12,13 +12,11 @@ from app.extensions import db, limiter
 from app.models.question import Question, Alternative, QuestionAttempt, DifficultyLevel
 from app.models.course import Subject
 from app.models.user import UserRole
-from app.middleware.tenant import resolve_tenant, require_tenant, get_current_tenant
+from app.middleware.tenant import resolve_tenant, require_tenant, require_feature, get_current_tenant
 
 questions_bp = Blueprint("questions", __name__)
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
 
 def _is_producer_or_above(claims: dict) -> bool:
     return claims.get("role") in (
@@ -27,9 +25,7 @@ def _is_producer_or_above(claims: dict) -> bool:
         UserRole.PRODUCER_STAFF.value,
     )
 
-
 # ── Schemas ───────────────────────────────────────────────────────────────────
-
 
 class AlternativeSchema(Schema):
     key = fields.Str(required=True, validate=validate.OneOf(["a", "b", "c", "d", "e"]))
@@ -38,7 +34,6 @@ class AlternativeSchema(Schema):
 
     class Meta:
         unknown = EXCLUDE
-
 
 class QuestionSchema(Schema):
     statement = fields.Str(required=True, validate=validate.Length(min=10))
@@ -72,7 +67,6 @@ class QuestionSchema(Schema):
     class Meta:
         unknown = EXCLUDE
 
-
 class AnswerSchema(Schema):
     """Aluno responde uma questão."""
 
@@ -93,7 +87,6 @@ class AnswerSchema(Schema):
 
     class Meta:
         unknown = EXCLUDE
-
 
 class QuestionFilterSchema(Schema):
     """Parâmetros de filtro para listagem de questões."""
@@ -118,19 +111,15 @@ class QuestionFilterSchema(Schema):
     class Meta:
         unknown = EXCLUDE
 
-
 # ── Before request ────────────────────────────────────────────────────────────
-
 
 @questions_bp.before_request
 def before_request():
     resolve_tenant()
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # LISTAGEM COM FILTROS
 # ══════════════════════════════════════════════════════════════════════════════
-
 
 @questions_bp.route("/", methods=["GET"])
 @jwt_required()
@@ -275,11 +264,9 @@ def list_questions():
         200,
     )
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # CRUD DE QUESTÕES (produtor)
 # ══════════════════════════════════════════════════════════════════════════════
-
 
 @questions_bp.route("/", methods=["POST"])
 @jwt_required()
@@ -357,7 +344,6 @@ def create_question():
         201,
     )
 
-
 @questions_bp.route("/<string:question_id>", methods=["GET"])
 @jwt_required()
 @require_tenant
@@ -409,7 +395,6 @@ def get_question(question_id: str):
         ),
         200,
     )
-
 
 @questions_bp.route("/<string:question_id>", methods=["PUT"])
 @jwt_required()
@@ -472,7 +457,6 @@ def update_question(question_id: str):
         200,
     )
 
-
 @questions_bp.route("/<string:question_id>", methods=["DELETE"])
 @jwt_required()
 @require_tenant
@@ -498,11 +482,9 @@ def delete_question(question_id: str):
     db.session.commit()
     return jsonify({"message": "Questão removida."}), 200
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # RESPONDER QUESTÃO
 # ══════════════════════════════════════════════════════════════════════════════
-
 
 @questions_bp.route("/<string:question_id>/answer", methods=["POST"])
 @jwt_required()
@@ -632,11 +614,9 @@ def answer_question(question_id: str):
         200,
     )
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # HISTÓRICO DO ALUNO
 # ══════════════════════════════════════════════════════════════════════════════
-
 
 @questions_bp.route("/my-history", methods=["GET"])
 @jwt_required()
@@ -705,9 +685,7 @@ def my_history():
         200,
     )
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
 
 def _get_last_attempts_map(user_id: str, tenant_id: str, question_ids: list) -> dict:
     """
@@ -734,7 +712,6 @@ def _get_last_attempts_map(user_id: str, tenant_id: str, question_ids: list) -> 
         if attempt.question_id not in attempt_map:
             attempt_map[attempt.question_id] = attempt
     return attempt_map
-
 
 def _serialize_question(
     question: Question, last_attempt=None, include_answer: bool = False
@@ -791,7 +768,6 @@ def _serialize_question(
 
     return data
 
-
 # ── Pipeline Gemini ────────────────────────────────────────────────────────────
 
 @questions_bp.route("/extract-text", methods=["POST"])
@@ -813,7 +789,6 @@ def extract_questions_from_text():
     questions = svc.extract_questions(context)
 
     return jsonify({"questions": questions, "total": len(questions)}), 200
-
 
 @questions_bp.route("/extract", methods=["POST"])
 @jwt_required()

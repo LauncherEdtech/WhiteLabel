@@ -11,11 +11,15 @@ from app.extensions import db, limiter
 from app.models.user import User, UserRole
 from app.models.course import CourseEnrollment, Lesson, Subject
 from app.models.schedule import StudySchedule, ScheduleItem, ScheduleCheckIn
-from app.middleware.tenant import resolve_tenant, require_tenant, get_current_tenant
 from app.services.schedule_engine import ScheduleEngine
+from app.middleware.tenant import (
+    resolve_tenant,
+    require_tenant,
+    require_feature,
+    get_current_tenant,
+)
 
 schedule_bp = Blueprint("schedule", __name__)
-
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
