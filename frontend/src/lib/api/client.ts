@@ -26,12 +26,12 @@ function resolveTenantSlug(): string {
         return DEFAULT_TENANT;
     }
 
-    // Domínio do ALB da AWS — usa cookie ou default
+    // ALB ou localhost — lê do cookie (setado pelo proxy.ts via URL)
     const isALB = hostname.includes(".elb.amazonaws.com");
-    if (isALB) {
+    const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
+    if (isALB || isLocal) {
         const cookieSlug = Cookies.get("tenant_slug");
         if (cookieSlug) return cookieSlug;
-        Cookies.set("tenant_slug", DEFAULT_TENANT, { sameSite: "lax", expires: 1 });
         return DEFAULT_TENANT;
     }
 
