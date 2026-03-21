@@ -22,7 +22,7 @@ interface BrandingForm {
 }
 
 export default function BrandingSettingsPage() {
-    const { getBranding } = useTenantStore();
+    const { getBranding, tenant, setTenant } = useTenantStore();
     const branding = getBranding();
     const toast = useToast();
     const [primaryColor, setPrimaryColor] = useState(branding.primary_color);
@@ -35,49 +35,44 @@ export default function BrandingSettingsPage() {
         },
     });
 
-    // watch retorna os valores atuais do formulário
     const currentName = watch("platform_name");
 
-const handleSave = async (data: BrandingForm) => {
-  setSaving(true);
-  try {
-    // 1. Aplica preview instantâneo via CSS vars
-    const hsl = hexToHslString(primaryColor);
-    document.documentElement.style.setProperty("--primary", hsl);
-    document.title = data.platform_name;
+    const handleSave = async (data: BrandingForm) => {
+        setSaving(true);
+        try {
+            if (!tenant?.id) throw new Error("Tenant não encontrado");
 
-    // 2. Tenta salvar na API (pode não ter o endpoint ainda)
-    try {
-      await apiClient.put("/tenants/branding", {
-        primary_color: primaryColor,
-        platform_name: data.platform_name,
-        support_email: data.support_email,
-      });
-    } catch {
-      // Endpoint pode não existir ainda — salva só no store local
-    }
+            // 1. Salva na API
+            await apiClient.put(`/tenants/${tenant.id}/branding`, {
+                primary_color: primaryColor,
+                platform_name: data.platform_name,
+                support_email: data.support_email,
+            });
 
-    // 3. Atualiza o tenantStore local para persistir no reload
-    const { tenant, setTenant } = useTenantStore.getState();
-    if (tenant) {
-      setTenant({
-        ...tenant,
-        branding: {
-          ...tenant.branding,
-          primary_color: primaryColor,
-          platform_name: data.platform_name,
-          support_email: data.support_email || "",
-        },
-      });
-    }
+            // 2. Atualiza o tenantStore — persiste no localStorage
+            setTenant({
+                ...tenant,
+                branding: {
+                    ...(tenant.branding as Record<string, unknown>),
+                    primary_color: primaryColor,
+                    platform_name: data.platform_name,
+                    support_email: data.support_email || "",
+                } as any,
+            });
 
-    toast.success("Configurações salvas!", "Alterações aplicadas em tempo real.");
-  } catch {
-    toast.error("Erro ao salvar configurações");
-  } finally {
-    setSaving(false);
-  }
-};
+            // 3. Aplica CSS vars imediatamente
+            const hsl = hexToHslString(primaryColor);
+            document.documentElement.style.setProperty("--primary", hsl);
+            document.documentElement.style.setProperty("--ring", hsl);
+            document.title = data.platform_name;
+
+            toast.success("Configurações salvas!", "Alterações aplicadas em tempo real.");
+        } catch {
+            toast.error("Erro ao salvar configurações");
+        } finally {
+            setSaving(false);
+        }
+    };
 
     return (
         <div className="max-w-2xl space-y-6 animate-fade-in">
@@ -89,7 +84,6 @@ const handleSave = async (data: BrandingForm) => {
             </div>
 
             <form onSubmit={handleSubmit(handleSave)} className="space-y-5">
-                {/* Identidade */}
                 <Card>
                     <CardHeader>
                         <CardTitle className="text-base flex items-center gap-2">
@@ -117,7 +111,6 @@ const handleSave = async (data: BrandingForm) => {
                     </CardContent>
                 </Card>
 
-                {/* Cores */}
                 <Card>
                     <CardHeader>
                         <CardTitle className="text-base flex items-center gap-2">
@@ -157,7 +150,6 @@ const handleSave = async (data: BrandingForm) => {
                             ))}
                         </div>
 
-                        {/* Preview */}
                         <div className="p-4 rounded-xl border border-border bg-muted/30">
                             <p className="text-xs text-muted-foreground mb-3">Preview</p>
                             <div className="flex items-center gap-3 mb-3">
