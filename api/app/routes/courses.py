@@ -638,8 +638,8 @@ def create_lesson(module_id: str):
         duration_minutes=data["duration_minutes"],
         material_url=data.get("material_url"),
         order=data["order"],
-        is_published=data["is_published"],
-        is_free_preview=data["is_free_preview"],
+        is_published=data.get("is_published", True),  # Publicada por padrão
+        is_free_preview=data.get("is_free_preview", False),
     )
     db.session.add(lesson)
     db.session.commit()

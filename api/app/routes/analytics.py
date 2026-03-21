@@ -476,11 +476,25 @@ def _get_time_stats(user_id: str, tenant_id: str,
     ).all()
 
     lessons_time_today = 0
-    lessons_time_week = 0
     for prog in lessons_watched_today:
         lesson = Lesson.query.get(prog.lesson_id)
         if lesson:
-            lessons_time_today += lesson.duration_minutes * 60  # converte para segundos
+            lessons_time_today += lesson.duration_minutes * 60
+
+    # Aulas assistidas na semana
+    lessons_watched_week = LessonProgress.query.filter(
+        LessonProgress.user_id == user_id,
+        LessonProgress.tenant_id == tenant_id,
+        LessonProgress.status == "watched",
+        LessonProgress.is_deleted == False,
+        LessonProgress.last_watched_at >= week_start.isoformat(),
+    ).all()
+
+    lessons_time_week = 0
+    for prog in lessons_watched_week:
+        lesson = Lesson.query.get(prog.lesson_id)
+        if lesson:
+            lessons_time_week += lesson.duration_minutes * 60
 
     total_today_seconds = questions_time_today + lessons_time_today
     total_week_seconds = questions_time_week + lessons_time_week

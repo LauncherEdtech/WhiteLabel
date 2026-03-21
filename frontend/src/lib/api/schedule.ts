@@ -41,4 +41,11 @@ export const scheduleApi = {
         const res = await apiClient.put("/schedule/availability", availability);
         return res.data;
     },
+
+    delete: async (courseId: string) => {
+        const res = await apiClient.delete("/schedule/", {
+            data: { course_id: courseId },
+        });
+        return res.data;
+    },
 };

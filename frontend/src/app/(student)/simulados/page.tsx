@@ -6,10 +6,8 @@ import { apiClient } from "@/lib/api/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils/cn";
-import {
-    ClipboardList, Clock, CheckCircle2,
-    XCircle, Play, Trophy, ChevronRight,
-} from "lucide-react";
+import { Trophy, XCircle, ClipboardList, Clock, ChevronRight, Play, BarChart2 } from "lucide-react";
+import { formatSeconds } from "@/lib/utils/format";
 import Link from "next/link";
 import type { Simulado } from "@/types/api";
 
@@ -106,7 +104,7 @@ function SimuladoCard({ simulado }: { simulado: Simulado }) {
                                 {simulado.description}
                             </p>
                         )}
-                        <div className="flex items-center gap-4 mt-2">
+                        <div className="flex items-center gap-3 mt-2 flex-wrap">
                             <span className="text-xs text-muted-foreground flex items-center gap-1">
                                 <ClipboardList className="h-3 w-3" />
                                 {simulado.total_questions} questões
@@ -115,12 +113,23 @@ function SimuladoCard({ simulado }: { simulado: Simulado }) {
                                 <Clock className="h-3 w-3" />
                                 {simulado.time_limit_minutes}min
                             </span>
-                            {simulado.is_ai_generated && (
-                                <span className="text-xs bg-secondary/10 text-secondary px-1.5 py-0.5 rounded-md font-medium">
-                                    IA
+                            {isCompleted && attempt?.total_time_seconds && (
+                                <span className="text-xs text-muted-foreground flex items-center gap-1">
+                                    <BarChart2 className="h-3 w-3" />
+                                    ~{Math.round(attempt.total_time_seconds / attempt.total_questions)}s/questão
                                 </span>
                             )}
+                            {simulado.is_ai_generated && (
+                                <span className="text-xs bg-secondary/10 text-secondary px-1.5 py-0.5 rounded-md font-medium">IA</span>
+                            )}
                         </div>
+                        {isCompleted && attempt && (
+                            <div className="flex items-center gap-2 mt-1">
+                                <span className="text-xs text-muted-foreground">
+                                    ⏱ Tempo total: {formatSeconds(attempt.total_time_seconds || 0)}
+                                </span>
+                            </div>
+                        )}
                     </div>
 
                     <div className="flex flex-col items-end gap-2 shrink-0">

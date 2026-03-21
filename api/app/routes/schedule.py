@@ -675,3 +675,41 @@ def _serialize_item(item: ScheduleItem) -> dict:
         }
 
     return data
+
+
+@schedule_bp.route("/", methods=["DELETE"])
+@jwt_required()
+@require_tenant
+def delete_schedule():
+    """
+    Aluno deleta o cronograma atual para poder criar um novo.
+    Soft delete — mantém histórico de check-ins.
+    """
+    tenant = get_current_tenant()
+    user_id = get_jwt_identity()
+
+    course_id = (request.get_json(force=True) or {}).get("course_id") or                 request.args.get("course_id")
+    if not course_id:
+        return jsonify({"error": "course_id obrigatório"}), 400
+
+    schedules = StudySchedule.query.filter_by(
+        user_id=user_id,
+        course_id=course_id,
+        tenant_id=tenant.id,
+        is_deleted=False,
+    ).all()
+
+    for s in schedules:
+        # Soft delete dos itens
+        ScheduleItem.query.filter_by(
+            schedule_id=s.id,
+            is_deleted=False,
+        ).update({"is_deleted": True})
+        s.is_deleted = True
+
+    db.session.commit()
+
+    return jsonify({
+        "message": f"{len(schedules)} cronograma(s) removido(s).",
+        "deleted": len(schedules),
+    }), 200
