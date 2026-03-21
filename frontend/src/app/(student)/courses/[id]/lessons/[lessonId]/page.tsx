@@ -290,9 +290,21 @@ function VideoPlayer({ url }: { url: string }) {
   const isVimeo = url.includes("vimeo.com");
 
   if (isYoutube) {
-    const videoId = url.includes("youtu.be")
-      ? url.split("/").pop()
-      : url.split("v=")[1]?.split("&")[0];
+    // Extrai videoId de qualquer formato YouTube:
+    // https://youtu.be/ID?si=xxx  →  ID
+    // https://youtube.com/watch?v=ID&...  →  ID
+    // https://youtube.com/embed/ID  →  ID
+    let videoId = "";
+    try {
+      const u = new URL(url);
+      if (u.hostname === "youtu.be") {
+        videoId = u.pathname.slice(1).split("?")[0]; // remove ?si= etc
+      } else {
+        videoId = u.searchParams.get("v") || u.pathname.split("/").pop() || "";
+      }
+    } catch {
+      videoId = url.split("/").pop()?.split("?")[0] || "";
+    }
     return (
       <div className="relative pb-[56.25%] h-0">
         <iframe

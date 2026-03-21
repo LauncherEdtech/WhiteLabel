@@ -28,7 +28,6 @@ function resolveTenantSlug(): string {
 
     // ALB ou localhost — lê do cookie (setado pelo proxy.ts via URL)
     const isALB = hostname.includes(".elb.amazonaws.com");
-    const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
     if (isALB || isLocal) {
         const cookieSlug = Cookies.get("tenant_slug");
         if (cookieSlug) return cookieSlug;

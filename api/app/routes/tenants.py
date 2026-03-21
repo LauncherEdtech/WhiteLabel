@@ -163,3 +163,31 @@ def notify_students():
         )
 
     return jsonify({"message": f"Notificação enviada para {len(students)} aluno(s).", "recipients": len(students)}), 200
+
+
+@tenants_bp.route("/by-slug/<string:slug>", methods=["GET"])
+def get_tenant_by_slug(slug: str):
+    """
+    Retorna dados públicos do tenant pelo slug.
+    Usado pelo frontend para carregar branding sem autenticação.
+    """
+    tenant = Tenant.query.filter_by(
+        slug=slug.strip().lower()[:100],
+        is_deleted=False,
+        is_active=True,
+    ).first()
+
+    if not tenant:
+        return jsonify({"error": "not_found"}), 404
+
+    return jsonify({
+        "tenant": {
+            "id": tenant.id,
+            "name": tenant.name,
+            "slug": tenant.slug,
+            "plan": tenant.plan,
+            "features": tenant.features or {},
+            "branding": tenant.branding or {},
+            "custom_domain": tenant.custom_domain,
+        }
+    }), 200

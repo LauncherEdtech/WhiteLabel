@@ -1,431 +1,447 @@
 // frontend/src/app/(student)/schedule/page.tsx
 "use client";
 
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { coursesApi } from "@/lib/api/courses";
-import { useSchedule, useGenerateSchedule, useCheckinItem } from "@/lib/hooks/useSchedule";
+import { useState, useEffect } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { scheduleApi } from "@/lib/api/schedule";
+import { apiClient } from "@/lib/api/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils/cn";
-import {
-    Calendar, CheckCircle2, XCircle, BookOpen,
-    HelpCircle, RotateCcw, Zap, Clock,
-    ChevronDown, ChevronUp, Play,
-} from "lucide-react";
-import type { ScheduleDay, ScheduleItem } from "@/types/api";
 import { useToast } from "@/components/ui/toaster";
+import {
+  Calendar, CheckCircle2, Clock, BookOpen,
+  HelpCircle, RefreshCw, ChevronRight, Sparkles
+} from "lucide-react";
 
-export default function SchedulePage() {
-    const toast = useToast();
-    const [selectedCourseId, setSelectedCourseId] = useState<string>("");
-    const [expandedDays, setExpandedDays] = useState<Set<string>>(new Set());
+const DAYS = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
 
-    const { data: courses } = useQuery({
-        queryKey: ["courses"],
-        queryFn: () => coursesApi.list(),
-    });
+// ── Wizard de configuração ────────────────────────────────────────────────────
+function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerated: () => void }) {
+  const [step, setStep] = useState(1);
+  const [days, setDays] = useState([0, 1, 2, 3, 4]);
+  const [hours, setHours] = useState(2);
+  const [startTime, setStartTime] = useState("19:00");
+  const toast = useToast();
+  const queryClient = useQueryClient();
 
-    // Seleciona o primeiro curso automaticamente
-    const courseId = selectedCourseId || courses?.[0]?.id || "";
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      await scheduleApi.updateAvailability({ days, hours_per_day: hours, preferred_start_time: startTime });
+      await scheduleApi.generate(courseId);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["schedule", courseId] });
+      toast.success("Cronograma criado!", "Seu plano de estudos personalizado está pronto.");
+      onGenerated();
+    },
+    onError: () => toast.error("Erro ao gerar cronograma"),
+  });
 
-    const {
-        data: scheduleData,
-        isLoading,
-        refetch,
-    } = useSchedule(courseId, 14);
+  const toggleDay = (d: number) => {
+    setDays(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d].sort());
+  };
 
-    const generateSchedule = useGenerateSchedule();
-    const checkinItem = useCheckinItem();
-
-    const handleGenerate = async () => {
-        if (!courseId) return;
-        try {
-            await generateSchedule.mutateAsync({ courseId });
-            toast.success("Cronograma gerado!", "Seu plano de estudos está pronto.");
-            refetch();
-        } catch {
-            toast.error("Erro ao gerar cronograma");
-        }
-    };
-
-    const handleCheckin = async (
-        itemId: string,
-        completed: boolean,
-        difficulty?: "easy" | "ok" | "hard"
-    ) => {
-        try {
-            await checkinItem.mutateAsync({ itemId, completed, perceived_difficulty: difficulty });
-            toast.success(completed ? "Concluído! ✓" : "Marcado como não feito");
-        } catch {
-            toast.error("Erro ao registrar check-in");
-        }
-    };
-
-    const toggleDay = (date: string) => {
-        setExpandedDays((prev) => {
-            const next = new Set(prev);
-            next.has(date) ? next.delete(date) : next.add(date);
-            return next;
-        });
-    };
-
-    const days: ScheduleDay[] = scheduleData?.days || [];
-    const schedule = scheduleData?.schedule;
-
-    return (
-        <div className="space-y-6 animate-fade-in max-w-3xl mx-auto">
-            {/* Header */}
-            <div className="flex items-center justify-between">
-                <div>
-                    <h1 className="font-display text-2xl font-bold text-foreground">
-                        Cronograma
-                    </h1>
-                    <p className="text-sm text-muted-foreground mt-0.5">
-                        Seu plano de estudos inteligente
-                    </p>
-                </div>
-                {courseId && (
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={handleGenerate}
-                        loading={generateSchedule.isPending}
-                    >
-                        <RotateCcw className="h-4 w-4" />
-                        {schedule ? "Reorganizar" : "Gerar"}
-                    </Button>
-                )}
-            </div>
-
-            {/* Seletor de curso */}
-            {courses && courses.length > 1 && (
-                <div className="flex gap-2 overflow-x-auto pb-1">
-                    {courses.map((course) => (
-                        <button
-                            key={course.id}
-                            onClick={() => setSelectedCourseId(course.id)}
-                            className={cn(
-                                "px-3 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap border transition-all",
-                                courseId === course.id
-                                    ? "bg-primary text-primary-foreground border-primary"
-                                    : "border-border text-muted-foreground hover:border-primary"
-                            )}
-                        >
-                            {course.name}
-                        </button>
-                    ))}
-                </div>
-            )}
-
-            {/* Stats do cronograma */}
-            {schedule && (
-                <div className="grid grid-cols-3 gap-3">
-                    <Card>
-                        <CardContent className="p-4 text-center">
-                            <p className="font-display text-2xl font-bold text-foreground">
-                                {schedule.stats.done_items}
-                            </p>
-                            <p className="text-xs text-muted-foreground">Concluídos</p>
-                        </CardContent>
-                    </Card>
-                    <Card>
-                        <CardContent className="p-4 text-center">
-                            <p className="font-display text-2xl font-bold text-warning">
-                                {schedule.stats.overdue_items}
-                            </p>
-                            <p className="text-xs text-muted-foreground">Atrasados</p>
-                        </CardContent>
-                    </Card>
-                    <Card>
-                        <CardContent className="p-4 text-center">
-                            <p className="font-display text-2xl font-bold text-primary">
-                                {schedule.stats.completion_rate}%
-                            </p>
-                            <p className="text-xs text-muted-foreground">Progresso</p>
-                        </CardContent>
-                    </Card>
-                </div>
-            )}
-
-            {/* Estado vazio */}
-            {!isLoading && !schedule && courseId && (
-                <Card>
-                    <CardContent className="py-16 flex flex-col items-center gap-4">
-                        <div className="h-16 w-16 rounded-2xl bg-primary/10 flex items-center justify-center">
-                            <Zap className="h-8 w-8 text-primary" />
-                        </div>
-                        <div className="text-center">
-                            <p className="font-semibold text-foreground">
-                                Nenhum cronograma ainda
-                            </p>
-                            <p className="text-sm text-muted-foreground mt-1 max-w-xs">
-                                Gere seu cronograma inteligente baseado na sua disponibilidade e pontos fracos.
-                            </p>
-                        </div>
-                        <Button onClick={handleGenerate} loading={generateSchedule.isPending}>
-                            <Zap className="h-4 w-4" />
-                            Gerar cronograma
-                        </Button>
-                    </CardContent>
-                </Card>
-            )}
-
-            {/* Lista de dias */}
-            {isLoading ? (
-                <div className="space-y-3">
-                    {[...Array(3)].map((_, i) => (
-                        <div key={i} className="h-24 bg-muted rounded-xl animate-pulse" />
-                    ))}
-                </div>
-            ) : (
-                <div className="space-y-3">
-                    {days.map((day) => (
-                        <DayCard
-                            key={day.date}
-                            day={day}
-                            isExpanded={expandedDays.has(day.date) || day.is_today}
-                            onToggle={() => toggleDay(day.date)}
-                            onCheckin={handleCheckin}
-                            isCheckinLoading={checkinItem.isPending}
-                        />
-                    ))}
-                </div>
-            )}
-
-            {/* Nota da IA */}
-            {schedule?.ai_notes && (
-                <Card className="border-primary/20 bg-primary/5">
-                    <CardContent className="p-4">
-                        <p className="text-xs font-semibold text-primary mb-1">
-                            💡 Nota do seu cronograma
-                        </p>
-                        <p className="text-xs text-foreground leading-relaxed">
-                            {schedule.ai_notes}
-                        </p>
-                    </CardContent>
-                </Card>
-            )}
+  return (
+    <div className="max-w-lg mx-auto space-y-6 animate-fade-in">
+      <div className="text-center space-y-2">
+        <div className="h-16 w-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto">
+          <Sparkles className="h-8 w-8 text-primary" />
         </div>
-    );
-}
+        <h1 className="font-display text-2xl font-bold text-foreground">Cronograma Inteligente</h1>
+        <p className="text-muted-foreground text-sm">
+          Responda 3 perguntas rápidas para criar seu plano personalizado
+        </p>
+      </div>
 
-// ── Sub-componentes ────────────────────────────────────────────────────────────
+      {/* Progress steps */}
+      <div className="flex items-center gap-2 justify-center">
+        {[1, 2, 3].map(s => (
+          <div key={s} className={cn(
+            "h-2 rounded-full transition-all",
+            s <= step ? "bg-primary w-8" : "bg-muted w-4"
+          )} />
+        ))}
+      </div>
 
-function DayCard({
-    day,
-    isExpanded,
-    onToggle,
-    onCheckin,
-    isCheckinLoading,
-}: {
-    day: ScheduleDay;
-    isExpanded: boolean;
-    onToggle: () => void;
-    onCheckin: (id: string, completed: boolean, diff?: "easy" | "ok" | "hard") => void;
-    isCheckinLoading: boolean;
-}) {
-    const dateObj = new Date(day.date + "T12:00:00");
-    const dayName = dateObj.toLocaleDateString("pt-BR", { weekday: "long" });
-    const dateStr = dateObj.toLocaleDateString("pt-BR", {
-        day: "2-digit",
-        month: "short",
-    });
-
-    return (
-        <Card
-            className={cn(
-                "transition-all duration-200",
-                day.is_today && "border-primary/50 shadow-sm",
-                day.is_past && !day.is_today && "opacity-70"
-            )}
-        >
-            {/* Header do dia */}
-            <button
-                onClick={onToggle}
-                className="w-full p-4 flex items-center gap-4 text-left"
-            >
-                <div
-                    className={cn(
-                        "h-12 w-12 rounded-xl flex flex-col items-center justify-center shrink-0",
-                        day.is_today ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
-                    )}
+      {step === 1 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">📅 Quais dias você pode estudar?</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-7 gap-2">
+              {DAYS.map((day, i) => (
+                <button
+                  key={i}
+                  onClick={() => toggleDay(i)}
+                  className={cn(
+                    "p-2 rounded-lg text-xs font-medium transition-all border-2",
+                    days.includes(i)
+                      ? "bg-primary text-primary-foreground border-primary"
+                      : "bg-background border-border text-muted-foreground hover:border-primary/50"
+                  )}
                 >
-                    <span className="text-xs font-medium capitalize">
-                        {dayName.slice(0, 3)}
-                    </span>
-                    <span className="font-display text-lg font-bold leading-none">
-                        {dateObj.getDate()}
-                    </span>
-                </div>
-
-                <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                        <p className="text-sm font-semibold text-foreground capitalize">
-                            {day.is_today ? "Hoje" : dayName}
-                        </p>
-                        {day.is_today && (
-                            <span className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded-md font-medium">
-                                hoje
-                            </span>
-                        )}
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                        {day.pending_count} pendente{day.pending_count !== 1 ? "s" : ""} •{" "}
-                        {day.total_minutes}min
-                    </p>
-                </div>
-
-                {/* Progress ring */}
-                <div className="relative h-10 w-10 shrink-0">
-                    <svg className="h-10 w-10 -rotate-90" viewBox="0 0 40 40">
-                        <circle cx="20" cy="20" r="16" fill="none" stroke="hsl(var(--muted))" strokeWidth="4" />
-                        <circle
-                            cx="20" cy="20" r="16" fill="none"
-                            stroke="hsl(var(--primary))" strokeWidth="4"
-                            strokeLinecap="round"
-                            strokeDasharray={`${2 * Math.PI * 16}`}
-                            strokeDashoffset={`${2 * Math.PI * 16 * (1 - day.completion_rate / 100)}`}
-                            className="transition-all duration-500"
-                        />
-                    </svg>
-                    <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-foreground">
-                        {Math.round(day.completion_rate)}%
-                    </span>
-                </div>
-
-                {isExpanded ? (
-                    <ChevronUp className="h-4 w-4 text-muted-foreground shrink-0" />
-                ) : (
-                    <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
-                )}
-            </button>
-
-            {/* Items do dia */}
-            {isExpanded && day.items.length > 0 && (
-                <div className="px-4 pb-4 space-y-2 border-t border-border pt-3">
-                    {day.items.map((item) => (
-                        <ScheduleItemRow
-                            key={item.id}
-                            item={item}
-                            onCheckin={onCheckin}
-                            isLoading={isCheckinLoading}
-                        />
-                    ))}
-                </div>
-            )}
+                  {day}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground text-center">
+              {days.length} dias selecionados
+            </p>
+            <Button className="w-full" onClick={() => setStep(2)} disabled={days.length === 0}>
+              Próximo <ChevronRight className="h-4 w-4" />
+            </Button>
+          </CardContent>
         </Card>
-    );
+      )}
+
+      {step === 2 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">⏱️ Quantas horas por dia?</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-4 gap-3">
+              {[1, 2, 3, 4, 5, 6, 8, 10].map(h => (
+                <button
+                  key={h}
+                  onClick={() => setHours(h)}
+                  className={cn(
+                    "p-3 rounded-xl text-sm font-bold transition-all border-2",
+                    hours === h
+                      ? "bg-primary text-primary-foreground border-primary"
+                      : "bg-background border-border hover:border-primary/50"
+                  )}
+                >
+                  {h}h
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground text-center">
+              Total: {days.length * hours}h/semana
+            </p>
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1" onClick={() => setStep(1)}>Voltar</Button>
+              <Button className="flex-1" onClick={() => setStep(3)}>
+                Próximo <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {step === 3 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">🌅 Qual seu horário preferido?</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { label: "🌅 Manhã", time: "07:00" },
+                { label: "☀️ Tarde", time: "13:00" },
+                { label: "🌆 Fim de tarde", time: "17:00" },
+                { label: "🌙 Noite", time: "19:00" },
+                { label: "🌛 Madrugada", time: "22:00" },
+                { label: "🕐 Personalizado", time: startTime },
+              ].map(({ label, time }) => (
+                <button
+                  key={time}
+                  onClick={() => setStartTime(time)}
+                  className={cn(
+                    "p-3 rounded-xl text-sm font-medium transition-all border-2 text-left",
+                    startTime === time
+                      ? "bg-primary text-primary-foreground border-primary"
+                      : "bg-background border-border hover:border-primary/50"
+                  )}
+                >
+                  {label}
+                  <span className="block text-xs opacity-70">{time}</span>
+                </button>
+              ))}
+            </div>
+
+            {/* Resumo */}
+            <div className="p-3 rounded-lg bg-muted/50 space-y-1">
+              <p className="text-xs font-medium text-foreground">📋 Resumo do seu plano:</p>
+              <p className="text-xs text-muted-foreground">
+                • {days.map(d => DAYS[d]).join(", ")}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                • {hours}h por dia · {days.length * hours}h por semana
+              </p>
+              <p className="text-xs text-muted-foreground">
+                • Início às {startTime}
+              </p>
+            </div>
+
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1" onClick={() => setStep(2)}>Voltar</Button>
+              <Button
+                className="flex-1"
+                loading={saveMutation.isPending}
+                onClick={() => saveMutation.mutate()}
+              >
+                <Sparkles className="h-4 w-4" />
+                Gerar Cronograma
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
 }
 
-function ScheduleItemRow({
-    item,
-    onCheckin,
-    isLoading,
-}: {
-    item: ScheduleItem;
-    onCheckin: (id: string, completed: boolean, diff?: "easy" | "ok" | "hard") => void;
-    isLoading: boolean;
-}) {
-    const [showDifficultyPicker, setShowDifficultyPicker] = useState(false);
+// ── Visualização do cronograma ────────────────────────────────────────────────
+function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () => void }) {
+  const toast = useToast();
+  const queryClient = useQueryClient();
 
-    const typeConfig = {
-        lesson: { icon: <BookOpen className="h-4 w-4" />, color: "text-primary bg-primary/10" },
-        questions: { icon: <HelpCircle className="h-4 w-4" />, color: "text-secondary bg-secondary/10" },
-        review: { icon: <RotateCcw className="h-4 w-4" />, color: "text-warning bg-warning/10" },
-        simulado: { icon: <Play className="h-4 w-4" />, color: "text-destructive bg-destructive/10" },
-    };
+  const { data, isLoading } = useQuery({
+    queryKey: ["schedule", courseId],
+    queryFn: () => scheduleApi.get(courseId, 14),
+    enabled: !!courseId,
+  });
 
-    const config = typeConfig[item.type] || typeConfig.lesson;
+  const checkinMutation = useMutation({
+    mutationFn: ({ itemId, completed }: { itemId: string; completed: boolean }) =>
+      scheduleApi.checkin(itemId, { completed }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["schedule", courseId] }),
+    onError: () => toast.error("Erro ao marcar item"),
+  });
 
-    if (item.status === "done") {
-        return (
-            <div className="flex items-center gap-3 p-3 rounded-lg bg-success/5 border border-success/20">
-                <CheckCircle2 className="h-5 w-5 text-success shrink-0" />
-                <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">
-                        {item.lesson?.title || item.subject?.name || "Item concluído"}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                        {item.estimated_minutes}min
-                    </p>
-                </div>
-            </div>
-        );
-    }
+  const reorganizeMutation = useMutation({
+    mutationFn: () => apiClient.post("/schedule/reorganize", { course_id: courseId }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["schedule", courseId] });
+      toast.success("Cronograma reorganizado!");
+    },
+  });
 
-    return (
-        <div className="space-y-2">
-            <div className="flex items-center gap-3 p-3 rounded-lg border border-border hover:border-primary/30 transition-colors">
-                <div className={cn("h-8 w-8 rounded-lg flex items-center justify-center shrink-0", config.color)}>
-                    {config.icon}
-                </div>
+  const deleteMutation = useMutation({
+    mutationFn: () => scheduleApi.delete(courseId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["schedule", courseId] });
+      queryClient.invalidateQueries({ queryKey: ["schedule-check", courseId] });
+      toast.success("Cronograma removido!", "Você pode criar um novo agora.");
+      onDelete?.();
+    },
+    onError: () => toast.error("Erro ao deletar cronograma"),
+  });
 
-                <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">
-                        {item.lesson?.title || item.subject?.name || "Item de estudo"}
-                    </p>
-                    <div className="flex items-center gap-2">
-                        <p className="text-xs text-muted-foreground">
-                            <Clock className="h-3 w-3 inline mr-0.5" />
-                            {item.estimated_minutes}min
-                        </p>
-                        {item.subject && (
-                            <span
-                                className="text-xs px-1.5 py-0.5 rounded text-white"
-                                style={{ backgroundColor: item.subject.color }}
-                            >
-                                {item.subject.name}
-                            </span>
-                        )}
-                    </div>
-                </div>
+  if (isLoading) return (
+    <div className="space-y-4">
+      {[...Array(3)].map((_, i) => (
+        <div key={i} className="h-32 bg-muted rounded-xl animate-pulse" />
+      ))}
+    </div>
+  );
 
-                <div className="flex items-center gap-1.5 shrink-0">
-                    <button
-                        onClick={() => setShowDifficultyPicker(!showDifficultyPicker)}
-                        disabled={isLoading}
-                        className="h-8 w-8 rounded-lg flex items-center justify-center text-success hover:bg-success/10 transition-colors disabled:opacity-50"
-                        title="Marcar como concluído"
-                    >
-                        <CheckCircle2 className="h-4 w-4" />
-                    </button>
-                    <button
-                        onClick={() => onCheckin(item.id, false)}
-                        disabled={isLoading}
-                        className="h-8 w-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"
-                        title="Não fiz"
-                    >
-                        <XCircle className="h-4 w-4" />
-                    </button>
-                </div>
-            </div>
+  const days = data?.days || [];
+  const stats = data?.stats;
 
-            {/* Seletor de dificuldade */}
-            {showDifficultyPicker && (
-                <div className="flex gap-2 pl-11 animate-fade-in">
-                    <p className="text-xs text-muted-foreground self-center">
-                        Dificuldade:
-                    </p>
-                    {(["easy", "ok", "hard"] as const).map((d) => (
-                        <button
-                            key={d}
-                            onClick={() => {
-                                onCheckin(item.id, true, d);
-                                setShowDifficultyPicker(false);
-                            }}
-                            className={cn(
-                                "text-xs px-2.5 py-1 rounded-lg border font-medium transition-all",
-                                d === "easy" && "border-success/30 text-success hover:bg-success/10",
-                                d === "ok" && "border-warning/30 text-warning hover:bg-warning/10",
-                                d === "hard" && "border-destructive/30 text-destructive hover:bg-destructive/10"
-                            )}
-                        >
-                            {d === "easy" ? "Fácil" : d === "ok" ? "Normal" : "Difícil"}
-                        </button>
-                    ))}
-                </div>
-            )}
+  return (
+    <div className="space-y-6 animate-fade-in">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="font-display text-2xl font-bold text-foreground">Cronograma</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Seu plano de estudos adaptativo
+          </p>
         </div>
+        <div className="flex gap-2">
+          <Button
+            variant="outline" size="sm"
+            onClick={() => reorganizeMutation.mutate()}
+            loading={reorganizeMutation.isPending}
+          >
+            <RefreshCw className="h-4 w-4" />
+            Reorganizar
+          </Button>
+          <Button
+            variant="ghost" size="sm"
+            onClick={() => {
+              if (confirm("Deletar o cronograma atual? Você poderá criar um novo.")) {
+                deleteMutation.mutate();
+              }
+            }}
+            loading={deleteMutation.isPending}
+            className="text-destructive hover:text-destructive"
+          >
+            Deletar
+          </Button>
+        </div>
+      </div>
+
+      {/* Stats */}
+      {stats && (
+        <div className="grid grid-cols-3 gap-4">
+          <Card>
+            <CardContent className="p-4 text-center">
+              <p className="text-2xl font-bold text-primary">{stats.completion_rate ?? 0}%</p>
+              <p className="text-xs text-muted-foreground">Conclusão</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4 text-center">
+              <p className="text-2xl font-bold text-foreground">{stats.pending_today ?? 0}</p>
+              <p className="text-xs text-muted-foreground">Pendentes hoje</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4 text-center">
+              <p className="text-2xl font-bold text-success">{stats.completed_items ?? 0}</p>
+              <p className="text-xs text-muted-foreground">Concluídos</p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Dias */}
+      {days.length === 0 ? (
+        <div className="text-center py-12">
+          <Calendar className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
+          <p className="text-muted-foreground">Nenhum item no cronograma.</p>
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {days.map((day: any) => (
+            <div key={day.date}>
+              <div className="flex items-center gap-3 mb-3">
+                <h3 className={cn(
+                  "font-display font-semibold text-sm",
+                  day.is_today ? "text-primary" : "text-muted-foreground"
+                )}>
+                  {day.is_today ? "📌 Hoje" : new Date(day.date + "T12:00:00").toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "short" })}
+                </h3>
+                {day.completion_rate > 0 && (
+                  <Badge variant={day.completion_rate === 100 ? "success" : "outline"} className="text-xs">
+                    {day.completion_rate}%
+                  </Badge>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                {day.items?.map((item: any) => (
+                  <div
+                    key={item.id}
+                    className={cn(
+                      "flex items-center gap-3 p-3 rounded-xl border transition-all",
+                      item.status === "completed"
+                        ? "bg-success/5 border-success/20 opacity-60"
+                        : "bg-card border-border hover:border-primary/30"
+                    )}
+                  >
+                    <button
+                      onClick={() => checkinMutation.mutate({
+                        itemId: item.id,
+                        completed: item.status !== "completed"
+                      })}
+                      className={cn(
+                        "h-6 w-6 rounded-full border-2 flex items-center justify-center transition-all shrink-0",
+                        item.status === "completed"
+                          ? "border-success bg-success"
+                          : "border-border hover:border-primary"
+                      )}
+                    >
+                      {item.status === "completed" && (
+                        <CheckCircle2 className="h-4 w-4 text-white" />
+                      )}
+                    </button>
+
+                    <div className={cn(
+                      "h-8 w-8 rounded-lg flex items-center justify-center shrink-0",
+                      item.item_type === "lesson" ? "bg-primary/10" : "bg-warning/10"
+                    )}>
+                      {item.item_type === "lesson"
+                        ? <BookOpen className="h-4 w-4 text-primary" />
+                        : <HelpCircle className="h-4 w-4 text-warning" />
+                      }
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <p className={cn(
+                        "text-sm font-medium truncate",
+                        item.status === "completed" && "line-through text-muted-foreground"
+                      )}>
+                        {item.lesson?.title || item.subject?.name || (item.item_type === "questions" ? "Praticar questões" : "Estudar")}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {item.item_type === "lesson" ? "📖 Aula" : "❓ Questões"} · {item.estimated_minutes}min
+                        {item.priority_reason && ` · ${item.priority_reason}`}
+                      </p>
+                    </div>
+
+                    <Clock className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Página principal ──────────────────────────────────────────────────────────
+export default function SchedulePage() {
+  const [courseId, setCourseId] = useState<string | null>(null);
+  const [hasSchedule, setHasSchedule] = useState<boolean | null>(null);
+  const queryClient = useQueryClient();
+
+  // Carrega cursos matriculados
+  const { data: coursesData } = useQuery({
+    queryKey: ["courses"],
+    queryFn: () => apiClient.get("/courses/").then(r => r.data),
+  });
+
+  const courses = coursesData?.courses || [];
+
+  // Seleciona primeiro curso automaticamente
+  useEffect(() => {
+    if (courses.length > 0 && !courseId) {
+      setCourseId(courses[0].id);
+    }
+  }, [courses, courseId]);
+
+  // Verifica se já tem cronograma
+  useQuery({
+    queryKey: ["schedule-check", courseId],
+    queryFn: async () => {
+      if (!courseId) return null;
+      const data = await scheduleApi.get(courseId, 7);
+      setHasSchedule(!!data?.schedule);
+      return data;
+    },
+    enabled: !!courseId,
+  });
+
+  if (!courseId || hasSchedule === null) {
+    return (
+      <div className="flex h-64 items-center justify-center">
+        <div className="h-8 w-8 rounded-full border-4 border-primary border-t-transparent animate-spin" />
+      </div>
     );
+  }
+
+  if (!hasSchedule) {
+    return (
+      <ScheduleWizard
+        courseId={courseId}
+        onGenerated={() => {
+          setHasSchedule(true);
+          queryClient.invalidateQueries({ queryKey: ["schedule", courseId] });
+        }}
+      />
+    );
+  }
+
+  return <ScheduleView
+    courseId={courseId}
+    onDelete={() => setHasSchedule(false)}
+  />;
 }

@@ -31,11 +31,16 @@ export default function SimuladoPage() {
 
     const timeLimit = simulado?.time_limit_minutes ? simulado.time_limit_minutes * 60 : 3600;
 
-    const { seconds } = useTimer({
+    const { seconds, start: startTimer } = useTimer({
         initialSeconds: timeLimit,
-        autoStart: started,
+        autoStart: false,
         onExpire: () => handleFinish(true),
     });
+
+    // Inicia o timer quando o simulado começa
+    useEffect(() => {
+        if (started) startTimer();
+    }, [started]);
 
     const handleStart = async () => {
         if (!id) return;
