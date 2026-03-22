@@ -14,14 +14,14 @@ from app.models.course import (
     Module,
     Lesson,
     LessonProgress,
-    CourseEnrollment
+    CourseEnrollment,
 )
 from app.models.user import User, UserRole
 from app.middleware.tenant import (
     resolve_tenant,
     require_tenant,
     require_feature,
-    get_current_tenant
+    get_current_tenant,
 )
 
 courses_bp = Blueprint("courses", __name__)
@@ -789,20 +789,30 @@ def update_lesson(lesson_id: str):
     if not lesson:
         return jsonify({"error": "not_found"}), 404
 
+    # ✅ FIX 2: guarda o JSON bruto ANTES de passar pelo marshmallow
+    # Marshmallow aplica load_default=None em campos ausentes, tornando impossível
+    # distinguir "não enviado" de "enviado como null". O raw_json resolve isso.
+    raw_json = request.get_json(force=True) or {}
+
     schema = LessonSchema()
     try:
-        data = schema.load(request.get_json(force=True) or {})
+        data = schema.load(raw_json)
     except ValidationError as e:
         return jsonify({"error": "validation_error", "details": e.messages}), 400
 
     lesson.title = data["title"]
     lesson.description = data.get("description", lesson.description)
-    lesson.video_url = data.get("video_url", lesson.video_url)
-    lesson.duration_minutes = data["duration_minutes"]
-    lesson.material_url = data.get("material_url", lesson.material_url)
-    lesson.order = data["order"]
+    lesson.duration_minutes = data.get("duration_minutes", lesson.duration_minutes)
+    lesson.order = data.get("order", lesson.order)
     lesson.is_published = data["is_published"]
-    lesson.is_free_preview = data["is_free_preview"]
+    lesson.is_free_preview = data.get("is_free_preview", lesson.is_free_preview)
+    lesson.material_url = data.get("material_url", lesson.material_url)
+
+    # ✅ FIX 2: só atualiza video_url se foi explicitamente enviado no request
+    # Sem isso, toggleLesson (que não manda video_url) apagava a URL salva
+    if "video_url" in raw_json:
+        lesson.video_url = data.get("video_url")
+
     db.session.commit()
 
     return (
@@ -846,7 +856,9 @@ def _serialize_lesson(lesson: Lesson, progress=None, full: bool = False) -> dict
         "order": lesson.order,
         "has_ai_summary": bool(lesson.ai_summary),
         "ai_topics": lesson.ai_topics or [],
-        # Progresso do aluno nesta aula
+        # ✅ FIX 1: video_url agora sempre presente (mesmo na listagem)
+        # Antes ficava só no bloco `full=True`, então toggleLesson não tinha acesso
+        "video_url": lesson.video_url,
         "progress": (
             {
                 "status": progress.status if progress else "not_started",
@@ -858,11 +870,10 @@ def _serialize_lesson(lesson: Lesson, progress=None, full: bool = False) -> dict
         ),
     }
     if full:
-        # Campos extras apenas no GET individual (não na listagem)
         data.update(
             {
                 "description": lesson.description,
-                "video_url": lesson.video_url,
+                # video_url já está no dict base — não duplicar
                 "material_url": lesson.material_url,
                 "ai_summary": lesson.ai_summary,
             }

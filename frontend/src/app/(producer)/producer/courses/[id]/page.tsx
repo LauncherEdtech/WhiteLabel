@@ -78,15 +78,36 @@ export default function ProducerCourseDetailPage() {
   });
 
   const toggleLesson = useMutation({
-    mutationFn: ({ lessonId, is_published, title }: { lessonId: string; is_published: boolean; title: string }) =>
-      apiClient.put(`/courses/lessons/${lessonId}`, {
-        title,
-        is_published,
-        duration_minutes: 0,
-        order: 0,
-        is_free_preview: false,
-      }).then((r) => r.data),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) }),
+    mutationFn: ({
+      lessonId,
+      is_published,
+      title,
+      video_url,
+      duration_minutes,
+      order,
+      is_free_preview,
+    }: {
+      lessonId: string;
+      is_published: boolean;
+      title: string;
+      video_url?: string | null;
+      duration_minutes?: number;
+      order?: number;
+      is_free_preview?: boolean;
+    }) =>
+      apiClient
+        .put(`/courses/lessons/${lessonId}`, {
+          title,
+          is_published,
+          // ✅ FIX: passa os valores reais da aula, não hardcoded 0/false
+          video_url: video_url ?? null,
+          duration_minutes: duration_minutes ?? 0,
+          order: order ?? 0,
+          is_free_preview: is_free_preview ?? false,
+        })
+        .then((r) => r.data),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) }),
   });
 
   if (isLoading) return <Skeleton className="h-64 rounded-xl animate-pulse" />;
@@ -228,6 +249,10 @@ export default function ProducerCourseDetailPage() {
                                   lessonId: lesson.id,
                                   title: lesson.title,
                                   is_published: !lesson.is_published,
+                                  video_url: lesson.video_url,
+                                  duration_minutes: lesson.duration_minutes,
+                                  order: lesson.order ?? 0,
+                                  is_free_preview: lesson.is_free_preview ?? false,
                                 })}
                                 title={lesson.is_published ? "Despublicar" : "Publicar"}
                                 className="shrink-0"
