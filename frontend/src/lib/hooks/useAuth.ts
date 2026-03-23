@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import Cookies from "js-cookie";
 import { authApi } from "@/lib/api/auth";
 import { useAuthStore } from "@/lib/stores/authStore";
+import { useTenantStore } from "@/lib/stores/tenantStore";
+import { applyBrandingCssVars } from "@/components/TenantBrandingLoader";
 
 export const AUTH_KEYS = {
     me: ["auth", "me"] as const,
@@ -12,23 +14,41 @@ export const AUTH_KEYS = {
 
 export function useMe() {
     const { setUser } = useAuthStore();
+    const { tenant, setTenant } = useTenantStore();
 
     return useQuery({
         queryKey: AUTH_KEYS.me,
         queryFn: async () => {
             const user = await authApi.me();
             setUser(user);
+
+            // Se o tenant ainda não está no store, busca agora
+            if (!tenant?.id) {
+                const slug = Cookies.get("tenant_slug") || "concurso-demo";
+                try {
+                    const res = await fetch(`/api/v1/tenants/by-slug/${slug}`, {
+                        headers: { "X-Tenant-Slug": slug },
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data?.tenant?.id) {
+                            setTenant(data.tenant);
+                            applyBrandingCssVars(data.tenant.branding || {});
+                        }
+                    }
+                } catch { /* silencioso */ }
+            }
             return user;
         },
-        // Só busca se tiver token
         enabled: !!Cookies.get("access_token"),
-        staleTime: 5 * 60 * 1000, // 5 minutos
+        staleTime: 5 * 60 * 1000,
         retry: false,
     });
 }
 
 export function useLogin() {
     const { setUser, setTokens } = useAuthStore();
+    const { setTenant } = useTenantStore();
     const queryClient = useQueryClient();
     const router = useRouter();
 
@@ -46,7 +66,12 @@ export function useLogin() {
             setUser(data.user);
             queryClient.setQueryData(AUTH_KEYS.me, data.user);
 
-            // Redireciona conforme o papel
+            // Popula o tenantStore com os dados que vieram no login
+            if ((data as any).tenant?.id) {
+                setTenant((data as any).tenant);
+                applyBrandingCssVars((data as any).tenant.branding || {});
+            }
+
             if (data.user.role === "student") {
                 router.push("/dashboard");
             } else if (
@@ -63,6 +88,7 @@ export function useLogin() {
 
 export function useLogout() {
     const { logout } = useAuthStore();
+    const { clearTenant } = useTenantStore();
     const queryClient = useQueryClient();
     const router = useRouter();
 
@@ -71,6 +97,7 @@ export function useLogout() {
         Cookies.remove("access_token");
         Cookies.remove("refresh_token");
         logout();
+        clearTenant();
         queryClient.clear();
         router.push(`/${tenantSlug}/login`);
     };

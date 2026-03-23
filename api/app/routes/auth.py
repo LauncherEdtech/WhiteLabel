@@ -12,7 +12,7 @@ from flask_jwt_extended import (
     create_refresh_token,
     jwt_required,
     get_jwt_identity,
-    get_jwt
+    get_jwt,
 )
 from marshmallow import Schema, fields, validate, ValidationError, EXCLUDE
 
@@ -22,7 +22,7 @@ from app.middleware.tenant import (
     resolve_tenant,
     require_tenant,
     require_feature,
-    get_current_tenant
+    get_current_tenant,
 )
 
 auth_bp = Blueprint("auth", __name__)
@@ -161,6 +161,15 @@ def login():
                     "name": user.name,
                     "email": user.email,
                     "role": user.role.value,
+                },
+                "tenant": {
+                    "id": tenant.id,
+                    "name": tenant.name,
+                    "slug": tenant.slug,
+                    "plan": tenant.plan,
+                    "branding": tenant.branding or {},
+                    "features": tenant.features or {},
+                    "custom_domain": tenant.custom_domain,
                 },
             }
         ),

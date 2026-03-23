@@ -137,6 +137,8 @@ def before_request():
 # ══════════════════════════════════════════════════════════════════════════════
 # COURSES
 # ══════════════════════════════════════════════════════════════════════════════
+# PATCH para api/app/routes/courses.py
+# Substitua apenas list_courses() — alunos voltam a ver só cursos matriculados
 
 
 @courses_bp.route("/", methods=["GET"])
@@ -145,44 +147,55 @@ def before_request():
 def list_courses():
     """
     Lista cursos do tenant.
-    - Produtor vê todos (ativos e inativos).
-    - Aluno vê apenas cursos ativos nos quais está matriculado.
+    - Produtor: todos os cursos (ativos e inativos) + contagem de alunos.
+    - Aluno: apenas cursos ativos nos quais está matriculado.
     """
     tenant = get_current_tenant()
     claims = get_jwt()
     user_id = get_jwt_identity()
 
     if _is_producer_or_above(claims):
-        # Produtor: todos os cursos do tenant
         courses = (
-            Course.query.filter_by(
-                tenant_id=tenant.id,
-                is_deleted=False,
-            )
+            Course.query.filter_by(tenant_id=tenant.id, is_deleted=False)
             .order_by(Course.created_at.desc())
             .all()
         )
+        result = []
+        for c in courses:
+            data = _serialize_course(c)
+            data["enrolled_count"] = CourseEnrollment.query.filter_by(
+                course_id=c.id,
+                tenant_id=tenant.id,
+                is_active=True,
+                is_deleted=False,
+            ).count()
+            result.append(data)
+        return jsonify({"courses": result}), 200
 
-        return jsonify({"courses": [_serialize_course(c) for c in courses]}), 200
+    # Aluno: apenas cursos em que está matriculado e ativos
+    enrollments = CourseEnrollment.query.filter_by(
+        tenant_id=tenant.id,
+        user_id=user_id,
+        is_active=True,
+        is_deleted=False,
+    ).all()
 
-    else:
-        # Aluno: apenas cursos em que está matriculado e ativos
-        enrollments = CourseEnrollment.query.filter_by(
-            tenant_id=tenant.id,
-            user_id=user_id,
-            is_active=True,
-            is_deleted=False,
-        ).all()
+    course_ids = [e.course_id for e in enrollments]
+    if not course_ids:
+        return jsonify({"courses": []}), 200
 
-        course_ids = [e.course_id for e in enrollments]
-        courses = Course.query.filter(
+    courses = (
+        Course.query.filter(
             Course.id.in_(course_ids),
             Course.tenant_id == tenant.id,
             Course.is_active == True,
             Course.is_deleted == False,
-        ).all()
+        )
+        .order_by(Course.name)
+        .all()
+    )
 
-        return jsonify({"courses": [_serialize_course(c) for c in courses]}), 200
+    return jsonify({"courses": [_serialize_course(c) for c in courses]}), 200
 
 
 @courses_bp.route("/", methods=["POST"])
@@ -191,8 +204,7 @@ def list_courses():
 @limiter.limit("30 per hour")
 def create_course():
     """
-    Cria um novo curso.
-    SEGURANÇA: Apenas produtor ou acima pode criar.
+    Cria um novo curso e auto-matricula todos os alunos ativos do tenant.
     """
     claims = get_jwt()
     if not _is_producer_or_above(claims):
@@ -214,6 +226,26 @@ def create_course():
         is_active=data["is_active"],
     )
     db.session.add(course)
+    db.session.flush()  # gera course.id sem commitar ainda
+
+    # Auto-matricula todos os alunos ativos do tenant no novo curso
+    students = User.query.filter_by(
+        tenant_id=tenant.id,
+        role=UserRole.STUDENT.value,
+        is_active=True,
+        is_deleted=False,
+    ).all()
+
+    for student in students:
+        db.session.add(
+            CourseEnrollment(
+                tenant_id=tenant.id,
+                course_id=course.id,
+                user_id=student.id,
+                is_active=True,
+            )
+        )
+
     db.session.commit()
 
     return (
@@ -221,6 +253,7 @@ def create_course():
             {
                 "message": "Curso criado com sucesso.",
                 "course": _serialize_course(course),
+                "auto_enrolled": len(students),
             }
         ),
         201,
@@ -243,25 +276,9 @@ def get_course(course_id: str):
     if not course:
         return jsonify({"error": "not_found", "message": "Curso não encontrado."}), 404
 
-    # Aluno só acessa cursos em que está matriculado
-    if _is_student(claims):
-        enrollment = CourseEnrollment.query.filter_by(
-            course_id=course.id,
-            user_id=user_id,
-            tenant_id=tenant.id,
-            is_active=True,
-            is_deleted=False,
-        ).first()
-        if not enrollment:
-            return (
-                jsonify(
-                    {
-                        "error": "not_enrolled",
-                        "message": "Você não está matriculado neste curso.",
-                    }
-                ),
-                403,
-            )
+    # Aluno só acessa cursos em que está
+    if _is_student(claims) and not course.is_active:
+        return jsonify({"error": "not_found", "message": "Curso não encontrado."}), 404
 
     # Busca progresso do aluno para incluir na resposta
     progress_map = {}
@@ -652,6 +669,49 @@ def create_lesson(module_id: str):
             }
         ),
         201,
+    )
+
+
+@courses_bp.route("/modules/<string:module_id>", methods=["PUT"])
+@jwt_required()
+@require_tenant
+def update_module(module_id: str):
+    """Atualiza módulo. Apenas produtor."""
+    claims = get_jwt()
+    if not _is_producer_or_above(claims):
+        return jsonify({"error": "forbidden"}), 403
+
+    tenant = get_current_tenant()
+    module = Module.query.filter_by(
+        id=module_id,
+        tenant_id=tenant.id,
+        is_deleted=False,
+    ).first()
+    if not module:
+        return jsonify({"error": "not_found"}), 404
+
+    schema = ModuleSchema()
+    try:
+        data = schema.load(request.get_json(force=True) or {})
+    except ValidationError as e:
+        return jsonify({"error": "validation_error", "details": e.messages}), 400
+
+    module.name = data["name"]
+    if "description" in data:
+        module.description = data.get("description")
+    if "order" in data:
+        module.order = data["order"]
+
+    db.session.commit()
+
+    return (
+        jsonify(
+            {
+                "message": "Módulo atualizado.",
+                "module": {"id": module.id, "name": module.name, "order": module.order},
+            }
+        ),
+        200,
     )
 
 

@@ -68,13 +68,20 @@ def _init_extensions(app: Flask) -> None:
     # Em produção, restringir para domínios dos tenants
     cors.init_app(
         app,
-        resources={r"/*": {
-            "origins": "*",
-            "allow_headers": ["Content-Type", "Authorization", "X-Tenant-Slug", "X-Requested-With"],
-            "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-            "supports_credentials": False,
-            "max_age": 3600,
-        }},
+        resources={
+            r"/*": {
+                "origins": "*",
+                "allow_headers": [
+                    "Content-Type",
+                    "Authorization",
+                    "X-Tenant-Slug",
+                    "X-Requested-With",
+                ],
+                "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+                "supports_credentials": False,
+                "max_age": 3600,
+            }
+        },
     )
 
     @jwt.expired_token_loader
@@ -109,7 +116,7 @@ def _register_blueprints(app: Flask) -> None:
     from .routes.simulados import simulados_bp
     from .routes.analytics import analytics_bp
     from .routes.admin_infra import admin_infra_bp
-
+    from .routes.students import students_bp
 
     app.register_blueprint(health_bp)  # /health (sem prefixo)
     app.register_blueprint(auth_bp, url_prefix="/api/v1/auth")
@@ -120,6 +127,8 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(simulados_bp, url_prefix="/api/v1/simulados")
     app.register_blueprint(analytics_bp, url_prefix="/api/v1/analytics")
     app.register_blueprint(admin_infra_bp, url_prefix="/api/v1/admin/infrastructure")
+    app.register_blueprint(students_bp, url_prefix="/api/v1/students")
+
 
 def _register_error_handlers(app: Flask) -> None:
     """
