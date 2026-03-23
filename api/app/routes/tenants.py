@@ -2,6 +2,10 @@
 from flask import Blueprint, request, jsonify, g
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from marshmallow import Schema, fields, validate, ValidationError, EXCLUDE
+from sqlalchemy.orm.attributes import (
+    flag_modified,
+)  # ← FIX: necessário para JSON mutation
+
 from app.extensions import db, limiter
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
@@ -12,7 +16,7 @@ tenants_bp = Blueprint("tenants", __name__)
 
 def _require_super_admin():
     """Verifica se o usuário autenticado é super_admin."""
-    claims = get_jwt()  # FIX: get_jwt() retorna dict com todos os claims
+    claims = get_jwt()
     if claims.get("role") != UserRole.SUPER_ADMIN.value:
         return jsonify({"error": "forbidden", "message": "Acesso restrito."}), 403
     return None
@@ -64,7 +68,10 @@ def create_tenant():
         return jsonify({"error": "validation_error", "details": e.messages}), 400
 
     if Tenant.query.filter_by(slug=data["slug"], is_deleted=False).first():
-        return jsonify({"error": "slug_taken", "message": "Este slug já está em uso."}), 409
+        return (
+            jsonify({"error": "slug_taken", "message": "Este slug já está em uso."}),
+            409,
+        )
 
     tenant = Tenant(
         name=data["name"],
@@ -86,11 +93,21 @@ def create_tenant():
     db.session.add(admin)
     db.session.commit()
 
-    return jsonify({
-        "message": "Tenant criado com sucesso.",
-        "tenant": {"id": tenant.id, "name": tenant.name, "slug": tenant.slug, "plan": tenant.plan},
-        "admin": {"id": admin.id, "email": admin.email},
-    }), 201
+    return (
+        jsonify(
+            {
+                "message": "Tenant criado com sucesso.",
+                "tenant": {
+                    "id": tenant.id,
+                    "name": tenant.name,
+                    "slug": tenant.slug,
+                    "plan": tenant.plan,
+                },
+                "admin": {"id": admin.id, "email": admin.email},
+            }
+        ),
+        201,
+    )
 
 
 @tenants_bp.route("/", methods=["GET"])
@@ -100,14 +117,103 @@ def list_tenants():
     if error:
         return error
 
-    tenants = Tenant.query.filter_by(is_deleted=False).order_by(Tenant.created_at.desc()).all()
-    return jsonify({"tenants": [
-        {
-            "id": t.id, "name": t.name, "slug": t.slug, "plan": t.plan,
-            "is_active": t.is_active, "custom_domain": t.custom_domain,
-            "created_at": t.created_at.isoformat() if t.created_at else None,
-        } for t in tenants
-    ]}), 200
+    tenants = (
+        Tenant.query.filter_by(is_deleted=False)
+        .order_by(Tenant.created_at.desc())
+        .all()
+    )
+    return (
+        jsonify(
+            {
+                "tenants": [
+                    {
+                        "id": t.id,
+                        "name": t.name,
+                        "slug": t.slug,
+                        "plan": t.plan,
+                        "is_active": t.is_active,
+                        "custom_domain": t.custom_domain,
+                        "created_at": (
+                            t.created_at.isoformat() if t.created_at else None
+                        ),
+                    }
+                    for t in tenants
+                ]
+            }
+        ),
+        200,
+    )
+
+
+@tenants_bp.route("/<tenant_id>", methods=["GET"])
+@jwt_required()
+def get_tenant(tenant_id: str):
+    """Retorna dados completos de um tenant (admin only)."""
+    error = _require_super_admin()
+    if error:
+        return error
+
+    tenant = Tenant.query.filter_by(id=tenant_id, is_deleted=False).first_or_404()
+    return (
+        jsonify(
+            {
+                "tenant": {
+                    "id": tenant.id,
+                    "name": tenant.name,
+                    "slug": tenant.slug,
+                    "plan": tenant.plan,
+                    "is_active": tenant.is_active,
+                    "custom_domain": tenant.custom_domain,
+                    "domain_verified": tenant.domain_verified,
+                    "branding": tenant.branding or {},
+                    "features": tenant.features or {},
+                    "settings": tenant.settings or {},
+                    "created_at": (
+                        tenant.created_at.isoformat() if tenant.created_at else None
+                    ),
+                }
+            }
+        ),
+        200,
+    )
+
+
+@tenants_bp.route("/<tenant_id>", methods=["PUT"])
+@jwt_required()
+def update_tenant(tenant_id: str):
+    """Atualiza dados básicos de um tenant (admin only)."""
+    error = _require_super_admin()
+    if error:
+        return error
+
+    tenant = Tenant.query.filter_by(id=tenant_id, is_deleted=False).first_or_404()
+    data = request.get_json() or {}
+
+    if "name" in data:
+        tenant.name = data["name"].strip()
+    if "plan" in data and data["plan"] in ("basic", "pro", "enterprise"):
+        tenant.plan = data["plan"]
+    if "is_active" in data:
+        tenant.is_active = bool(data["is_active"])
+    if "custom_domain" in data:
+        tenant.custom_domain = data["custom_domain"] or None
+
+    db.session.commit()
+    return (
+        jsonify(
+            {
+                "message": "Tenant atualizado.",
+                "tenant": {
+                    "id": tenant.id,
+                    "name": tenant.name,
+                    "plan": tenant.plan,
+                    "is_active": tenant.is_active,
+                    "custom_domain": tenant.custom_domain,
+                },
+            }
+        ),
+        200,
+    )
 
 
 @tenants_bp.route("/<tenant_id>/branding", methods=["PUT"])
@@ -125,15 +231,77 @@ def update_branding(tenant_id):
 
     tenant = Tenant.query.filter_by(id=tenant_id, is_deleted=False).first_or_404()
     data = request.get_json() or {}
-    branding = tenant.branding or {}
-    allowed = ["primary_color", "secondary_color", "platform_name", "support_email", "logo_url", "favicon_url"]
+
+    # ── FIX: cria NOVO dict para forçar SQLAlchemy a detectar a mudança ──────
+    # SQLAlchemy não rastreia mutações in-place em campos JSON.
+    # Sem isso, tenant.branding = branding (mesma referência) não persiste.
+    current_branding = dict(tenant.branding or {})
+
+    allowed = [
+        "primary_color",
+        "secondary_color",
+        "platform_name",
+        "support_email",
+        "logo_url",
+        "favicon_url",
+    ]
     for field in allowed:
         if field in data:
-            branding[field] = data[field]
+            current_branding[field] = data[field]
 
-    tenant.branding = branding
+    # Atribui um dict NOVO — SQLAlchemy detecta a troca de referência
+    tenant.branding = current_branding
+
+    # flag_modified garante que mesmo sem troca de referência o commit salva
+    flag_modified(tenant, "branding")
+
     db.session.commit()
-    return jsonify({"message": "Branding atualizado.", "branding": branding}), 200
+
+    # Retorna o branding completo para o frontend atualizar o store
+    return (
+        jsonify(
+            {
+                "message": "Branding atualizado.",
+                "branding": tenant.branding,
+                "tenant_id": tenant.id,
+            }
+        ),
+        200,
+    )
+
+
+@tenants_bp.route("/by-slug/<string:slug>", methods=["GET"])
+def get_tenant_by_slug(slug: str):
+    """
+    Retorna dados públicos do tenant pelo slug.
+    Usado pelo frontend para carregar branding sem autenticação.
+    Sem cache — sempre retorna dado fresco do banco.
+    """
+    tenant = Tenant.query.filter_by(
+        slug=slug.strip().lower()[:100],
+        is_deleted=False,
+        is_active=True,
+    ).first()
+
+    if not tenant:
+        return jsonify({"error": "not_found"}), 404
+
+    return (
+        jsonify(
+            {
+                "tenant": {
+                    "id": tenant.id,
+                    "name": tenant.name,
+                    "slug": tenant.slug,
+                    "plan": tenant.plan,
+                    "features": tenant.features or {},
+                    "branding": tenant.branding or {},
+                    "custom_domain": tenant.custom_domain,
+                }
+            }
+        ),
+        200,
+    )
 
 
 @tenants_bp.route("/notify", methods=["POST"])
@@ -150,44 +318,35 @@ def notify_students():
     message = data.get("message", "").strip()
 
     if not title or not message:
-        return jsonify({"error": "bad_request", "message": "title e message são obrigatórios."}), 400
-
-    tenant = g.tenant
-    students = User.query.filter_by(tenant_id=tenant.id, role="student", is_deleted=False).all()
-
-    from app.tasks import send_broadcast_email
-    for student in students:
-        send_broadcast_email.delay(
-            to_email=student.email, to_name=student.name,
-            subject=title, body=message, tenant_name=tenant.name,
+        return (
+            jsonify(
+                {"error": "bad_request", "message": "title e message são obrigatórios."}
+            ),
+            400,
         )
 
-    return jsonify({"message": f"Notificação enviada para {len(students)} aluno(s).", "recipients": len(students)}), 200
+    tenant = g.tenant
+    students = User.query.filter_by(
+        tenant_id=tenant.id, role="student", is_deleted=False
+    ).all()
 
+    from app.tasks import send_broadcast_email
 
-@tenants_bp.route("/by-slug/<string:slug>", methods=["GET"])
-def get_tenant_by_slug(slug: str):
-    """
-    Retorna dados públicos do tenant pelo slug.
-    Usado pelo frontend para carregar branding sem autenticação.
-    """
-    tenant = Tenant.query.filter_by(
-        slug=slug.strip().lower()[:100],
-        is_deleted=False,
-        is_active=True,
-    ).first()
+    for student in students:
+        send_broadcast_email.delay(
+            to_email=student.email,
+            to_name=student.name,
+            subject=title,
+            body=message,
+            tenant_name=tenant.name,
+        )
 
-    if not tenant:
-        return jsonify({"error": "not_found"}), 404
-
-    return jsonify({
-        "tenant": {
-            "id": tenant.id,
-            "name": tenant.name,
-            "slug": tenant.slug,
-            "plan": tenant.plan,
-            "features": tenant.features or {},
-            "branding": tenant.branding or {},
-            "custom_domain": tenant.custom_domain,
-        }
-    }), 200
+    return (
+        jsonify(
+            {
+                "message": f"Notificação enviada para {len(students)} aluno(s).",
+                "recipients": len(students),
+            }
+        ),
+        200,
+    )

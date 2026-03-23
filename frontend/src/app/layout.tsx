@@ -32,7 +32,10 @@ export default function RootLayout({
   return (
     <html lang="pt-BR" suppressHydrationWarning>
       <body className={`${dmSans.variable} ${sora.variable} antialiased`}>
-        <Providers>{children}</Providers>
+        <Providers>
+          <TenantBrandingLoader />
+          {children}
+        </Providers>
       </body>
     </html>
   );
