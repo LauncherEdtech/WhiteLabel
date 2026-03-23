@@ -3,13 +3,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Building2, LayoutDashboard, Settings, LogOut, Shield } from "lucide-react";
+import { Building2, Settings, LogOut, Shield, Server } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import { useLogout } from "@/lib/hooks/useAuth";
 import { useAuthStore } from "@/lib/stores/authStore";
 
 const navItems = [
     { href: "/admin/tenants", label: "Tenants", icon: Building2 },
+    { href: "/admin/infrastructure", label: "Infraestrutura", icon: Server },
     { href: "/admin/settings", label: "Configurações", icon: Settings },
 ];
 

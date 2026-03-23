@@ -39,5 +39,7 @@ export const ROUTES = {
     ADMIN: {
         TENANTS: "/admin/tenants",
         TENANT: (id: string) => `/admin/tenants/${id}`,
+        INFRASTRUCTURE: "/admin/infrastructure",
+        SETTINGS: "/admin/settings",
     },
 } as const;

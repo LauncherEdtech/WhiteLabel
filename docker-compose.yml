@@ -64,6 +64,10 @@ services:
       FLASK_APP: app
       FLASK_ENV: ${FLASK_ENV:-development}
       FLASK_DEBUG: "1"
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-sa-east-1}
+      PROJECT_NAME: ${PROJECT_NAME:-concurso-platform}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       DATABASE_URL: postgresql://${POSTGRES_USER:-concurso_user}:${POSTGRES_PASSWORD:-dev_pass_123}@postgres:5432/${POSTGRES_DB:-concurso_platform}
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
