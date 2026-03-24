@@ -16,7 +16,7 @@ import { useForm } from "react-hook-form";
 import { cn } from "@/lib/utils/cn";
 import {
   BookOpen, Plus, ChevronDown, ChevronUp, ChevronLeft,
-  Pencil, Eye, EyeOff, GripVertical, Video, Clock,
+  Pencil, Eye, EyeOff, GripVertical, Video, Clock, Trash2,
 } from "lucide-react";
 import Link from "next/link";
 import { QUERY_KEYS } from "@/lib/constants/queryKeys";
@@ -26,6 +26,7 @@ import { QUERY_KEYS } from "@/lib/constants/queryKeys";
 type EditSubjectState = { open: boolean; subject: any | null };
 type EditModuleState = { open: boolean; module: any | null };
 type EditLessonState = { open: boolean; lesson: any | null };
+type ConfirmDelete = { open: boolean; type: "subject" | "module" | "lesson"; id: string; name: string; parentCount?: number } | null;
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
@@ -46,6 +47,9 @@ export default function ProducerCourseDetailPage() {
   const [editSubject, setEditSubject] = useState<EditSubjectState>({ open: false, subject: null });
   const [editModule, setEditModule] = useState<EditModuleState>({ open: false, module: null });
   const [editLesson, setEditLesson] = useState<EditLessonState>({ open: false, lesson: null });
+
+  // Confirmar exclusão
+  const [confirmDelete, setConfirmDelete] = useState<ConfirmDelete>(null);
 
   const { data: course, isLoading } = useQuery({
     queryKey: QUERY_KEYS.COURSE(courseId),
@@ -140,12 +144,58 @@ export default function ProducerCourseDetailPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) }),
   });
 
+  // ── Mutations: excluir ──────────────────────────────────────────────────────
+
+  const deleteModule = useMutation({
+    mutationFn: (moduleId: string) =>
+      apiClient.delete(`/courses/modules/${moduleId}`).then(r => r.data),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) });
+      toast.success("Módulo removido!", data.message);
+      setConfirmDelete(null);
+    },
+    onError: () => toast.error("Erro ao remover módulo"),
+  });
+
+  const deleteLesson = useMutation({
+    mutationFn: (lessonId: string) =>
+      apiClient.delete(`/courses/lessons/${lessonId}`).then(r => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) });
+      toast.success("Aula removida!");
+      setConfirmDelete(null);
+    },
+    onError: () => toast.error("Erro ao remover aula"),
+  });
+
+  const handleConfirmDelete = () => {
+    if (!confirmDelete) return;
+    if (confirmDelete.type === "module") deleteModule.mutate(confirmDelete.id);
+    else if (confirmDelete.type === "lesson") deleteLesson.mutate(confirmDelete.id);
+    else if (confirmDelete.type === "subject") deleteSubject.mutate(confirmDelete.id);
+  };
+
+
+
+  const deleteSubject = useMutation({
+    mutationFn: (subjectId: string) =>
+      apiClient.delete(`/courses/${courseId}/subjects/${subjectId}`).then(r => r.data),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) });
+      toast.success("Disciplina removida!", data.message);
+      setConfirmDelete(null);
+    },
+    onError: () => toast.error("Erro ao remover disciplina"),
+  });
+
+
   // ── Render ──────────────────────────────────────────────────────────────────
 
   if (isLoading) return <Skeleton className="h-64 rounded-xl animate-pulse" />;
   if (!course) return null;
 
   const subjects = course.subjects || [];
+  const isDeleting = deleteModule.isPending || deleteLesson.isPending || deleteSubject.isPending;
 
   return (
     <div className="space-y-5 animate-fade-in max-w-4xl">
@@ -224,25 +274,30 @@ export default function ProducerCourseDetailPage() {
                   <Badge variant="outline" className="text-xs">peso {subject.edital_weight}x</Badge>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
-                  {/* Editar disciplina */}
-                  <Button
-                    variant="ghost" size="icon-sm"
-                    title="Editar disciplina"
-                    onClick={e => { e.stopPropagation(); setEditSubject({ open: true, subject }); }}
-                  >
+                  <Button variant="ghost" size="icon-sm" title="Editar disciplina"
+                    onClick={() => setEditSubject({ open: true, subject })}>
                     <Pencil className="h-3 w-3" />
                   </Button>
-                  {/* Adicionar módulo */}
-                  <Button
-                    variant="ghost" size="icon-sm"
-                    title="Adicionar módulo"
-                    onClick={e => { e.stopPropagation(); setModuleModal({ open: true, subjectId: subject.id }); }}
-                  >
+                  <Button variant="ghost" size="icon-sm" title="Excluir disciplina"
+                    className="hover:text-destructive"
+                    onClick={() => setConfirmDelete({
+                      open: true,
+                      type: "subject",
+                      id: subject.id,
+                      name: subject.name,
+                      parentCount: subject.modules?.length || 0,
+                    })}>
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                  <Button variant="ghost" size="icon-sm" title="Adicionar módulo"
+                    onClick={() => setModuleModal({ open: true, subjectId: subject.id })}>
                     <Plus className="h-3 w-3" />
                   </Button>
                   {expandedSubjects.has(subject.id)
-                    ? <ChevronUp className="h-4 w-4 text-muted-foreground cursor-pointer" onClick={() => setExpandedSubjects(prev => { const n = new Set(prev); n.delete(subject.id); return n; })} />
-                    : <ChevronDown className="h-4 w-4 text-muted-foreground cursor-pointer" onClick={() => setExpandedSubjects(prev => new Set([...prev, subject.id]))} />
+                    ? <ChevronUp className="h-4 w-4 text-muted-foreground cursor-pointer"
+                      onClick={() => setExpandedSubjects(prev => { const n = new Set(prev); n.delete(subject.id); return n; })} />
+                    : <ChevronDown className="h-4 w-4 text-muted-foreground cursor-pointer"
+                      onClick={() => setExpandedSubjects(prev => new Set([...prev, subject.id]))} />
                   }
                 </div>
               </div>
@@ -251,13 +306,15 @@ export default function ProducerCourseDetailPage() {
               {expandedSubjects.has(subject.id) && (
                 <div className="border-t border-border">
                   {(subject.modules || []).length === 0 && (
-                    <p className="px-5 py-3 text-xs text-muted-foreground italic">Nenhum módulo. Clique em + para adicionar.</p>
+                    <p className="px-5 py-3 text-xs text-muted-foreground italic">
+                      Nenhum módulo. Clique em + para adicionar.
+                    </p>
                   )}
                   {(subject.modules || []).map((module: any) => (
                     <div key={module.id} className="border-b border-border last:border-0">
 
                       {/* Module row */}
-                      <div className="w-full px-5 py-3 flex items-center gap-3 hover:bg-accent/30 transition-colors">
+                      <div className="w-full px-5 py-3 flex items-center gap-3 hover:bg-accent/30 transition-colors group">
                         <div
                           role="button" tabIndex={0}
                           onClick={() => setExpandedModules(prev => {
@@ -269,28 +326,35 @@ export default function ProducerCourseDetailPage() {
                         >
                           <GripVertical className="h-4 w-4 text-muted-foreground shrink-0" />
                           <span className="flex-1 text-sm font-medium text-foreground">{module.name}</span>
-                          <span className="text-xs text-muted-foreground">{module.lessons?.length || 0} aulas</span>
+                          <span className="text-xs text-muted-foreground">
+                            {module.lessons?.length || 0} aulas
+                          </span>
                         </div>
                         <div className="flex items-center gap-1 shrink-0">
-                          {/* Editar módulo */}
-                          <Button
-                            variant="ghost" size="icon-sm"
-                            title="Editar módulo"
-                            onClick={e => { e.stopPropagation(); setEditModule({ open: true, module }); }}
-                          >
+                          <Button variant="ghost" size="icon-sm" title="Editar módulo"
+                            onClick={() => setEditModule({ open: true, module })}>
                             <Pencil className="h-3 w-3" />
                           </Button>
-                          {/* Adicionar aula */}
-                          <Button
-                            variant="ghost" size="icon-sm"
-                            title="Adicionar aula"
-                            onClick={e => { e.stopPropagation(); setLessonModal({ open: true, moduleId: module.id }); }}
-                          >
+                          <Button variant="ghost" size="icon-sm" title="Excluir módulo"
+                            className="hover:text-destructive"
+                            onClick={() => setConfirmDelete({
+                              open: true,
+                              type: "module",
+                              id: module.id,
+                              name: module.name,
+                              parentCount: module.lessons?.length || 0,
+                            })}>
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                          <Button variant="ghost" size="icon-sm" title="Adicionar aula"
+                            onClick={() => setLessonModal({ open: true, moduleId: module.id })}>
                             <Plus className="h-3 w-3" />
                           </Button>
                           {expandedModules.has(module.id)
-                            ? <ChevronUp className="h-3 w-3 text-muted-foreground cursor-pointer" onClick={() => setExpandedModules(prev => { const n = new Set(prev); n.delete(module.id); return n; })} />
-                            : <ChevronDown className="h-3 w-3 text-muted-foreground cursor-pointer" onClick={() => setExpandedModules(prev => new Set([...prev, module.id]))} />
+                            ? <ChevronUp className="h-3 w-3 text-muted-foreground cursor-pointer"
+                              onClick={() => setExpandedModules(prev => { const n = new Set(prev); n.delete(module.id); return n; })} />
+                            : <ChevronDown className="h-3 w-3 text-muted-foreground cursor-pointer"
+                              onClick={() => setExpandedModules(prev => new Set([...prev, module.id]))} />
                           }
                         </div>
                       </div>
@@ -299,7 +363,9 @@ export default function ProducerCourseDetailPage() {
                       {expandedModules.has(module.id) && (
                         <div className="pb-2 bg-muted/20">
                           {(module.lessons || []).length === 0 && (
-                            <p className="px-8 py-2 text-xs text-muted-foreground italic">Nenhuma aula. Clique em + para adicionar.</p>
+                            <p className="px-8 py-2 text-xs text-muted-foreground italic">
+                              Nenhuma aula. Clique em + para adicionar.
+                            </p>
                           )}
                           {(module.lessons || []).map((lesson: any, li: number) => (
                             <div
@@ -315,13 +381,26 @@ export default function ProducerCourseDetailPage() {
                                   <Clock className="h-3 w-3" />{lesson.duration_minutes}min
                                 </span>
                               )}
-                              {/* Editar aula — visível no hover */}
+                              {/* Editar aula */}
                               <button
                                 onClick={() => setEditLesson({ open: true, lesson })}
                                 title="Editar aula"
                                 className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
                               >
                                 <Pencil className="h-3 w-3 text-muted-foreground hover:text-foreground" />
+                              </button>
+                              {/* Excluir aula */}
+                              <button
+                                onClick={() => setConfirmDelete({
+                                  open: true,
+                                  type: "lesson",
+                                  id: lesson.id,
+                                  name: lesson.title,
+                                })}
+                                title="Excluir aula"
+                                className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 hover:text-destructive"
+                              >
+                                <Trash2 className="h-3 w-3 text-muted-foreground hover:text-destructive" />
                               </button>
                               {/* Toggle publicar */}
                               <button
@@ -355,38 +434,87 @@ export default function ProducerCourseDetailPage() {
         </div>
       )}
 
-      {/* ── Modais: Criar ──────────────────────────────────────────────────── */}
+      {/* ── Modal: Confirmação de exclusão ──────────────────────────────────── */}
+      <Dialog open={!!confirmDelete?.open} onOpenChange={v => { if (!v) setConfirmDelete(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <Trash2 className="h-5 w-5" />
+              Confirmar exclusão
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-foreground">
+              Tem certeza que deseja excluir{" "}
+              <strong className="font-semibold">
+                {confirmDelete?.type === "subject"
+                  ? "a disciplina"
+                  : confirmDelete?.type === "module"
+                    ? "o módulo"
+                    : "a aula"}{" "}
+                "{confirmDelete?.name}"
+              </strong>?
+            </p>
+            {confirmDelete?.type === "module" && (confirmDelete.parentCount || 0) > 0 && (
+              <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20">
+                <p className="text-xs text-destructive font-medium">
+                  ⚠ Este módulo contém {confirmDelete.parentCount} aula(s) que também serão removidas.
+                </p>
+              </div>
+            )}
+            {confirmDelete?.type === "subject" && (confirmDelete.parentCount || 0) > 0 && (
+              <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20">
+                <p className="text-xs text-destructive font-medium">
+                  ⚠ Esta disciplina contém {confirmDelete.parentCount} módulo(s) com todas as suas aulas que também serão removidos.
+                </p>
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Esta ação não pode ser desfeita.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setConfirmDelete(null)}>
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleConfirmDelete}
+              disabled={isDeleting}
+            >
+              {isDeleting ? "Removendo..." : "Sim, excluir"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Modais: Criar ────────────────────────────────────────────────────── */}
 
       <SubjectModal
-        open={subjectModal}
-        title="Nova Disciplina"
+        open={subjectModal} title="Nova Disciplina"
         onClose={() => setSubjectModal(false)}
         onSubmit={d => createSubject.mutate(d)}
         loading={createSubject.isPending}
       />
 
       <SimpleModal
-        open={moduleModal.open}
+        open={moduleModal.open} title="Novo Módulo" placeholder="Nome do módulo"
         onClose={() => setModuleModal({ open: false, subjectId: "" })}
-        title="Novo Módulo"
-        placeholder="Nome do módulo"
         onSubmit={name => createModule.mutate({ subjectId: moduleModal.subjectId, name })}
         loading={createModule.isPending}
       />
 
       <LessonModal
-        open={lessonModal.open}
-        title="Nova Aula"
+        open={lessonModal.open} title="Nova Aula"
         onClose={() => setLessonModal({ open: false, moduleId: "" })}
         onSubmit={d => createLesson.mutate({ ...d, moduleId: lessonModal.moduleId })}
         loading={createLesson.isPending}
       />
 
-      {/* ── Modais: Editar ─────────────────────────────────────────────────── */}
+      {/* ── Modais: Editar ───────────────────────────────────────────────────── */}
 
       <SubjectModal
-        open={editSubject.open}
-        title="Editar Disciplina"
+        open={editSubject.open} title="Editar Disciplina"
         initialData={editSubject.subject ? {
           name: editSubject.subject.name,
           color: editSubject.subject.color,
@@ -398,18 +526,15 @@ export default function ProducerCourseDetailPage() {
       />
 
       <SimpleModal
-        open={editModule.open}
-        onClose={() => setEditModule({ open: false, module: null })}
-        title="Editar Módulo"
-        placeholder="Nome do módulo"
+        open={editModule.open} title="Editar Módulo" placeholder="Nome do módulo"
         initialValue={editModule.module?.name}
+        onClose={() => setEditModule({ open: false, module: null })}
         onSubmit={name => updateModule.mutate({ moduleId: editModule.module!.id, name })}
         loading={updateModule.isPending}
       />
 
       <LessonModal
-        open={editLesson.open}
-        title="Editar Aula"
+        open={editLesson.open} title="Editar Aula"
         initialData={editLesson.lesson ? {
           title: editLesson.lesson.title,
           duration_minutes: editLesson.lesson.duration_minutes,
@@ -439,8 +564,7 @@ export default function ProducerCourseDetailPage() {
 const COLORS = ["#EF4444", "#F59E0B", "#10B981", "#3B82F6", "#8B5CF6", "#EC4899", "#06B6D4", "#374151"];
 
 function SubjectModal({ open, title, initialData, onClose, onSubmit, loading }: {
-  open: boolean;
-  title: string;
+  open: boolean; title: string;
   initialData?: { name: string; color: string; edital_weight: number };
   onClose: () => void;
   onSubmit: (d: { name: string; color: string; edital_weight: number }) => void;
@@ -450,15 +574,6 @@ function SubjectModal({ open, title, initialData, onClose, onSubmit, loading }: 
     defaultValues: { name: initialData?.name || "", edital_weight: initialData?.edital_weight || 1 },
   });
   const [color, setColor] = useState(initialData?.color || "#4F46E5");
-
-  // Sincroniza quando initialData muda (ao abrir edição)
-  useState(() => {
-    if (initialData) {
-      reset({ name: initialData.name, edital_weight: initialData.edital_weight });
-      setColor(initialData.color);
-    }
-  });
-
   const handleClose = () => { onClose(); reset(); };
 
   return (
@@ -526,8 +641,7 @@ function SimpleModal({ open, onClose, title, placeholder, initialValue, onSubmit
 }
 
 function LessonModal({ open, title, initialData, onClose, onSubmit, loading }: {
-  open: boolean;
-  title: string;
+  open: boolean; title: string;
   initialData?: { title: string; duration_minutes: number; video_url: string; is_free_preview?: boolean };
   onClose: () => void;
   onSubmit: (d: { title: string; duration_minutes: number; video_url: string; is_free_preview?: boolean }) => void;

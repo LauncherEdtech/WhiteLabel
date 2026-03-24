@@ -567,6 +567,57 @@ def update_subject(course_id: str, subject_id: str):
     )
 
 
+@courses_bp.route(
+    "/<string:course_id>/subjects/<string:subject_id>", methods=["DELETE"]
+)
+@jwt_required()
+@require_tenant
+def delete_subject(course_id: str, subject_id: str):
+    """Soft delete de disciplina e todos seus módulos/aulas."""
+    claims = get_jwt()
+    if claims.get("role") not in (
+        UserRole.SUPER_ADMIN.value,
+        UserRole.PRODUCER_ADMIN.value,
+    ):
+        return jsonify({"error": "forbidden"}), 403
+
+    tenant = get_current_tenant()
+    subject = Subject.query.filter_by(
+        id=subject_id,
+        course_id=course_id,
+        tenant_id=tenant.id,
+        is_deleted=False,
+    ).first()
+    if not subject:
+        return jsonify({"error": "not_found"}), 404
+
+    # Soft delete em cascata: módulos → aulas
+    lessons_deleted = 0
+    modules_deleted = 0
+    for module in subject.modules:
+        if not module.is_deleted:
+            for lesson in module.lessons:
+                if not lesson.is_deleted:
+                    lesson.soft_delete()
+                    lessons_deleted += 1
+            module.soft_delete()
+            modules_deleted += 1
+
+    subject.soft_delete()
+    db.session.commit()
+
+    return (
+        jsonify(
+            {
+                "message": f"Disciplina removida ({modules_deleted} módulo(s), {lessons_deleted} aula(s) removidos).",
+                "modules_deleted": modules_deleted,
+                "lessons_deleted": lessons_deleted,
+            }
+        ),
+        200,
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MODULES
 # ══════════════════════════════════════════════════════════════════════════════
@@ -709,6 +760,51 @@ def update_module(module_id: str):
             {
                 "message": "Módulo atualizado.",
                 "module": {"id": module.id, "name": module.name, "order": module.order},
+            }
+        ),
+        200,
+    )
+
+
+@courses_bp.route("/modules/<string:module_id>", methods=["DELETE"])
+@jwt_required()
+@require_tenant
+def delete_module(module_id: str):
+    """
+    Soft delete de módulo e todas as suas aulas.
+    Apenas produtor admin.
+    """
+    claims = get_jwt()
+    if claims.get("role") not in (
+        UserRole.SUPER_ADMIN.value,
+        UserRole.PRODUCER_ADMIN.value,
+    ):
+        return jsonify({"error": "forbidden"}), 403
+
+    tenant = get_current_tenant()
+    module = Module.query.filter_by(
+        id=module_id,
+        tenant_id=tenant.id,
+        is_deleted=False,
+    ).first()
+    if not module:
+        return jsonify({"error": "not_found"}), 404
+
+    # Soft delete de todas as aulas do módulo primeiro
+    lessons_deleted = 0
+    for lesson in module.lessons:
+        if not lesson.is_deleted:
+            lesson.soft_delete()
+            lessons_deleted += 1
+
+    module.soft_delete()
+    db.session.commit()
+
+    return (
+        jsonify(
+            {
+                "message": f"Módulo removido ({lessons_deleted} aula(s) também removida(s)).",
+                "lessons_deleted": lessons_deleted,
             }
         ),
         200,
@@ -939,3 +1035,32 @@ def _serialize_lesson(lesson: Lesson, progress=None, full: bool = False) -> dict
             }
         )
     return data
+
+
+@courses_bp.route("/lessons/<string:lesson_id>", methods=["DELETE"])
+@jwt_required()
+@require_tenant
+def delete_lesson(lesson_id: str):
+    """
+    Soft delete de aula. Apenas produtor admin.
+    """
+    claims = get_jwt()
+    if claims.get("role") not in (
+        UserRole.SUPER_ADMIN.value,
+        UserRole.PRODUCER_ADMIN.value,
+    ):
+        return jsonify({"error": "forbidden"}), 403
+
+    tenant = get_current_tenant()
+    lesson = Lesson.query.filter_by(
+        id=lesson_id,
+        tenant_id=tenant.id,
+        is_deleted=False,
+    ).first()
+    if not lesson:
+        return jsonify({"error": "not_found"}), 404
+
+    lesson.soft_delete()
+    db.session.commit()
+
+    return jsonify({"message": "Aula removida."}), 200
