@@ -15,11 +15,17 @@ from app.models.user import User, UserRole
 from app.models.course import Course, Subject, Lesson, LessonProgress, CourseEnrollment
 from app.models.question import Question, QuestionAttempt
 from app.models.schedule import StudySchedule, ScheduleItem, ScheduleCheckIn
-from app.middleware.tenant import resolve_tenant, require_tenant, require_feature, get_current_tenant
+from app.middleware.tenant import (
+    resolve_tenant,
+    require_tenant,
+    require_feature,
+    get_current_tenant,
+)
 
 analytics_bp = Blueprint("analytics", __name__)
 
 # ── Helpers de autorização ────────────────────────────────────────────────────
+
 
 def _is_producer_or_above(claims: dict) -> bool:
     return claims.get("role") in (
@@ -28,16 +34,141 @@ def _is_producer_or_above(claims: dict) -> bool:
         UserRole.PRODUCER_STAFF.value,
     )
 
+
 def _is_student(claims: dict) -> bool:
     return claims.get("role") == UserRole.STUDENT.value
+
+
+def _get_lesson_stats_for_tenant(tenant_id: str, course_id: str = None) -> dict:
+    """
+    Agrega estatísticas de aulas assistidas para o produtor.
+    Retorna: visão por curso, top aulas mais/menos assistidas, total geral.
+    """
+    # Busca todos os cursos do tenant (ou só o filtrado)
+    courses_query = Course.query.filter_by(
+        tenant_id=tenant_id,
+        is_active=True,
+        is_deleted=False,
+    )
+    if course_id:
+        courses_query = courses_query.filter_by(id=course_id)
+    courses = courses_query.all()
+
+    total_lessons_platform = 0
+    total_watched_platform = 0
+    courses_stats = []
+    all_lesson_stats = []
+
+    for course in courses:
+        course_lessons = 0
+        course_watched = 0
+        course_lesson_rows = []
+
+        for subject in course.subjects:
+            if subject.is_deleted:
+                continue
+            for module in subject.modules:
+                if module.is_deleted:
+                    continue
+                for lesson in module.lessons:
+                    if lesson.is_deleted or not lesson.is_published:
+                        continue
+
+                    # Quantos alunos assistiram esta aula
+                    watched_count = LessonProgress.query.filter_by(
+                        lesson_id=lesson.id,
+                        tenant_id=tenant_id,
+                        status="watched",
+                        is_deleted=False,
+                    ).count()
+
+                    # Total de alunos matriculados no curso
+                    enrolled = CourseEnrollment.query.filter_by(
+                        course_id=course.id,
+                        tenant_id=tenant_id,
+                        is_active=True,
+                        is_deleted=False,
+                    ).count()
+
+                    completion_pct = (
+                        round((watched_count / enrolled) * 100, 1) if enrolled else 0.0
+                    )
+
+                    row = {
+                        "lesson_id": lesson.id,
+                        "lesson_title": lesson.title,
+                        "module_name": module.name,
+                        "subject_name": subject.name,
+                        "subject_color": subject.color,
+                        "course_id": course.id,
+                        "course_name": course.name,
+                        "duration_min": lesson.duration_minutes,
+                        "watched_count": watched_count,
+                        "enrolled_count": enrolled,
+                        "completion_pct": completion_pct,
+                    }
+                    course_lesson_rows.append(row)
+                    all_lesson_stats.append(row)
+                    course_lessons += 1
+                    course_watched += watched_count
+
+        enrolled_total = CourseEnrollment.query.filter_by(
+            course_id=course.id,
+            tenant_id=tenant_id,
+            is_active=True,
+            is_deleted=False,
+        ).count()
+
+        # Taxa de conclusão do curso = média de completion das aulas
+        avg_completion = (
+            round(
+                sum(r["completion_pct"] for r in course_lesson_rows)
+                / len(course_lesson_rows),
+                1,
+            )
+            if course_lesson_rows
+            else 0.0
+        )
+
+        courses_stats.append(
+            {
+                "course_id": course.id,
+                "course_name": course.name,
+                "total_lessons": course_lessons,
+                "enrolled_count": enrolled_total,
+                "avg_completion": avg_completion,
+                "lessons": sorted(
+                    course_lesson_rows, key=lambda x: x["completion_pct"], reverse=True
+                ),
+            }
+        )
+
+        total_lessons_platform += course_lessons
+        total_watched_platform += course_watched
+
+    # Top 5 mais assistidas e 5 menos assistidas (com ao menos 1 aluno matriculado)
+    eligible = [r for r in all_lesson_stats if r["enrolled_count"] > 0]
+    top_watched = sorted(eligible, key=lambda x: x["completion_pct"], reverse=True)[:5]
+    low_watched = sorted(eligible, key=lambda x: x["completion_pct"])[:5]
+
+    return {
+        "total_lessons": total_lessons_platform,
+        "total_watched_sum": total_watched_platform,
+        "courses": courses_stats,
+        "top_watched_lessons": top_watched,
+        "low_watched_lessons": low_watched,
+    }
+
 
 @analytics_bp.before_request
 def before_request():
     resolve_tenant()
 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # DASHBOARD DO ALUNO
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 @analytics_bp.route("/student/dashboard", methods=["GET"])
 @jwt_required()
@@ -83,7 +214,9 @@ def student_dashboard():
     week_start = today_start - timedelta(days=today_start.weekday())  # Segunda-feira
 
     # ── 1. Questões respondidas ───────────────────────────────────────────────
-    questions_stats = _get_questions_stats(target_user_id, tenant.id, today_start, week_start)
+    questions_stats = _get_questions_stats(
+        target_user_id, tenant.id, today_start, week_start
+    )
 
     # ── 2. Acerto por disciplina ──────────────────────────────────────────────
     discipline_stats = _get_discipline_stats(target_user_id, tenant.id)
@@ -106,23 +239,30 @@ def student_dashboard():
         time_stats=time_stats,
     )
 
-    return jsonify({
-        "student": {
-            "id": target_user.id,
-            "name": target_user.name,
-        },
-        "questions": questions_stats,
-        "discipline_performance": discipline_stats,
-        "lesson_progress": lesson_progress,
-        "time_studied": time_stats,
-        "todays_pending": todays_pending,
-        "insights": insights,
-        "generated_at": now.isoformat(),
-    }), 200
+    return (
+        jsonify(
+            {
+                "student": {
+                    "id": target_user.id,
+                    "name": target_user.name,
+                },
+                "questions": questions_stats,
+                "discipline_performance": discipline_stats,
+                "lesson_progress": lesson_progress,
+                "time_studied": time_stats,
+                "todays_pending": todays_pending,
+                "insights": insights,
+                "generated_at": now.isoformat(),
+            }
+        ),
+        200,
+    )
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ANALYTICS DO PRODUTOR (visão da turma)
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 @analytics_bp.route("/producer/overview", methods=["GET"])
 @jwt_required()
@@ -156,20 +296,25 @@ def producer_overview():
     total_students = students_query.count()
 
     if total_students == 0:
-        return jsonify({
-            "overview": {
-                "total_students": 0,
-                "active_last_7_days": 0,
-                "engagement_rate": 0.0,
-                "at_risk_count": 0,
-            },
-            "at_risk_students": [],
-            "class_discipline_performance": [],
-            "hardest_questions": [],
-            "student_rankings": {"top_performers": [], "needs_attention": []},
-            "insights": [],
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-        }), 200
+        return (
+            jsonify(
+                {
+                    "overview": {
+                        "total_students": 0,
+                        "active_last_7_days": 0,
+                        "engagement_rate": 0.0,
+                        "at_risk_count": 0,
+                    },
+                    "at_risk_students": [],
+                    "class_discipline_performance": [],
+                    "hardest_questions": [],
+                    "student_rankings": {"top_performers": [], "needs_attention": []},
+                    "insights": [],
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ),
+            200,
+        )
 
     student_ids = [s.id for s in students_query.all()]
 
@@ -177,16 +322,21 @@ def producer_overview():
     week_ago = datetime.now(timezone.utc) - timedelta(days=7)
     week_ago_iso = week_ago.isoformat()
 
-    active_recently = db.session.query(
-        func.count(func.distinct(QuestionAttempt.user_id))
-    ).filter(
-        QuestionAttempt.tenant_id == tenant.id,
-        QuestionAttempt.user_id.in_(student_ids),
-        QuestionAttempt.is_deleted == False,
-        QuestionAttempt.created_at >= week_ago,
-    ).scalar() or 0
+    active_recently = (
+        db.session.query(func.count(func.distinct(QuestionAttempt.user_id)))
+        .filter(
+            QuestionAttempt.tenant_id == tenant.id,
+            QuestionAttempt.user_id.in_(student_ids),
+            QuestionAttempt.is_deleted == False,
+            QuestionAttempt.created_at >= week_ago,
+        )
+        .scalar()
+        or 0
+    )
 
-    engagement_rate = round((active_recently / total_students) * 100, 1) if total_students else 0
+    engagement_rate = (
+        round((active_recently / total_students) * 100, 1) if total_students else 0
+    )
 
     # ── Risco de abandono ─────────────────────────────────────────────────────
     at_risk = _get_at_risk_students(student_ids, tenant.id)
@@ -208,20 +358,29 @@ def producer_overview():
         class_discipline_stats=class_discipline_stats,
     )
 
-    return jsonify({
-        "overview": {
-            "total_students": total_students,
-            "active_last_7_days": active_recently,
-            "engagement_rate": engagement_rate,
-            "at_risk_count": len(at_risk),
-        },
-        "at_risk_students": at_risk[:10],   # Top 10 em risco
-        "class_discipline_performance": class_discipline_stats,
-        "hardest_questions": hardest_questions[:10],
-        "student_rankings": student_rankings,
-        "insights": producer_insights,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }), 200
+    lesson_stats = _get_lesson_stats_for_tenant(tenant.id)
+
+    return (
+        jsonify(
+            {
+                "overview": {
+                    "total_students": total_students,
+                    "active_last_7_days": active_recently,
+                    "engagement_rate": engagement_rate,
+                    "at_risk_count": len(at_risk),
+                },
+                "at_risk_students": at_risk[:10],  # Top 10 em risco
+                "class_discipline_performance": class_discipline_stats,
+                "hardest_questions": hardest_questions[:10],
+                "student_rankings": student_rankings,
+                "lesson_stats": lesson_stats,
+                "insights": producer_insights,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ),
+        200,
+    )
+
 
 @analytics_bp.route("/producer/students", methods=["GET"])
 @jwt_required()
@@ -262,30 +421,62 @@ def producer_student_list():
     students_data = []
     for student in students.items:
         stats = _get_student_quick_stats(student.id, tenant.id)
-        students_data.append({
-            "id": student.id,
-            "name": student.name,
-            "email": student.email,
-            "created_at": student.created_at.isoformat() if student.created_at else None,
-            **stats,
-        })
+        students_data.append(
+            {
+                "id": student.id,
+                "name": student.name,
+                "email": student.email,
+                "created_at": (
+                    student.created_at.isoformat() if student.created_at else None
+                ),
+                **stats,
+            }
+        )
 
-    return jsonify({
-        "students": students_data,
-        "pagination": {
-            "page": page,
-            "per_page": per_page,
-            "total": total,
-            "pages": students.pages,
-        },
-    }), 200
+    return (
+        jsonify(
+            {
+                "students": students_data,
+                "pagination": {
+                    "page": page,
+                    "per_page": per_page,
+                    "total": total,
+                    "pages": students.pages,
+                },
+            }
+        ),
+        200,
+    )
+
+
+@analytics_bp.route("/producer/lessons", methods=["GET"])
+@jwt_required()
+@require_tenant
+def producer_lesson_analytics():
+    """
+    Analytics detalhado de aulas assistidas para o produtor.
+    Query params:
+        course_id (opcional) — filtra por curso
+    """
+    claims = get_jwt()
+    if not _is_producer_or_above(claims):
+        return jsonify({"error": "forbidden"}), 403
+
+    tenant = get_current_tenant()
+    course_id = request.args.get("course_id")
+
+    stats = _get_lesson_stats_for_tenant(tenant.id, course_id)
+    return jsonify(stats), 200
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPERS DE CÁLCULO
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _get_questions_stats(user_id: str, tenant_id: str,
-                          today_start: datetime, week_start: datetime) -> dict:
+
+def _get_questions_stats(
+    user_id: str, tenant_id: str, today_start: datetime, week_start: datetime
+) -> dict:
     """Estatísticas de questões respondidas: total, hoje, semana, taxa de acerto."""
 
     today_start_iso = today_start.isoformat()
@@ -302,14 +493,16 @@ def _get_questions_stats(user_id: str, tenant_id: str,
     total_correct = sum(1 for a in all_attempts if a.is_correct)
 
     # Hoje
-    today_attempts = [a for a in all_attempts
-                      if a.created_at and a.created_at >= today_start]
+    today_attempts = [
+        a for a in all_attempts if a.created_at and a.created_at >= today_start
+    ]
     today_total = len(today_attempts)
     today_correct = sum(1 for a in today_attempts if a.is_correct)
 
     # Semana
-    week_attempts = [a for a in all_attempts
-                     if a.created_at and a.created_at >= week_start]
+    week_attempts = [
+        a for a in all_attempts if a.created_at and a.created_at >= week_start
+    ]
     week_total = len(week_attempts)
     week_correct = sum(1 for a in week_attempts if a.is_correct)
 
@@ -320,14 +513,19 @@ def _get_questions_stats(user_id: str, tenant_id: str,
         "today": {
             "answered": today_total,
             "correct": today_correct,
-            "accuracy": round((today_correct / today_total) * 100, 1) if today_total else 0,
+            "accuracy": (
+                round((today_correct / today_total) * 100, 1) if today_total else 0
+            ),
         },
         "this_week": {
             "answered": week_total,
             "correct": week_correct,
-            "accuracy": round((week_correct / week_total) * 100, 1) if week_total else 0,
+            "accuracy": (
+                round((week_correct / week_total) * 100, 1) if week_total else 0
+            ),
         },
     }
+
 
 def _get_discipline_stats(user_id: str, tenant_id: str) -> list:
     """
@@ -340,8 +538,9 @@ def _get_discipline_stats(user_id: str, tenant_id: str) -> list:
         is_deleted=False,
     ).all()
 
-    by_discipline = defaultdict(lambda: {"total": 0, "correct": 0, "wrong": 0,
-                                          "response_times": []})
+    by_discipline = defaultdict(
+        lambda: {"total": 0, "correct": 0, "wrong": 0, "response_times": []}
+    )
 
     for attempt in attempts:
         question = attempt.question
@@ -360,23 +559,29 @@ def _get_discipline_stats(user_id: str, tenant_id: str) -> list:
     for disc, stats in by_discipline.items():
         total = stats["total"]
         correct = stats["correct"]
-        avg_time = (sum(stats["response_times"]) / len(stats["response_times"])
-                    if stats["response_times"] else 0)
+        avg_time = (
+            sum(stats["response_times"]) / len(stats["response_times"])
+            if stats["response_times"]
+            else 0
+        )
         accuracy = round((correct / total) * 100, 1) if total else 0
 
-        result.append({
-            "discipline": disc,
-            "total_answered": total,
-            "correct": correct,
-            "wrong": stats["wrong"],
-            "accuracy_rate": accuracy,
-            "avg_response_time_seconds": round(avg_time, 1),
-            # Classificação automática de performance
-            "performance_label": _performance_label(accuracy),
-        })
+        result.append(
+            {
+                "discipline": disc,
+                "total_answered": total,
+                "correct": correct,
+                "wrong": stats["wrong"],
+                "accuracy_rate": accuracy,
+                "avg_response_time_seconds": round(avg_time, 1),
+                # Classificação automática de performance
+                "performance_label": _performance_label(accuracy),
+            }
+        )
 
     # Ordena por taxa de acerto (pontos fracos primeiro)
     return sorted(result, key=lambda x: x["accuracy_rate"])
+
 
 def _performance_label(accuracy: float) -> str:
     """Classifica performance em forte, regular ou fraco."""
@@ -386,6 +591,7 @@ def _performance_label(accuracy: float) -> str:
         return "regular"
     else:
         return "fraco"
+
 
 def _get_lesson_progress_stats(user_id: str, tenant_id: str) -> dict:
     """Progresso geral nas aulas."""
@@ -411,25 +617,34 @@ def _get_lesson_progress_stats(user_id: str, tenant_id: str) -> dict:
     course_ids = [e.course_id for e in enrollments]
     total_available = 0
     if course_ids:
-        total_available = db.session.query(func.count(Lesson.id)).join(
-            Subject.__table__,
-            Lesson.module_id.in_(
-                db.session.query(
-                    db.session.query(Subject).filter(
-                        Subject.course_id.in_(course_ids),
-                        Subject.tenant_id == tenant_id,
-                    ).with_entities(Subject.id).subquery()
-                )
+        total_available = (
+            db.session.query(func.count(Lesson.id))
+            .join(
+                Subject.__table__,
+                Lesson.module_id.in_(
+                    db.session.query(
+                        db.session.query(Subject)
+                        .filter(
+                            Subject.course_id.in_(course_ids),
+                            Subject.tenant_id == tenant_id,
+                        )
+                        .with_entities(Subject.id)
+                        .subquery()
+                    )
+                ),
             )
-        ).filter(
-            Lesson.is_published == True,
-            Lesson.tenant_id == tenant_id,
-            Lesson.is_deleted == False,
-        ).scalar() or 0
+            .filter(
+                Lesson.is_published == True,
+                Lesson.tenant_id == tenant_id,
+                Lesson.is_deleted == False,
+            )
+            .scalar()
+            or 0
+        )
 
-    completion_rate = round(
-        (total_watched / total_available) * 100, 1
-    ) if total_available else 0
+    completion_rate = (
+        round((total_watched / total_available) * 100, 1) if total_available else 0
+    )
 
     return {
         "total_watched": total_watched,
@@ -439,8 +654,10 @@ def _get_lesson_progress_stats(user_id: str, tenant_id: str) -> dict:
         "completion_rate": completion_rate,
     }
 
-def _get_time_stats(user_id: str, tenant_id: str,
-                    today_start: datetime, week_start: datetime) -> dict:
+
+def _get_time_stats(
+    user_id: str, tenant_id: str, today_start: datetime, week_start: datetime
+) -> dict:
     """
     Estima tempo estudado baseado em:
     - Tempo de resposta das questões
@@ -508,9 +725,11 @@ def _get_time_stats(user_id: str, tenant_id: str,
         weekly_goal_hours = days_per_week * hours_per_day
 
     weekly_goal_seconds = weekly_goal_hours * 3600
-    weekly_progress_pct = round(
-        (total_week_seconds / weekly_goal_seconds) * 100, 1
-    ) if weekly_goal_seconds else 0
+    weekly_progress_pct = (
+        round((total_week_seconds / weekly_goal_seconds) * 100, 1)
+        if weekly_goal_seconds
+        else 0
+    )
 
     return {
         "today_minutes": round(total_today_seconds / 60, 1),
@@ -520,17 +739,23 @@ def _get_time_stats(user_id: str, tenant_id: str,
         "weekly_progress_percent": min(weekly_progress_pct, 100),
     }
 
+
 def _get_todays_pending(user_id: str, tenant_id: str, today_start: datetime) -> list:
     """Pendências do dia do cronograma."""
     today_str = today_start.date().isoformat()
 
-    items = ScheduleItem.query.join(StudySchedule).filter(
-        StudySchedule.user_id == user_id,
-        ScheduleItem.tenant_id == tenant_id,
-        ScheduleItem.scheduled_date == today_str,
-        ScheduleItem.status == "pending",
-        ScheduleItem.is_deleted == False,
-    ).order_by(ScheduleItem.order).all()
+    items = (
+        ScheduleItem.query.join(StudySchedule)
+        .filter(
+            StudySchedule.user_id == user_id,
+            ScheduleItem.tenant_id == tenant_id,
+            ScheduleItem.scheduled_date == today_str,
+            ScheduleItem.status == "pending",
+            ScheduleItem.is_deleted == False,
+        )
+        .order_by(ScheduleItem.order)
+        .all()
+    )
 
     result = []
     for item in items:
@@ -557,6 +782,7 @@ def _get_todays_pending(user_id: str, tenant_id: str, today_start: datetime) -> 
 
     return result
 
+
 def _get_at_risk_students(student_ids: list, tenant_id: str) -> list:
     """
     Identifica alunos em risco de abandono.
@@ -574,11 +800,15 @@ def _get_at_risk_students(student_ids: list, tenant_id: str) -> list:
         risk_reasons = []
 
         # Critério 1: Inatividade
-        last_attempt = QuestionAttempt.query.filter_by(
-            user_id=student_id,
-            tenant_id=tenant_id,
-            is_deleted=False,
-        ).order_by(QuestionAttempt.created_at.desc()).first()
+        last_attempt = (
+            QuestionAttempt.query.filter_by(
+                user_id=student_id,
+                tenant_id=tenant_id,
+                is_deleted=False,
+            )
+            .order_by(QuestionAttempt.created_at.desc())
+            .first()
+        )
 
         if not last_attempt:
             risk_score += 0.4
@@ -606,7 +836,9 @@ def _get_at_risk_students(student_ids: list, tenant_id: str) -> list:
             accuracy = correct_attempts / total_attempts
             if accuracy < 0.4:
                 risk_score += 0.3
-                risk_reasons.append(f"Taxa de acerto muito baixa ({round(accuracy * 100)}%)")
+                risk_reasons.append(
+                    f"Taxa de acerto muito baixa ({round(accuracy * 100)}%)"
+                )
 
         # Critério 3: Aulas não assistidas repetidamente
         not_watched = LessonProgress.query.filter_by(
@@ -623,18 +855,25 @@ def _get_at_risk_students(student_ids: list, tenant_id: str) -> list:
         if risk_score >= 0.3:
             student = User.query.get(student_id)
             if student:
-                at_risk.append({
-                    "id": student.id,
-                    "name": student.name,
-                    "email": student.email,
-                    "risk_score": round(min(risk_score, 1.0), 2),
-                    "risk_level": "alto" if risk_score >= 0.7 else "médio",
-                    "risk_reasons": risk_reasons,
-                    "last_activity": last_attempt.created_at.isoformat() if last_attempt else None,
-                })
+                at_risk.append(
+                    {
+                        "id": student.id,
+                        "name": student.name,
+                        "email": student.email,
+                        "risk_score": round(min(risk_score, 1.0), 2),
+                        "risk_level": "alto" if risk_score >= 0.7 else "médio",
+                        "risk_reasons": risk_reasons,
+                        "last_activity": (
+                            last_attempt.created_at.isoformat()
+                            if last_attempt
+                            else None
+                        ),
+                    }
+                )
 
     # Ordena por risco (maior primeiro)
     return sorted(at_risk, key=lambda x: x["risk_score"], reverse=True)
+
 
 def _get_class_discipline_stats(student_ids: list, tenant_id: str) -> list:
     """Performance da turma por disciplina."""
@@ -657,33 +896,44 @@ def _get_class_discipline_stats(student_ids: list, tenant_id: str) -> list:
     for disc, stats in by_discipline.items():
         total = stats["total"]
         correct = stats["correct"]
-        result.append({
-            "discipline": disc,
-            "total_attempts": total,
-            "accuracy_rate": round((correct / total) * 100, 1) if total else 0,
-            "performance_label": _performance_label(
-                round((correct / total) * 100, 1) if total else 0
-            ),
-        })
+        result.append(
+            {
+                "discipline": disc,
+                "total_attempts": total,
+                "accuracy_rate": round((correct / total) * 100, 1) if total else 0,
+                "performance_label": _performance_label(
+                    round((correct / total) * 100, 1) if total else 0
+                ),
+            }
+        )
 
     return sorted(result, key=lambda x: x["accuracy_rate"])
 
+
 def _get_hardest_questions(tenant_id: str) -> list:
     """Questões com menor taxa de acerto (temas mais problemáticos da turma)."""
-    questions = Question.query.filter_by(
-        tenant_id=tenant_id,
-        is_active=True,
-        is_deleted=False,
-    ).filter(
-        Question.total_attempts >= 3,  # Só questões com amostra mínima
-    ).order_by(
-        Question.correct_attempts / Question.total_attempts  # Menor acerto primeiro
-    ).limit(20).all()
+    questions = (
+        Question.query.filter_by(
+            tenant_id=tenant_id,
+            is_active=True,
+            is_deleted=False,
+        )
+        .filter(
+            Question.total_attempts >= 3,  # Só questões com amostra mínima
+        )
+        .order_by(
+            Question.correct_attempts / Question.total_attempts  # Menor acerto primeiro
+        )
+        .limit(20)
+        .all()
+    )
 
     return [
         {
             "id": q.id,
-            "statement_preview": q.statement[:100] + "..." if len(q.statement) > 100 else q.statement,
+            "statement_preview": (
+                q.statement[:100] + "..." if len(q.statement) > 100 else q.statement
+            ),
             "discipline": q.discipline,
             "topic": q.topic,
             "difficulty": q.difficulty.value if q.difficulty else None,
@@ -692,6 +942,7 @@ def _get_hardest_questions(tenant_id: str) -> list:
         }
         for q in questions
     ]
+
 
 def _get_student_rankings(student_ids: list, tenant_id: str) -> dict:
     """Top alunos e alunos com mais dificuldade."""
@@ -712,8 +963,11 @@ def _get_student_rankings(student_ids: list, tenant_id: str) -> dict:
 
     return {
         "top_performers": sorted_by_accuracy[:5],
-        "needs_attention": sorted_by_accuracy[-5:] if len(sorted_by_accuracy) > 5 else [],
+        "needs_attention": (
+            sorted_by_accuracy[-5:] if len(sorted_by_accuracy) > 5 else []
+        ),
     }
+
 
 def _get_student_quick_stats(user_id: str, tenant_id: str) -> dict:
     """Estatísticas rápidas de um aluno (para listagem)."""
@@ -730,31 +984,47 @@ def _get_student_quick_stats(user_id: str, tenant_id: str) -> dict:
         is_deleted=False,
     ).count()
 
-    last_attempt = QuestionAttempt.query.filter_by(
-        user_id=user_id,
-        tenant_id=tenant_id,
-        is_deleted=False,
-    ).order_by(QuestionAttempt.created_at.desc()).first()
+    last_attempt = (
+        QuestionAttempt.query.filter_by(
+            user_id=user_id,
+            tenant_id=tenant_id,
+            is_deleted=False,
+        )
+        .order_by(QuestionAttempt.created_at.desc())
+        .first()
+    )
+
+    lessons_watched = LessonProgress.query.filter_by(
+    user_id=user_id,
+    tenant_id=tenant_id,
+    status="watched",
+    is_deleted=False,
+    ).count()
 
     seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
-    is_at_risk = (
-        not last_attempt or
-        last_attempt.created_at < seven_days_ago
-    )
+    is_at_risk = not last_attempt or last_attempt.created_at < seven_days_ago
 
     return {
         "total_answered": total,
         "accuracy_rate": round((correct / total) * 100, 1) if total else 0,
         "last_activity": last_attempt.created_at.isoformat() if last_attempt else None,
+        "lessons_watched": lessons_watched,
         "is_at_risk": is_at_risk,
     }
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # INSIGHTS AUTOMÁTICOS VIA GEMINI
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _generate_insights(user, questions_stats: dict, discipline_stats: list,
-                        lesson_progress: dict, time_stats: dict) -> list:
+
+def _generate_insights(
+    user,
+    questions_stats: dict,
+    discipline_stats: list,
+    lesson_progress: dict,
+    time_stats: dict,
+) -> list:
     """
     Gera 3 insights personalizados para o aluno via Gemini.
     Fallback para insights baseados em regras se Gemini falhar.
@@ -767,19 +1037,30 @@ def _generate_insights(user, questions_stats: dict, discipline_stats: list,
     if api_key:
         try:
             return _gemini_student_insights(
-                api_key, user, questions_stats, discipline_stats,
-                lesson_progress, time_stats
+                api_key,
+                user,
+                questions_stats,
+                discipline_stats,
+                lesson_progress,
+                time_stats,
             )
         except Exception as e:
             current_app.logger.warning(f"Gemini insights falhou, usando fallback: {e}")
 
     # Fallback: regras determinísticas
-    return _rule_based_insights(questions_stats, discipline_stats,
-                                 lesson_progress, time_stats)
+    return _rule_based_insights(
+        questions_stats, discipline_stats, lesson_progress, time_stats
+    )
 
-def _gemini_student_insights(api_key: str, user, questions_stats: dict,
-                               discipline_stats: list, lesson_progress: dict,
-                               time_stats: dict) -> list:
+
+def _gemini_student_insights(
+    api_key: str,
+    user,
+    questions_stats: dict,
+    discipline_stats: list,
+    lesson_progress: dict,
+    time_stats: dict,
+) -> list:
     """Chama Gemini para gerar insights personalizados."""
     import google.generativeai as genai
 
@@ -825,62 +1106,82 @@ FORMATO OBRIGATÓRIO:
     text = text.strip()
 
     import json
+
     data = json.loads(text)
     return data.get("insights", [])[:3]
 
-def _generate_producer_insights(total_students: int, engagement_rate: float,
-                                  at_risk_count: int,
-                                  class_discipline_stats: list) -> list:
+
+def _generate_producer_insights(
+    total_students: int,
+    engagement_rate: float,
+    at_risk_count: int,
+    class_discipline_stats: list,
+) -> list:
     """Insights automáticos para o produtor (baseado em regras)."""
     insights = []
 
     # Insight 1: Engajamento
     if engagement_rate < 30:
-        insights.append({
-            "type": "alert",
-            "icon": "🚨",
-            "title": "Engajamento crítico",
-            "message": f"Apenas {engagement_rate}% dos alunos acessaram a plataforma nos últimos 7 dias. Considere enviar uma notificação ou e-mail de reengajamento.",
-        })
+        insights.append(
+            {
+                "type": "alert",
+                "icon": "🚨",
+                "title": "Engajamento crítico",
+                "message": f"Apenas {engagement_rate}% dos alunos acessaram a plataforma nos últimos 7 dias. Considere enviar uma notificação ou e-mail de reengajamento.",
+            }
+        )
     elif engagement_rate < 60:
-        insights.append({
-            "type": "warning",
-            "icon": "⚠️",
-            "title": "Engajamento abaixo do esperado",
-            "message": f"{engagement_rate}% de engajamento semanal. Alunos engajados tendem a ter 3x mais chances de aprovação.",
-        })
+        insights.append(
+            {
+                "type": "warning",
+                "icon": "⚠️",
+                "title": "Engajamento abaixo do esperado",
+                "message": f"{engagement_rate}% de engajamento semanal. Alunos engajados tendem a ter 3x mais chances de aprovação.",
+            }
+        )
     else:
-        insights.append({
-            "type": "positive",
-            "icon": "✅",
-            "title": "Boa taxa de engajamento",
-            "message": f"{engagement_rate}% dos alunos ativos esta semana. Continue monitorando os {at_risk_count} em risco.",
-        })
+        insights.append(
+            {
+                "type": "positive",
+                "icon": "✅",
+                "title": "Boa taxa de engajamento",
+                "message": f"{engagement_rate}% dos alunos ativos esta semana. Continue monitorando os {at_risk_count} em risco.",
+            }
+        )
 
     # Insight 2: Abandono
     if at_risk_count > 0:
         risk_pct = round((at_risk_count / total_students) * 100, 1)
-        insights.append({
-            "type": "alert" if risk_pct > 20 else "warning",
-            "icon": "⚠️",
-            "title": f"{at_risk_count} alunos em risco de abandono",
-            "message": f"{risk_pct}% da turma está inativa há mais de 7 dias. Entre em contato proativamente.",
-        })
+        insights.append(
+            {
+                "type": "alert" if risk_pct > 20 else "warning",
+                "icon": "⚠️",
+                "title": f"{at_risk_count} alunos em risco de abandono",
+                "message": f"{risk_pct}% da turma está inativa há mais de 7 dias. Entre em contato proativamente.",
+            }
+        )
 
     # Insight 3: Disciplina mais problemática
     if class_discipline_stats:
         weakest = class_discipline_stats[0]
-        insights.append({
-            "type": "suggestion",
-            "icon": "📚",
-            "title": f"Atenção: {weakest['discipline']}",
-            "message": f"A turma tem apenas {weakest['accuracy_rate']}% de acerto em {weakest['discipline']}. Considere criar material de revisão ou aula extra sobre este tema.",
-        })
+        insights.append(
+            {
+                "type": "suggestion",
+                "icon": "📚",
+                "title": f"Atenção: {weakest['discipline']}",
+                "message": f"A turma tem apenas {weakest['accuracy_rate']}% de acerto em {weakest['discipline']}. Considere criar material de revisão ou aula extra sobre este tema.",
+            }
+        )
 
     return insights[:3]
 
-def _rule_based_insights(questions_stats: dict, discipline_stats: list,
-                          lesson_progress: dict, time_stats: dict) -> list:
+
+def _rule_based_insights(
+    questions_stats: dict,
+    discipline_stats: list,
+    lesson_progress: dict,
+    time_stats: dict,
+) -> list:
     """
     Insights baseados em regras determinísticas.
     Usado como fallback quando Gemini não está disponível.
@@ -890,75 +1191,95 @@ def _rule_based_insights(questions_stats: dict, discipline_stats: list,
     # Insight 1: Progresso semanal
     progress_pct = time_stats["weekly_progress_percent"]
     if progress_pct >= 80:
-        insights.append({
-            "type": "motivation",
-            "icon": "🎯",
-            "title": "Semana excelente!",
-            "message": f"Você já completou {progress_pct}% da sua meta semanal. Continue assim — consistência é o segredo da aprovação.",
-        })
+        insights.append(
+            {
+                "type": "motivation",
+                "icon": "🎯",
+                "title": "Semana excelente!",
+                "message": f"Você já completou {progress_pct}% da sua meta semanal. Continue assim — consistência é o segredo da aprovação.",
+            }
+        )
     elif progress_pct >= 40:
         remaining = time_stats["weekly_goal_minutes"] - time_stats["week_minutes"]
-        insights.append({
-            "type": "motivation",
-            "icon": "🎯",
-            "title": "Você está no caminho certo",
-            "message": f"Faltam apenas {round(remaining)} minutos para bater sua meta da semana. Você consegue!",
-        })
+        insights.append(
+            {
+                "type": "motivation",
+                "icon": "🎯",
+                "title": "Você está no caminho certo",
+                "message": f"Faltam apenas {round(remaining)} minutos para bater sua meta da semana. Você consegue!",
+            }
+        )
     else:
-        insights.append({
-            "type": "next_step",
-            "icon": "📌",
-            "title": "Hora de retomar o ritmo",
-            "message": f"Você completou {progress_pct}% da meta desta semana. Que tal reservar 30 minutos agora para estudar?",
-        })
+        insights.append(
+            {
+                "type": "next_step",
+                "icon": "📌",
+                "title": "Hora de retomar o ritmo",
+                "message": f"Você completou {progress_pct}% da meta desta semana. Que tal reservar 30 minutos agora para estudar?",
+            }
+        )
 
     # Insight 2: Ponto fraco
     weak = [d for d in discipline_stats if d["performance_label"] == "fraco"]
     if weak:
         weakest = weak[0]
-        insights.append({
-            "type": "weakness",
-            "icon": "⚠️",
-            "title": f"Foco em {weakest['discipline']}",
-            "message": f"Sua taxa de acerto em {weakest['discipline']} está em {weakest['accuracy_rate']}%. Revise o material e pratique mais questões desta disciplina.",
-        })
+        insights.append(
+            {
+                "type": "weakness",
+                "icon": "⚠️",
+                "title": f"Foco em {weakest['discipline']}",
+                "message": f"Sua taxa de acerto em {weakest['discipline']} está em {weakest['accuracy_rate']}%. Revise o material e pratique mais questões desta disciplina.",
+            }
+        )
     elif questions_stats["overall_accuracy"] < 50:
-        insights.append({
-            "type": "weakness",
-            "icon": "⚠️",
-            "title": "Reforce a teoria",
-            "message": f"Com {questions_stats['overall_accuracy']}% de acerto geral, vale revisar o conteúdo antes de resolver mais questões.",
-        })
+        insights.append(
+            {
+                "type": "weakness",
+                "icon": "⚠️",
+                "title": "Reforce a teoria",
+                "message": f"Com {questions_stats['overall_accuracy']}% de acerto geral, vale revisar o conteúdo antes de resolver mais questões.",
+            }
+        )
     else:
-        insights.append({
-            "type": "motivation",
-            "icon": "💪",
-            "title": "Bom desempenho!",
-            "message": f"Taxa de acerto de {questions_stats['overall_accuracy']}%. Continue praticando para consolidar o conhecimento.",
-        })
+        insights.append(
+            {
+                "type": "motivation",
+                "icon": "💪",
+                "title": "Bom desempenho!",
+                "message": f"Taxa de acerto de {questions_stats['overall_accuracy']}%. Continue praticando para consolidar o conhecimento.",
+            }
+        )
 
     # Insight 3: Próximo passo
     if lesson_progress["total_watched"] < lesson_progress["total_available"]:
-        remaining_lessons = lesson_progress["total_available"] - lesson_progress["total_watched"]
-        insights.append({
-            "type": "next_step",
-            "icon": "📌",
-            "title": f"{remaining_lessons} aulas para assistir",
-            "message": "Assista às aulas pendentes antes de resolver questões — a base teórica aumenta o aproveitamento.",
-        })
+        remaining_lessons = (
+            lesson_progress["total_available"] - lesson_progress["total_watched"]
+        )
+        insights.append(
+            {
+                "type": "next_step",
+                "icon": "📌",
+                "title": f"{remaining_lessons} aulas para assistir",
+                "message": "Assista às aulas pendentes antes de resolver questões — a base teórica aumenta o aproveitamento.",
+            }
+        )
     elif questions_stats["today"]["answered"] == 0:
-        insights.append({
-            "type": "next_step",
-            "icon": "📌",
-            "title": "Comece com questões hoje",
-            "message": "Você ainda não respondeu nenhuma questão hoje. Que tal resolver 10 questões rápidas agora?",
-        })
+        insights.append(
+            {
+                "type": "next_step",
+                "icon": "📌",
+                "title": "Comece com questões hoje",
+                "message": "Você ainda não respondeu nenhuma questão hoje. Que tal resolver 10 questões rápidas agora?",
+            }
+        )
     else:
-        insights.append({
-            "type": "next_step",
-            "icon": "📌",
-            "title": "Continue praticando",
-            "message": f"Você respondeu {questions_stats['today']['answered']} questões hoje. Tente chegar a 20 para um estudo mais completo.",
-        })
+        insights.append(
+            {
+                "type": "next_step",
+                "icon": "📌",
+                "title": "Continue praticando",
+                "message": f"Você respondeu {questions_stats['today']['answered']} questões hoje. Tente chegar a 20 para um estudo mais completo.",
+            }
+        )
 
     return insights[:3]
