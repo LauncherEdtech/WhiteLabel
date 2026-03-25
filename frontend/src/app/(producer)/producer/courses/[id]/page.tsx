@@ -16,19 +16,24 @@ import { useForm } from "react-hook-form";
 import { cn } from "@/lib/utils/cn";
 import {
   BookOpen, Plus, ChevronDown, ChevronUp, ChevronLeft,
-  Pencil, Eye, EyeOff, GripVertical, Video, Clock, Trash2,
+  Pencil, Eye, EyeOff, GripVertical, Video, Clock, Trash2, FileText, CheckCircle2,
 } from "lucide-react";
 import Link from "next/link";
 import { QUERY_KEYS } from "@/lib/constants/queryKeys";
-
-// ── Types ─────────────────────────────────────────────────────────────────────
+import { PdfUploader } from "@/components/producer/PdfUploader";
 
 type EditSubjectState = { open: boolean; subject: any | null };
 type EditModuleState = { open: boolean; module: any | null };
 type EditLessonState = { open: boolean; lesson: any | null };
 type ConfirmDelete = { open: boolean; type: "subject" | "module" | "lesson"; id: string; name: string; parentCount?: number } | null;
 
-// ── Page ──────────────────────────────────────────────────────────────────────
+// Estado do modal de criar aula — suporta fase 2 (PDF) após criação
+type LessonModalState = {
+  open: boolean;
+  moduleId: string;
+  createdLessonId?: string;   // presente na fase 2
+  createdTitle?: string;
+};
 
 export default function ProducerCourseDetailPage() {
   const { id: courseId } = useParams<{ id: string }>();
@@ -38,17 +43,13 @@ export default function ProducerCourseDetailPage() {
   const [expandedSubjects, setExpandedSubjects] = useState<Set<string>>(new Set());
   const [expandedModules, setExpandedModules] = useState<Set<string>>(new Set());
 
-  // Criar
   const [subjectModal, setSubjectModal] = useState(false);
   const [moduleModal, setModuleModal] = useState<{ open: boolean; subjectId: string }>({ open: false, subjectId: "" });
-  const [lessonModal, setLessonModal] = useState<{ open: boolean; moduleId: string }>({ open: false, moduleId: "" });
+  const [lessonModal, setLessonModal] = useState<LessonModalState>({ open: false, moduleId: "" });
 
-  // Editar
   const [editSubject, setEditSubject] = useState<EditSubjectState>({ open: false, subject: null });
   const [editModule, setEditModule] = useState<EditModuleState>({ open: false, module: null });
   const [editLesson, setEditLesson] = useState<EditLessonState>({ open: false, lesson: null });
-
-  // Confirmar exclusão
   const [confirmDelete, setConfirmDelete] = useState<ConfirmDelete>(null);
 
   const { data: course, isLoading } = useQuery({
@@ -79,18 +80,29 @@ export default function ProducerCourseDetailPage() {
   });
 
   const createLesson = useMutation({
-    mutationFn: (d: { moduleId: string; title: string; duration_minutes: number; video_url: string }) =>
+    mutationFn: (d: { moduleId: string; title: string; duration_minutes: number; video_url: string; is_free_preview?: boolean }) =>
       apiClient.post(`/courses/modules/${d.moduleId}/lessons`, {
         title: d.title,
         duration_minutes: d.duration_minutes,
         video_url: d.video_url || null,
         order: 0,
         is_published: false,
+        is_free_preview: d.is_free_preview ?? false,
       }).then(r => r.data),
-    onSuccess: () => {
+    onSuccess: (data, variables) => {
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) });
-      toast.success("Aula criada!");
-      setLessonModal({ open: false, moduleId: "" });
+      if (data?.lesson?.id) {
+        // Fase 2: mantém o modal aberto mas muda para tela de PDF
+        setLessonModal({
+          open: true,
+          moduleId: variables.moduleId,
+          createdLessonId: data.lesson.id,
+          createdTitle: data.lesson.title,
+        });
+      } else {
+        setLessonModal({ open: false, moduleId: "" });
+        toast.success("Aula criada!");
+      }
     },
   });
 
@@ -146,6 +158,17 @@ export default function ProducerCourseDetailPage() {
 
   // ── Mutations: excluir ──────────────────────────────────────────────────────
 
+  const deleteSubject = useMutation({
+    mutationFn: (subjectId: string) =>
+      apiClient.delete(`/courses/${courseId}/subjects/${subjectId}`).then(r => r.data),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) });
+      toast.success("Disciplina removida!", data.message);
+      setConfirmDelete(null);
+    },
+    onError: () => toast.error("Erro ao remover disciplina"),
+  });
+
   const deleteModule = useMutation({
     mutationFn: (moduleId: string) =>
       apiClient.delete(`/courses/modules/${moduleId}`).then(r => r.data),
@@ -170,26 +193,10 @@ export default function ProducerCourseDetailPage() {
 
   const handleConfirmDelete = () => {
     if (!confirmDelete) return;
-    if (confirmDelete.type === "module") deleteModule.mutate(confirmDelete.id);
-    else if (confirmDelete.type === "lesson") deleteLesson.mutate(confirmDelete.id);
-    else if (confirmDelete.type === "subject") deleteSubject.mutate(confirmDelete.id);
+    if (confirmDelete.type === "subject") deleteSubject.mutate(confirmDelete.id);
+    else if (confirmDelete.type === "module") deleteModule.mutate(confirmDelete.id);
+    else deleteLesson.mutate(confirmDelete.id);
   };
-
-
-
-  const deleteSubject = useMutation({
-    mutationFn: (subjectId: string) =>
-      apiClient.delete(`/courses/${courseId}/subjects/${subjectId}`).then(r => r.data),
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) });
-      toast.success("Disciplina removida!", data.message);
-      setConfirmDelete(null);
-    },
-    onError: () => toast.error("Erro ao remover disciplina"),
-  });
-
-
-  // ── Render ──────────────────────────────────────────────────────────────────
 
   if (isLoading) return <Skeleton className="h-64 rounded-xl animate-pulse" />;
   if (!course) return null;
@@ -257,11 +264,8 @@ export default function ProducerCourseDetailPage() {
         <div className="space-y-3">
           {subjects.map((subject: any) => (
             <Card key={subject.id} className="overflow-hidden">
-
-              {/* Subject row */}
               <div className="w-full p-4 flex items-center gap-3 hover:bg-accent/50 transition-colors">
-                <div
-                  role="button" tabIndex={0}
+                <div role="button" tabIndex={0}
                   onClick={() => setExpandedSubjects(prev => {
                     const next = new Set(prev);
                     next.has(subject.id) ? next.delete(subject.id) : next.add(subject.id);
@@ -274,49 +278,33 @@ export default function ProducerCourseDetailPage() {
                   <Badge variant="outline" className="text-xs">peso {subject.edital_weight}x</Badge>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
-                  <Button variant="ghost" size="icon-sm" title="Editar disciplina"
-                    onClick={() => setEditSubject({ open: true, subject })}>
+                  <Button variant="ghost" size="icon-sm" onClick={() => setEditSubject({ open: true, subject })}>
                     <Pencil className="h-3 w-3" />
                   </Button>
-                  <Button variant="ghost" size="icon-sm" title="Excluir disciplina"
-                    className="hover:text-destructive"
-                    onClick={() => setConfirmDelete({
-                      open: true,
-                      type: "subject",
-                      id: subject.id,
-                      name: subject.name,
-                      parentCount: subject.modules?.length || 0,
-                    })}>
+                  <Button variant="ghost" size="icon-sm" className="hover:text-destructive"
+                    onClick={() => setConfirmDelete({ open: true, type: "subject", id: subject.id, name: subject.name, parentCount: subject.modules?.length || 0 })}>
                     <Trash2 className="h-3 w-3" />
                   </Button>
-                  <Button variant="ghost" size="icon-sm" title="Adicionar módulo"
+                  <Button variant="ghost" size="icon-sm"
                     onClick={() => setModuleModal({ open: true, subjectId: subject.id })}>
                     <Plus className="h-3 w-3" />
                   </Button>
                   {expandedSubjects.has(subject.id)
-                    ? <ChevronUp className="h-4 w-4 text-muted-foreground cursor-pointer"
-                      onClick={() => setExpandedSubjects(prev => { const n = new Set(prev); n.delete(subject.id); return n; })} />
-                    : <ChevronDown className="h-4 w-4 text-muted-foreground cursor-pointer"
-                      onClick={() => setExpandedSubjects(prev => new Set([...prev, subject.id]))} />
+                    ? <ChevronUp className="h-4 w-4 text-muted-foreground cursor-pointer" onClick={() => setExpandedSubjects(prev => { const n = new Set(prev); n.delete(subject.id); return n; })} />
+                    : <ChevronDown className="h-4 w-4 text-muted-foreground cursor-pointer" onClick={() => setExpandedSubjects(prev => new Set([...prev, subject.id]))} />
                   }
                 </div>
               </div>
 
-              {/* Modules */}
               {expandedSubjects.has(subject.id) && (
                 <div className="border-t border-border">
                   {(subject.modules || []).length === 0 && (
-                    <p className="px-5 py-3 text-xs text-muted-foreground italic">
-                      Nenhum módulo. Clique em + para adicionar.
-                    </p>
+                    <p className="px-5 py-3 text-xs text-muted-foreground italic">Nenhum módulo. Clique em + para adicionar.</p>
                   )}
                   {(subject.modules || []).map((module: any) => (
                     <div key={module.id} className="border-b border-border last:border-0">
-
-                      {/* Module row */}
                       <div className="w-full px-5 py-3 flex items-center gap-3 hover:bg-accent/30 transition-colors group">
-                        <div
-                          role="button" tabIndex={0}
+                        <div role="button" tabIndex={0}
                           onClick={() => setExpandedModules(prev => {
                             const next = new Set(prev);
                             next.has(module.id) ? next.delete(module.id) : next.add(module.id);
@@ -326,96 +314,57 @@ export default function ProducerCourseDetailPage() {
                         >
                           <GripVertical className="h-4 w-4 text-muted-foreground shrink-0" />
                           <span className="flex-1 text-sm font-medium text-foreground">{module.name}</span>
-                          <span className="text-xs text-muted-foreground">
-                            {module.lessons?.length || 0} aulas
-                          </span>
+                          <span className="text-xs text-muted-foreground">{module.lessons?.length || 0} aulas</span>
                         </div>
                         <div className="flex items-center gap-1 shrink-0">
-                          <Button variant="ghost" size="icon-sm" title="Editar módulo"
-                            onClick={() => setEditModule({ open: true, module })}>
+                          <Button variant="ghost" size="icon-sm" onClick={() => setEditModule({ open: true, module })}>
                             <Pencil className="h-3 w-3" />
                           </Button>
-                          <Button variant="ghost" size="icon-sm" title="Excluir módulo"
-                            className="hover:text-destructive"
-                            onClick={() => setConfirmDelete({
-                              open: true,
-                              type: "module",
-                              id: module.id,
-                              name: module.name,
-                              parentCount: module.lessons?.length || 0,
-                            })}>
+                          <Button variant="ghost" size="icon-sm" className="hover:text-destructive"
+                            onClick={() => setConfirmDelete({ open: true, type: "module", id: module.id, name: module.name, parentCount: module.lessons?.length || 0 })}>
                             <Trash2 className="h-3 w-3" />
                           </Button>
-                          <Button variant="ghost" size="icon-sm" title="Adicionar aula"
+                          <Button variant="ghost" size="icon-sm"
                             onClick={() => setLessonModal({ open: true, moduleId: module.id })}>
                             <Plus className="h-3 w-3" />
                           </Button>
                           {expandedModules.has(module.id)
-                            ? <ChevronUp className="h-3 w-3 text-muted-foreground cursor-pointer"
-                              onClick={() => setExpandedModules(prev => { const n = new Set(prev); n.delete(module.id); return n; })} />
-                            : <ChevronDown className="h-3 w-3 text-muted-foreground cursor-pointer"
-                              onClick={() => setExpandedModules(prev => new Set([...prev, module.id]))} />
+                            ? <ChevronUp className="h-3 w-3 text-muted-foreground cursor-pointer" onClick={() => setExpandedModules(prev => { const n = new Set(prev); n.delete(module.id); return n; })} />
+                            : <ChevronDown className="h-3 w-3 text-muted-foreground cursor-pointer" onClick={() => setExpandedModules(prev => new Set([...prev, module.id]))} />
                           }
                         </div>
                       </div>
 
-                      {/* Lessons */}
                       {expandedModules.has(module.id) && (
                         <div className="pb-2 bg-muted/20">
                           {(module.lessons || []).length === 0 && (
-                            <p className="px-8 py-2 text-xs text-muted-foreground italic">
-                              Nenhuma aula. Clique em + para adicionar.
-                            </p>
+                            <p className="px-8 py-2 text-xs text-muted-foreground italic">Nenhuma aula. Clique em + para adicionar.</p>
                           )}
                           {(module.lessons || []).map((lesson: any, li: number) => (
-                            <div
-                              key={lesson.id}
-                              className="flex items-center gap-3 px-8 py-2 hover:bg-accent/20 transition-colors group"
-                            >
+                            <div key={lesson.id} className="flex items-center gap-3 px-8 py-2 hover:bg-accent/20 transition-colors group">
                               <Video className="h-3 w-3 text-muted-foreground shrink-0" />
-                              <span className="flex-1 text-xs text-foreground truncate">
-                                {li + 1}. {lesson.title}
-                              </span>
+                              <span className="flex-1 text-xs text-foreground truncate">{li + 1}. {lesson.title}</span>
+                              {lesson.material_url && (
+                                <span title="Tem PDF"><FileText className="h-3 w-3 text-destructive shrink-0" /></span>
+                              )}
                               {lesson.duration_minutes > 0 && (
                                 <span className="text-xs text-muted-foreground flex items-center gap-0.5">
                                   <Clock className="h-3 w-3" />{lesson.duration_minutes}min
                                 </span>
                               )}
-                              {/* Editar aula */}
-                              <button
-                                onClick={() => setEditLesson({ open: true, lesson })}
-                                title="Editar aula"
-                                className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-                              >
+                              <button onClick={() => setEditLesson({ open: true, lesson })} title="Editar aula"
+                                className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                                 <Pencil className="h-3 w-3 text-muted-foreground hover:text-foreground" />
                               </button>
-                              {/* Excluir aula */}
-                              <button
-                                onClick={() => setConfirmDelete({
-                                  open: true,
-                                  type: "lesson",
-                                  id: lesson.id,
-                                  name: lesson.title,
-                                })}
-                                title="Excluir aula"
-                                className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 hover:text-destructive"
-                              >
+                              <button onClick={() => setConfirmDelete({ open: true, type: "lesson", id: lesson.id, name: lesson.title })}
+                                title="Excluir aula" className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                                 <Trash2 className="h-3 w-3 text-muted-foreground hover:text-destructive" />
                               </button>
-                              {/* Toggle publicar */}
-                              <button
-                                onClick={() => toggleLesson.mutate({
-                                  lessonId: lesson.id,
-                                  title: lesson.title,
-                                  is_published: !lesson.is_published,
-                                  video_url: lesson.video_url,
-                                  duration_minutes: lesson.duration_minutes,
-                                  order: lesson.order ?? 0,
-                                  is_free_preview: lesson.is_free_preview ?? false,
-                                })}
-                                title={lesson.is_published ? "Despublicar" : "Publicar"}
-                                className="shrink-0"
-                              >
+                              <button onClick={() => toggleLesson.mutate({
+                                lessonId: lesson.id, title: lesson.title, is_published: !lesson.is_published,
+                                video_url: lesson.video_url, duration_minutes: lesson.duration_minutes,
+                                order: lesson.order ?? 0, is_free_preview: lesson.is_free_preview ?? false,
+                              })} title={lesson.is_published ? "Despublicar" : "Publicar"} className="shrink-0">
                                 {lesson.is_published
                                   ? <Eye className="h-3.5 w-3.5 text-success" />
                                   : <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />
@@ -434,112 +383,92 @@ export default function ProducerCourseDetailPage() {
         </div>
       )}
 
-      {/* ── Modal: Confirmação de exclusão ──────────────────────────────────── */}
+      {/* ── Modal: Confirmação de exclusão ── */}
       <Dialog open={!!confirmDelete?.open} onOpenChange={v => { if (!v) setConfirmDelete(null); }}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-destructive">
-              <Trash2 className="h-5 w-5" />
-              Confirmar exclusão
+              <Trash2 className="h-5 w-5" />Confirmar exclusão
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
             <p className="text-sm text-foreground">
               Tem certeza que deseja excluir{" "}
-              <strong className="font-semibold">
-                {confirmDelete?.type === "subject"
-                  ? "a disciplina"
-                  : confirmDelete?.type === "module"
-                    ? "o módulo"
-                    : "a aula"}{" "}
-                "{confirmDelete?.name}"
-              </strong>?
+              <strong>{confirmDelete?.type === "subject" ? "a disciplina" : confirmDelete?.type === "module" ? "o módulo" : "a aula"} "{confirmDelete?.name}"</strong>?
             </p>
             {confirmDelete?.type === "module" && (confirmDelete.parentCount || 0) > 0 && (
               <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20">
-                <p className="text-xs text-destructive font-medium">
-                  ⚠ Este módulo contém {confirmDelete.parentCount} aula(s) que também serão removidas.
-                </p>
+                <p className="text-xs text-destructive font-medium">⚠ Este módulo contém {confirmDelete.parentCount} aula(s) que também serão removidas.</p>
               </div>
             )}
             {confirmDelete?.type === "subject" && (confirmDelete.parentCount || 0) > 0 && (
               <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20">
-                <p className="text-xs text-destructive font-medium">
-                  ⚠ Esta disciplina contém {confirmDelete.parentCount} módulo(s) com todas as suas aulas que também serão removidos.
-                </p>
+                <p className="text-xs text-destructive font-medium">⚠ Esta disciplina contém {confirmDelete.parentCount} módulo(s) com todas as suas aulas que também serão removidos.</p>
               </div>
             )}
-            <p className="text-xs text-muted-foreground">
-              Esta ação não pode ser desfeita.
-            </p>
+            <p className="text-xs text-muted-foreground">Esta ação não pode ser desfeita.</p>
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setConfirmDelete(null)}>
-              Cancelar
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={handleConfirmDelete}
-              disabled={isDeleting}
-            >
+            <Button variant="ghost" onClick={() => setConfirmDelete(null)}>Cancelar</Button>
+            <Button variant="destructive" onClick={handleConfirmDelete} disabled={isDeleting}>
               {isDeleting ? "Removendo..." : "Sim, excluir"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* ── Modais: Criar ────────────────────────────────────────────────────── */}
-
-      <SubjectModal
-        open={subjectModal} title="Nova Disciplina"
+      {/* ── Modais: Criar ── */}
+      <SubjectModal open={subjectModal} title="Nova Disciplina"
         onClose={() => setSubjectModal(false)}
         onSubmit={d => createSubject.mutate(d)}
-        loading={createSubject.isPending}
-      />
+        loading={createSubject.isPending} />
 
-      <SimpleModal
-        open={moduleModal.open} title="Novo Módulo" placeholder="Nome do módulo"
+      <SimpleModal open={moduleModal.open} title="Novo Módulo" placeholder="Nome do módulo"
         onClose={() => setModuleModal({ open: false, subjectId: "" })}
         onSubmit={name => createModule.mutate({ subjectId: moduleModal.subjectId, name })}
-        loading={createModule.isPending}
-      />
+        loading={createModule.isPending} />
 
-      <LessonModal
-        open={lessonModal.open} title="Nova Aula"
-        onClose={() => setLessonModal({ open: false, moduleId: "" })}
-        onSubmit={d => createLesson.mutate({ ...d, moduleId: lessonModal.moduleId })}
+      {/* Modal criar aula — dois modos: fase 1 (form) e fase 2 (PDF) no mesmo modal */}
+      <CreateLessonModal
+        open={lessonModal.open}
+        createdLessonId={lessonModal.createdLessonId}
+        createdTitle={lessonModal.createdTitle}
         loading={createLesson.isPending}
+        onClose={() => {
+          setLessonModal({ open: false, moduleId: "" });
+          if (lessonModal.createdLessonId) toast.success("Aula criada com sucesso!");
+        }}
+        onSubmit={d => createLesson.mutate({ ...d, moduleId: lessonModal.moduleId })}
+        onPdfUploaded={() => {
+          queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) });
+          setLessonModal({ open: false, moduleId: "" });
+          toast.success("Aula criada com PDF!");
+        }}
       />
 
-      {/* ── Modais: Editar ───────────────────────────────────────────────────── */}
-
-      <SubjectModal
-        open={editSubject.open} title="Editar Disciplina"
-        initialData={editSubject.subject ? {
-          name: editSubject.subject.name,
-          color: editSubject.subject.color,
-          edital_weight: editSubject.subject.edital_weight,
-        } : undefined}
+      {/* ── Modais: Editar ── */}
+      <SubjectModal open={editSubject.open} title="Editar Disciplina"
+        initialData={editSubject.subject ? { name: editSubject.subject.name, color: editSubject.subject.color, edital_weight: editSubject.subject.edital_weight } : undefined}
         onClose={() => setEditSubject({ open: false, subject: null })}
         onSubmit={d => updateSubject.mutate({ subjectId: editSubject.subject!.id, data: d })}
-        loading={updateSubject.isPending}
-      />
+        loading={updateSubject.isPending} />
 
-      <SimpleModal
-        open={editModule.open} title="Editar Módulo" placeholder="Nome do módulo"
+      <SimpleModal open={editModule.open} title="Editar Módulo" placeholder="Nome do módulo"
         initialValue={editModule.module?.name}
         onClose={() => setEditModule({ open: false, module: null })}
         onSubmit={name => updateModule.mutate({ moduleId: editModule.module!.id, name })}
-        loading={updateModule.isPending}
-      />
+        loading={updateModule.isPending} />
 
       <LessonModal
-        open={editLesson.open} title="Editar Aula"
+        open={editLesson.open}
+        title={editLesson.lesson?.title ? `Editar: ${editLesson.lesson.title}` : "Editar Aula"}
+        lessonId={editLesson.lesson?.id}
         initialData={editLesson.lesson ? {
           title: editLesson.lesson.title,
           duration_minutes: editLesson.lesson.duration_minutes,
           video_url: editLesson.lesson.video_url || "",
           is_free_preview: editLesson.lesson.is_free_preview,
+          material_url: editLesson.lesson.material_url,
         } : undefined}
         onClose={() => setEditLesson({ open: false, lesson: null })}
         onSubmit={d => updateLesson.mutate({
@@ -559,7 +488,89 @@ export default function ProducerCourseDetailPage() {
   );
 }
 
-// ── Modais ────────────────────────────────────────────────────────────────────
+// ── Modal criar aula (dois modos: form → PDF no mesmo dialog) ─────────────────
+
+function CreateLessonModal({ open, createdLessonId, createdTitle, loading, onClose, onSubmit, onPdfUploaded }: {
+  open: boolean;
+  createdLessonId?: string;
+  createdTitle?: string;
+  loading: boolean;
+  onClose: () => void;
+  onSubmit: (d: { title: string; duration_minutes: number; video_url: string; is_free_preview?: boolean }) => void;
+  onPdfUploaded: () => void;
+}) {
+  const { register, handleSubmit, reset } = useForm({
+    defaultValues: { title: "", duration_minutes: 30, video_url: "", is_free_preview: false },
+  });
+
+  const handleClose = () => { onClose(); reset(); };
+
+  return (
+    <Dialog open={open} onOpenChange={v => { if (!v) handleClose(); }}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>
+            {createdLessonId ? (
+              <span className="flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4 text-success" />
+                Aula criada!
+              </span>
+            ) : "Nova Aula"}
+          </DialogTitle>
+        </DialogHeader>
+
+        {/* Fase 1: formulário */}
+        {!createdLessonId && (
+          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Título</label>
+              <Input {...register("title", { required: true })} placeholder="Ex: Introdução ao tema" />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Duração (minutos)</label>
+              <Input {...register("duration_minutes", { valueAsNumber: true })} type="number" min="1" />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">URL do vídeo</label>
+              <Input {...register("video_url")} placeholder="YouTube, Vimeo ou link direto" />
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" {...register("is_free_preview")} className="rounded" />
+              <span className="text-sm text-foreground">Aula gratuita (preview)</span>
+            </label>
+            <DialogFooter>
+              <Button type="button" variant="ghost" onClick={handleClose}>Cancelar</Button>
+              <Button type="submit" disabled={loading}>{loading ? "Criando..." : "Criar Aula"}</Button>
+            </DialogFooter>
+          </form>
+        )}
+
+        {/* Fase 2: upload PDF opcional */}
+        {createdLessonId && (
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              <strong className="text-foreground">"{createdTitle}"</strong> foi criada.
+              Deseja adicionar um material de apoio em PDF? (opcional)
+            </p>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Material de Apoio (PDF)</label>
+              <PdfUploader
+                lessonId={createdLessonId}
+                currentUrl={null}
+                onUploaded={(url) => { if (url) onPdfUploaded(); }}
+              />
+            </div>
+            <DialogFooter>
+              <Button variant="ghost" onClick={handleClose}>Pular por agora</Button>
+            </DialogFooter>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ── Modais auxiliares ─────────────────────────────────────────────────────────
 
 const COLORS = ["#EF4444", "#F59E0B", "#10B981", "#3B82F6", "#8B5CF6", "#EC4899", "#06B6D4", "#374151"];
 
@@ -591,12 +602,7 @@ function SubjectModal({ open, title, initialData, onClose, onSubmit, loading }: 
               {COLORS.map(c => (
                 <button key={c} type="button" onClick={() => setColor(c)}
                   className="h-7 w-7 rounded-lg border-2 transition-all"
-                  style={{
-                    backgroundColor: c,
-                    borderColor: color === c ? "white" : "transparent",
-                    boxShadow: color === c ? `0 0 0 2px ${c}` : "none",
-                  }}
-                />
+                  style={{ backgroundColor: c, borderColor: color === c ? "white" : "transparent", boxShadow: color === c ? `0 0 0 2px ${c}` : "none" }} />
               ))}
             </div>
           </div>
@@ -640,9 +646,9 @@ function SimpleModal({ open, onClose, title, placeholder, initialValue, onSubmit
   );
 }
 
-function LessonModal({ open, title, initialData, onClose, onSubmit, loading }: {
-  open: boolean; title: string;
-  initialData?: { title: string; duration_minutes: number; video_url: string; is_free_preview?: boolean };
+function LessonModal({ open, title, initialData, lessonId, onClose, onSubmit, loading }: {
+  open: boolean; title: string; lessonId?: string;
+  initialData?: { title: string; duration_minutes: number; video_url: string; is_free_preview?: boolean; material_url?: string | null };
   onClose: () => void;
   onSubmit: (d: { title: string; duration_minutes: number; video_url: string; is_free_preview?: boolean }) => void;
   loading: boolean;
@@ -678,6 +684,12 @@ function LessonModal({ open, title, initialData, onClose, onSubmit, loading }: {
             <input type="checkbox" {...register("is_free_preview")} className="rounded" />
             <span className="text-sm text-foreground">Aula gratuita (preview)</span>
           </label>
+          {lessonId && (
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Material de Apoio (PDF)</label>
+              <PdfUploader lessonId={lessonId} currentUrl={initialData?.material_url} onUploaded={() => { }} />
+            </div>
+          )}
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={handleClose}>Cancelar</Button>
             <Button type="submit" disabled={loading}>{loading ? "Salvando..." : "Salvar"}</Button>
@@ -687,3 +699,5 @@ function LessonModal({ open, title, initialData, onClose, onSubmit, loading }: {
     </Dialog>
   );
 }
+
+

@@ -962,8 +962,9 @@ def update_lesson(lesson_id: str):
     lesson.order = data.get("order", lesson.order)
     lesson.is_published = data["is_published"]
     lesson.is_free_preview = data.get("is_free_preview", lesson.is_free_preview)
-    lesson.material_url = data.get("material_url", lesson.material_url)
 
+    if "material_url" in raw_json:
+        lesson.material_url = data.get("material_url")
     # ✅ FIX 2: só atualiza video_url se foi explicitamente enviado no request
     # Sem isso, toggleLesson (que não manda video_url) apagava a URL salva
     if "video_url" in raw_json:
@@ -1012,9 +1013,8 @@ def _serialize_lesson(lesson: Lesson, progress=None, full: bool = False) -> dict
         "order": lesson.order,
         "has_ai_summary": bool(lesson.ai_summary),
         "ai_topics": lesson.ai_topics or [],
-        # ✅ FIX 1: video_url agora sempre presente (mesmo na listagem)
-        # Antes ficava só no bloco `full=True`, então toggleLesson não tinha acesso
         "video_url": lesson.video_url,
+        "material_url": lesson.material_url,  # ← AQUI, fora do bloco full
         "progress": (
             {
                 "status": progress.status if progress else "not_started",
@@ -1029,9 +1029,8 @@ def _serialize_lesson(lesson: Lesson, progress=None, full: bool = False) -> dict
         data.update(
             {
                 "description": lesson.description,
-                # video_url já está no dict base — não duplicar
-                "material_url": lesson.material_url,
                 "ai_summary": lesson.ai_summary,
+                # material_url já está acima — não duplicar
             }
         )
     return data

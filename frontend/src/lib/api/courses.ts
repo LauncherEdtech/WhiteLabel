@@ -7,7 +7,7 @@ export const coursesApi = {
     const res = await apiClient.get<{ courses: Course[] }>("/courses/");
     return res.data.courses;
   },
-
+ 
   get: async (id: string) => {
     const res = await apiClient.get(`/courses/${id}`);
     return res.data.course;
