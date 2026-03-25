@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils/cn";
 import {
   CheckCircle2, XCircle, ChevronLeft,
   FileText, Sparkles, Clock, Tag,
-  ThumbsUp, ThumbsDown, Minus,
+  ThumbsUp, ThumbsDown, Minus, ExternalLink,
 } from "lucide-react";
 import Link from "next/link";
 import { ROUTES } from "@/lib/constants/routes";
@@ -221,17 +221,21 @@ export default function LessonPage() {
         {/* Material e links */}
         <div className="space-y-3">
           {lesson.material_url && (
-            <Card>
-              <CardContent className="p-4">
-                <p className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wider">
-                  Material de apoio
-                </p>
-                <a href={lesson.material_url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm text-primary hover:underline">
-                  <FileText className="h-4 w-4" />
-                  Baixar PDF
-                </a>
-              </CardContent>
-            </Card>
+            <a
+              href={lesson.material_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-3 p-4 rounded-xl border-2 border-destructive/20 bg-destructive/5 hover:bg-destructive/10 hover:border-destructive/40 transition-all w-full"
+            >
+              <div className="h-10 w-10 rounded-lg bg-destructive/15 flex items-center justify-center shrink-0">
+                <FileText className="h-5 w-5 text-destructive" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-foreground">Material de Apoio</p>
+                <p className="text-xs text-muted-foreground">Clique para abrir o PDF</p>
+              </div>
+              <ExternalLink className="h-4 w-4 text-muted-foreground shrink-0" />
+            </a>
           )}
           <Card>
             <CardContent className="p-4">
@@ -285,20 +289,15 @@ export default function LessonPage() {
 
 // ── Player de vídeo ────────────────────────────────────────────────────────────
 function VideoPlayer({ url }: { url: string }) {
-  // Detecta tipo de URL
   const isYoutube = url.includes("youtube.com") || url.includes("youtu.be");
   const isVimeo = url.includes("vimeo.com");
 
   if (isYoutube) {
-    // Extrai videoId de qualquer formato YouTube:
-    // https://youtu.be/ID?si=xxx  →  ID
-    // https://youtube.com/watch?v=ID&...  →  ID
-    // https://youtube.com/embed/ID  →  ID
     let videoId = "";
     try {
       const u = new URL(url);
       if (u.hostname === "youtu.be") {
-        videoId = u.pathname.slice(1).split("?")[0]; // remove ?si= etc
+        videoId = u.pathname.slice(1).split("?")[0];
       } else {
         videoId = u.searchParams.get("v") || u.pathname.split("/").pop() || "";
       }
@@ -330,7 +329,6 @@ function VideoPlayer({ url }: { url: string }) {
     );
   }
 
-  // URL direta de vídeo (S3, etc.)
   return (
     <video
       src={url}

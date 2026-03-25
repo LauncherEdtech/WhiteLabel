@@ -117,6 +117,7 @@ def _register_blueprints(app: Flask) -> None:
     from .routes.analytics import analytics_bp
     from .routes.admin_infra import admin_infra_bp
     from .routes.students import students_bp
+    from .routes.uploads import uploads_bp
 
     app.register_blueprint(health_bp)  # /health (sem prefixo)
     app.register_blueprint(auth_bp, url_prefix="/api/v1/auth")
@@ -128,6 +129,7 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(analytics_bp, url_prefix="/api/v1/analytics")
     app.register_blueprint(admin_infra_bp, url_prefix="/api/v1/admin/infrastructure")
     app.register_blueprint(students_bp, url_prefix="/api/v1/students")
+    app.register_blueprint(uploads_bp, url_prefix="/api/v1/uploads")
 
 
 def _register_error_handlers(app: Flask) -> None:
