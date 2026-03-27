@@ -118,6 +118,7 @@ def _register_blueprints(app: Flask) -> None:
     from .routes.admin_infra import admin_infra_bp
     from .routes.students import students_bp
     from .routes.uploads import uploads_bp
+    from app.routes.gamification import gamification_bp
 
     app.register_blueprint(health_bp)  # /health (sem prefixo)
     app.register_blueprint(auth_bp, url_prefix="/api/v1/auth")
@@ -130,6 +131,7 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(admin_infra_bp, url_prefix="/api/v1/admin/infrastructure")
     app.register_blueprint(students_bp, url_prefix="/api/v1/students")
     app.register_blueprint(uploads_bp, url_prefix="/api/v1/uploads")
+    app.register_blueprint(gamification_bp, url_prefix="/api/v1/gamification")
 
 
 def _register_error_handlers(app: Flask) -> None:
@@ -195,7 +197,13 @@ def _configure_celery(app: Flask) -> None:
         timezone="America/Sao_Paulo",
         enable_utc=True,
     )
-
+    
+    celery_app.conf.beat_schedule = {
+        "nightly-schedule-check": {
+            "task": "app.tasks.schedule_tasks.nightly_schedule_check",
+            "schedule": 3 * 3600,  # a cada 3 horas
+        },
+    }
     # Garante que tasks rodem com o contexto do app Flask
     class ContextTask(celery_app.Task):
         def __call__(self, *args, **kwargs):

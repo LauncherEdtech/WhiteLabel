@@ -7,6 +7,7 @@ from .course import Course, Subject, Module, Lesson, LessonProgress
 from .question import Question, Alternative, QuestionAttempt, QuestionTag
 from .schedule import StudySchedule, ScheduleItem, ScheduleCheckIn
 from .simulado import Simulado, SimuladoQuestion, SimuladoAttempt, SimuladoAnswer
+from .gamification import LessonRating, StudentBadge
 
 __all__ = [
     "Tenant",

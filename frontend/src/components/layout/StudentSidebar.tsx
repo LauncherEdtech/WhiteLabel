@@ -8,6 +8,7 @@ import {
     LayoutDashboard, BookOpen, HelpCircle,
     ClipboardList, Calendar, BarChart3,
     LogOut, GraduationCap,
+    Trophy,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import { useTenantStore } from "@/lib/stores/tenantStore";
@@ -21,6 +22,7 @@ const navItems = [
     { href: "/simulados", label: "Simulados", icon: ClipboardList },
     { href: "/schedule", label: "Cronograma", icon: Calendar },
     { href: "/analytics", label: "Desempenho", icon: BarChart3 },
+    { href: "/hall-of-fame", label: "Mural de Honra", icon: Trophy },
 ];
 
 export function StudentSidebar() {

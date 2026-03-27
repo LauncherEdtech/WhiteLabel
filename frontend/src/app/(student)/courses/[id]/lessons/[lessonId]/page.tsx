@@ -19,6 +19,10 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { ROUTES } from "@/lib/constants/routes";
+import { LessonRating } from "@/components/student/LessonRating";
+
+
+
 
 type Difficulty = "easy" | "ok" | "hard";
 
@@ -217,6 +221,9 @@ export default function LessonPage() {
             </CardContent>
           </Card>
         </div>
+
+        {checkinDone && <LessonRating lessonId={lessonId} />}
+
 
         {/* Material e links */}
         <div className="space-y-3">
