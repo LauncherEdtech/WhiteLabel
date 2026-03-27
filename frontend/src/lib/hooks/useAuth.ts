@@ -1,4 +1,6 @@
 // frontend/src/lib/hooks/useAuth.ts
+// CORRIGIDO: useLogin aceita tenantSlug e passa direto para authApi.login,
+// garantindo que o header X-Tenant-Slug seja sempre correto independente de cookie.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
@@ -22,7 +24,6 @@ export function useMe() {
             const user = await authApi.me();
             setUser(user);
 
-            // Se o tenant ainda não está no store, busca agora
             if (!tenant?.id) {
                 const slug = Cookies.get("tenant_slug") || "concurso-demo";
                 try {
@@ -40,7 +41,7 @@ export function useMe() {
             }
             return user;
         },
-        enabled: !!Cookies.get("access_token"),
+        enabled: !Cookies.get("access_token") ? false : true,
         staleTime: 5 * 60 * 1000,
         retry: false,
     });
@@ -56,17 +57,18 @@ export function useLogin() {
         mutationFn: ({
             email,
             password,
+            tenantSlug,   // ← recebe o slug e passa direto para authApi
         }: {
             email: string;
             password: string;
-        }) => authApi.login(email, password),
+            tenantSlug?: string;
+        }) => authApi.login(email, password, tenantSlug),
 
         onSuccess: (data) => {
             setTokens(data.access_token, data.refresh_token);
             setUser(data.user);
             queryClient.setQueryData(AUTH_KEYS.me, data.user);
 
-            // Popula o tenantStore com os dados que vieram no login
             if ((data as any).tenant?.id) {
                 setTenant((data as any).tenant);
                 applyBrandingCssVars((data as any).tenant.branding || {});

@@ -3,15 +3,21 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { ProducerSidebar } from "@/components/layout/ProducerSidebar";
-import { TopBar } from "@/components/layout/TopBar";
 import { useAuthStore } from "@/lib/stores/authStore";
 import { useMe } from "@/lib/hooks/useAuth";
+import { useTenantStore } from "@/lib/stores/tenantStore";
+import { ProducerSidebar } from "@/components/layout/ProducerSidebar";
+import { ProducerTopbar } from "@/components/layout/ProducerTopbar";
+import { TopBar } from "@/components/layout/TopBar";
 
 export default function ProducerLayout({ children }: { children: React.ReactNode }) {
     const { user, isLoading } = useAuthStore();
     const router = useRouter();
     const { isLoading: isFetching } = useMe();
+    const { tenant } = useTenantStore();
+
+    // Lê o layout salvo no branding do tenant
+    const layoutProducer = (tenant?.branding as any)?.layout_producer || "sidebar";
 
     useEffect(() => {
         if (!isLoading && !isFetching && user) {
@@ -29,6 +35,21 @@ export default function ProducerLayout({ children }: { children: React.ReactNode
         );
     }
 
+    // ── Layout: Barra superior ────────────────────────────────────────────────
+    if (layoutProducer === "topbar") {
+        return (
+            <div className="min-h-screen bg-background flex flex-col">
+                <ProducerTopbar />
+                <main className="flex-1 overflow-y-auto">
+                    <div className="p-6 max-w-7xl mx-auto">
+                        {children}
+                    </div>
+                </main>
+            </div>
+        );
+    }
+
+    // ── Layout: Sidebar (padrão) ──────────────────────────────────────────────
     return (
         <div className="flex h-screen bg-background overflow-hidden">
             <ProducerSidebar />
