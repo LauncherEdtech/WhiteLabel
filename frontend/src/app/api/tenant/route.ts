@@ -1,14 +1,22 @@
 // frontend/src/app/api/tenant/route.ts
-// Route handler Next.js — resolve o tenant pelo slug (cookie ou header)
+// Route handler Next.js — resolve o tenant pelo slug (query param, cookie ou header).
 // IMPORTANTE: cache desabilitado (no-store) para garantir branding sempre fresco.
 // O cache de 5min anterior causava o bug de branding "sumindo" após atualizar.
+//
+// ATUALIZADO: aceita ?slug=X como query param com maior prioridade.
+// Isso resolve a race condition na página de login onde o cookie ainda não
+// foi setado mas o slug já está disponível na URL.
 
 import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(request: NextRequest) {
+  // Prioridade: query param > header > cookie
+  // Query param é usado por useTenantBySlug antes do cookie existir
+  const { searchParams } = new URL(request.url);
   const slug =
-    request.cookies.get("tenant_slug")?.value ||
+    searchParams.get("slug") ||
     request.headers.get("x-tenant-slug") ||
+    request.cookies.get("tenant_slug")?.value ||
     "concurso-demo";
 
   const fallback = {
