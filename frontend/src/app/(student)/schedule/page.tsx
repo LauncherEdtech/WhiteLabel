@@ -3,45 +3,103 @@
 
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "next/navigation";
 import { scheduleApi } from "@/lib/api/schedule";
 import { apiClient } from "@/lib/api/client";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils/cn";
 import { useToast } from "@/components/ui/toaster";
 import {
   Calendar, CheckCircle2, Clock, BookOpen,
-  HelpCircle, RefreshCw, ChevronRight, Sparkles
+  HelpCircle, RefreshCw, Sparkles, ClipboardList,
+  AlertTriangle, Target, ChevronRight, RotateCcw,
+  Play, ArrowRight,
 } from "lucide-react";
 
-const DAYS = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
+const DAYS_PT = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 
-// ── Wizard de configuração ────────────────────────────────────────────────────
+// ── Redirecionamento inteligente por tipo de item ─────────────────────────────
+//
+// lesson    → /courses/[courseId]/lessons/[lessonId]
+// review    → /courses/[courseId]/lessons/[lessonId]  (mesma aula, contexto revisão)
+//             se não tiver lesson_id → /questions?subject_id=X&previously_wrong=true
+// questions → /questions?subject_id=X  (filtrado pela disciplina do item)
+// simulado  → /simulados
+
+function buildItemUrl(item: any, courseId: string): string {
+  switch (item.item_type) {
+    case "lesson":
+      if (item.lesson?.id) {
+        return `/courses/${courseId}/lessons/${item.lesson.id}`;
+      }
+      return `/courses/${courseId}`;
+
+    case "review":
+      // Revisão de aula específica → vai para a aula
+      if (item.lesson?.id) {
+        return `/courses/${courseId}/lessons/${item.lesson.id}`;
+      }
+      // Revisão de disciplina → questões já erradas nessa disciplina
+      if (item.subject?.id) {
+        return `/questions?subject_id=${item.subject.id}&previously_wrong=true`;
+      }
+      return `/questions`;
+
+    case "questions":
+      // Filtra por disciplina e por questões não respondidas (prioridade)
+      // ou erradas anteriormente
+      if (item.subject?.id) {
+        return `/questions?subject_id=${item.subject.id}&not_answered=true`;
+      }
+      return `/questions`;
+
+    case "simulado":
+      return `/simulados`;
+
+    default:
+      return `/questions`;
+  }
+}
+
+function itemActionLabel(item: any): string {
+  switch (item.item_type) {
+    case "lesson": return "Assistir aula";
+    case "review": return item.lesson?.id ? "Revisar aula" : "Praticar revisão";
+    case "questions": return "Responder questões";
+    case "simulado": return "Fazer simulado";
+    default: return "Iniciar";
+  }
+}
+
+// ── Wizard ────────────────────────────────────────────────────────────────────
+
 function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerated: () => void }) {
   const [step, setStep] = useState(1);
   const [days, setDays] = useState([0, 1, 2, 3, 4]);
   const [hours, setHours] = useState(2);
   const [startTime, setStartTime] = useState("19:00");
+  const [targetDate, setTargetDate] = useState("");
   const toast = useToast();
   const queryClient = useQueryClient();
 
   const saveMutation = useMutation({
     mutationFn: async () => {
       await scheduleApi.updateAvailability({ days, hours_per_day: hours, preferred_start_time: startTime });
-      await scheduleApi.generate(courseId);
+      await scheduleApi.generate(courseId, targetDate || undefined);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["schedule", courseId] });
-      toast.success("Cronograma criado!", "Seu plano de estudos personalizado está pronto.");
+      queryClient.invalidateQueries({ queryKey: ["schedule-check", courseId] });
+      toast.success("Cronograma criado!", "Seu plano adaptativo está pronto.");
       onGenerated();
     },
     onError: () => toast.error("Erro ao gerar cronograma"),
   });
 
-  const toggleDay = (d: number) => {
+  const toggleDay = (d: number) =>
     setDays(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d].sort());
-  };
 
   return (
     <div className="max-w-lg mx-auto space-y-6 animate-fade-in">
@@ -51,151 +109,252 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
         </div>
         <h1 className="font-display text-2xl font-bold text-foreground">Cronograma Inteligente</h1>
         <p className="text-muted-foreground text-sm">
-          Responda 3 perguntas rápidas para criar seu plano personalizado
+          Configure seu plano adaptativo — ele aprende com seu desempenho
         </p>
       </div>
 
-      {/* Progress steps */}
       <div className="flex items-center gap-2 justify-center">
-        {[1, 2, 3].map(s => (
-          <div key={s} className={cn(
-            "h-2 rounded-full transition-all",
-            s <= step ? "bg-primary w-8" : "bg-muted w-4"
-          )} />
+        {[1, 2, 3, 4].map(s => (
+          <div key={s} className={cn("h-2 rounded-full transition-all", s <= step ? "bg-primary w-8" : "bg-muted w-2")} />
         ))}
       </div>
 
       {step === 1 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">📅 Quais dias você pode estudar?</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-7 gap-2">
-              {DAYS.map((day, i) => (
-                <button
-                  key={i}
-                  onClick={() => toggleDay(i)}
-                  className={cn(
-                    "p-2 rounded-lg text-xs font-medium transition-all border-2",
-                    days.includes(i)
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "bg-background border-border text-muted-foreground hover:border-primary/50"
-                  )}
-                >
-                  {day}
-                </button>
-              ))}
-            </div>
-            <p className="text-xs text-muted-foreground text-center">
-              {days.length} dias selecionados
-            </p>
-            <Button className="w-full" onClick={() => setStep(2)} disabled={days.length === 0}>
-              Próximo <ChevronRight className="h-4 w-4" />
-            </Button>
-          </CardContent>
-        </Card>
+        <Card><CardContent className="p-6 space-y-4">
+          <div>
+            <p className="font-semibold text-foreground">Quais dias você estuda?</p>
+            <p className="text-sm text-muted-foreground mt-0.5">Selecione pelo menos 1 dia</p>
+          </div>
+          <div className="grid grid-cols-7 gap-1.5">
+            {DAYS_PT.map((label, d) => (
+              <button key={d} onClick={() => toggleDay(d)}
+                className={cn(
+                  "h-12 rounded-xl text-xs font-semibold transition-all border-2",
+                  days.includes(d) ? "bg-primary text-primary-foreground border-primary" : "bg-background border-border hover:border-primary/50"
+                )}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <Button className="w-full" onClick={() => setStep(2)} disabled={days.length === 0}>
+            Continuar <ChevronRight className="h-4 w-4" />
+          </Button>
+        </CardContent></Card>
       )}
 
       {step === 2 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">⏱️ Quantas horas por dia?</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-4 gap-3">
-              {[1, 2, 3, 4, 5, 6, 8, 10].map(h => (
-                <button
-                  key={h}
-                  onClick={() => setHours(h)}
-                  className={cn(
-                    "p-3 rounded-xl text-sm font-bold transition-all border-2",
-                    hours === h
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "bg-background border-border hover:border-primary/50"
-                  )}
-                >
-                  {h}h
-                </button>
-              ))}
-            </div>
-            <p className="text-xs text-muted-foreground text-center">
-              Total: {days.length * hours}h/semana
+        <Card><CardContent className="p-6 space-y-4">
+          <div>
+            <p className="font-semibold text-foreground">Quantas horas por dia?</p>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              Atual: <strong className="text-primary">{hours}h/dia · {days.length * hours}h/semana</strong>
             </p>
-            <div className="flex gap-2">
-              <Button variant="outline" className="flex-1" onClick={() => setStep(1)}>Voltar</Button>
-              <Button className="flex-1" onClick={() => setStep(3)}>
-                Próximo <ChevronRight className="h-4 w-4" />
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+          </div>
+          <div className="grid grid-cols-4 gap-2">
+            {[0.5, 1, 1.5, 2, 3, 4, 5, 6].map(h => (
+              <button key={h} onClick={() => setHours(h)}
+                className={cn(
+                  "py-2 rounded-xl text-sm font-medium border-2 transition-all",
+                  hours === h ? "bg-primary text-primary-foreground border-primary" : "bg-background border-border hover:border-primary/50"
+                )}>
+                {h}h
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" className="flex-1" onClick={() => setStep(1)}>Voltar</Button>
+            <Button className="flex-1" onClick={() => setStep(3)}>Continuar <ChevronRight className="h-4 w-4" /></Button>
+          </div>
+        </CardContent></Card>
       )}
 
       {step === 3 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">🌅 Qual seu horário preferido?</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-2 gap-3">
-              {[
-                { label: "🌅 Manhã", time: "07:00" },
-                { label: "☀️ Tarde", time: "13:00" },
-                { label: "🌆 Fim de tarde", time: "17:00" },
-                { label: "🌙 Noite", time: "19:00" },
-                { label: "🌛 Madrugada", time: "22:00" },
-                { label: "🕐 Personalizado", time: startTime },
-              ].map(({ label, time }) => (
-                <button
-                  key={time}
-                  onClick={() => setStartTime(time)}
-                  className={cn(
-                    "p-3 rounded-xl text-sm font-medium transition-all border-2 text-left",
-                    startTime === time
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "bg-background border-border hover:border-primary/50"
-                  )}
-                >
-                  {label}
-                  <span className="block text-xs opacity-70">{time}</span>
-                </button>
-              ))}
-            </div>
+        <Card><CardContent className="p-6 space-y-4">
+          <div>
+            <p className="font-semibold text-foreground">Qual seu horário preferido?</p>
+            <p className="text-sm text-muted-foreground">Usado para notificações e sugestões</p>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              { label: "Manhã", time: "08:00" },
+              { label: "Tarde", time: "14:00" },
+              { label: "Noite", time: "19:00" },
+              { label: "Madrugada", time: "22:00" },
+            ].map(({ label, time }) => (
+              <button key={time} onClick={() => setStartTime(time)}
+                className={cn(
+                  "py-3 rounded-xl text-sm font-medium border-2 transition-all",
+                  startTime === time ? "bg-primary text-primary-foreground border-primary" : "bg-background border-border hover:border-primary/50"
+                )}>
+                {label}
+                <span className="block text-xs opacity-70">{time}</span>
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" className="flex-1" onClick={() => setStep(2)}>Voltar</Button>
+            <Button className="flex-1" onClick={() => setStep(4)}>Continuar <ChevronRight className="h-4 w-4" /></Button>
+          </div>
+        </CardContent></Card>
+      )}
 
-            {/* Resumo */}
-            <div className="p-3 rounded-lg bg-muted/50 space-y-1">
-              <p className="text-xs font-medium text-foreground">📋 Resumo do seu plano:</p>
-              <p className="text-xs text-muted-foreground">
-                • {days.map(d => DAYS[d]).join(", ")}
+      {step === 4 && (
+        <Card><CardContent className="p-6 space-y-4">
+          <div>
+            <p className="font-semibold text-foreground">Data da sua prova? (opcional)</p>
+            <p className="text-sm text-muted-foreground">
+              O cronograma se comprime automaticamente conforme o prazo se aproxima
+            </p>
+          </div>
+          <input
+            type="date"
+            value={targetDate}
+            onChange={e => setTargetDate(e.target.value)}
+            min={new Date().toISOString().split("T")[0]}
+            className="w-full h-10 rounded-lg border border-border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+          />
+          <div className="p-3 rounded-lg bg-muted/40 space-y-1">
+            <p className="text-xs font-medium text-foreground">📋 Resumo do seu plano:</p>
+            <p className="text-xs text-muted-foreground">• {days.map(d => DAYS_PT[d]).join(", ")}</p>
+            <p className="text-xs text-muted-foreground">• {hours}h/dia · {days.length * hours}h/semana</p>
+            <p className="text-xs text-muted-foreground">• Início às {startTime}</p>
+            {targetDate && (
+              <p className="text-xs text-primary font-medium">
+                • Prova: {new Date(targetDate + "T12:00:00").toLocaleDateString("pt-BR")}
               </p>
-              <p className="text-xs text-muted-foreground">
-                • {hours}h por dia · {days.length * hours}h por semana
-              </p>
-              <p className="text-xs text-muted-foreground">
-                • Início às {startTime}
-              </p>
-            </div>
-
-            <div className="flex gap-2">
-              <Button variant="outline" className="flex-1" onClick={() => setStep(2)}>Voltar</Button>
-              <Button
-                className="flex-1"
-                loading={saveMutation.isPending}
-                onClick={() => saveMutation.mutate()}
-              >
-                <Sparkles className="h-4 w-4" />
-                Gerar Cronograma
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" className="flex-1" onClick={() => setStep(3)}>Voltar</Button>
+            <Button className="flex-1" loading={saveMutation.isPending} onClick={() => saveMutation.mutate()}>
+              <Sparkles className="h-4 w-4" />
+              Gerar Cronograma
+            </Button>
+          </div>
+        </CardContent></Card>
       )}
     </div>
   );
 }
 
+// ── Item do cronograma com redirecionamento inteligente ───────────────────────
+
+function ScheduleItemRow({ item, courseId, onCheckin, loading }: {
+  item: any;
+  courseId: string;
+  onCheckin: (id: string, completed: boolean) => void;
+  loading: boolean;
+}) {
+  const router = useRouter();
+  const isDone = item.status === "done";
+  const isSkipped = item.status === "skipped";
+  const isDoneOrSkipped = isDone || isSkipped;
+
+  const typeConfig: Record<string, { icon: any; color: string; label: string }> = {
+    lesson: { icon: BookOpen, color: "bg-primary/10 text-primary", label: "Aula" },
+    questions: { icon: HelpCircle, color: "bg-warning/10 text-warning", label: "Questões" },
+    review: { icon: RotateCcw, color: "bg-secondary/10 text-secondary", label: "Revisão" },
+    simulado: { icon: ClipboardList, color: "bg-destructive/10 text-destructive", label: "Simulado" },
+  };
+  const cfg = typeConfig[item.item_type] || typeConfig.lesson;
+  const Icon = cfg.icon;
+
+  const destination = buildItemUrl(item, courseId);
+  const actionLabel = itemActionLabel(item);
+
+  const handleStart = () => {
+    router.push(destination);
+  };
+
+  // Título do item
+  const title =
+    item.lesson?.title
+    || (item.item_type === "questions" ? `Questões — ${item.subject?.name || "Geral"}` : null)
+    || (item.item_type === "review" ? `Revisão — ${item.subject?.name || "Geral"}` : null)
+    || (item.item_type === "simulado" ? "Simulado de verificação" : null)
+    || "Estudar";
+
+  return (
+    <div className={cn(
+      "flex items-start gap-3 p-3 rounded-xl border transition-all",
+      isDone && "bg-success/5 border-success/20 opacity-70",
+      isSkipped && "bg-muted/30 border-border opacity-50",
+      !isDoneOrSkipped && "bg-background border-border hover:border-primary/20",
+    )}>
+      {/* Check button */}
+      <button
+        onClick={() => !isDoneOrSkipped && onCheckin(item.id, true)}
+        disabled={loading || isDoneOrSkipped}
+        className={cn(
+          "h-6 w-6 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 transition-all",
+          isDone && "bg-success border-success",
+          isSkipped && "bg-muted border-muted",
+          !isDoneOrSkipped && "border-border hover:border-success hover:bg-success/10",
+        )}
+      >
+        {isDone && <CheckCircle2 className="h-3.5 w-3.5 text-white" />}
+      </button>
+
+      {/* Type icon */}
+      <div className={cn("h-8 w-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5", cfg.color)}>
+        <Icon className="h-4 w-4" />
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 min-w-0">
+        <p className={cn("text-sm font-medium", isDoneOrSkipped && "line-through text-muted-foreground")}>
+          {title}
+        </p>
+
+        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+          <Badge variant="outline" className="text-[10px] py-0 h-4">{cfg.label}</Badge>
+          <span className="text-xs text-muted-foreground flex items-center gap-0.5">
+            <Clock className="h-3 w-3" />{item.estimated_minutes}min
+          </span>
+          {item.subject && (
+            <span className="text-xs text-muted-foreground flex items-center gap-1">
+              <div className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: item.subject.color }} />
+              {item.subject.name}
+            </span>
+          )}
+        </div>
+
+        {item.priority_reason && (
+          <p className="text-xs text-muted-foreground mt-1 italic">
+            💡 {item.priority_reason}
+          </p>
+        )}
+
+        {/* Botão de ação com redirecionamento inteligente */}
+        {!isDoneOrSkipped && (
+          <div className="flex items-center gap-2 mt-2">
+            <button
+              onClick={handleStart}
+              className="flex items-center gap-1.5 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+            >
+              <Play className="h-3 w-3" />
+              {actionLabel}
+              <ArrowRight className="h-3 w-3" />
+            </button>
+
+            <span className="text-muted-foreground text-xs">·</span>
+
+            <button
+              onClick={() => onCheckin(item.id, false)}
+              disabled={loading}
+              className="text-xs text-muted-foreground hover:text-destructive transition-colors"
+            >
+              Pular
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Visualização do cronograma ────────────────────────────────────────────────
+
 function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () => void }) {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -226,161 +385,168 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["schedule", courseId] });
       queryClient.invalidateQueries({ queryKey: ["schedule-check", courseId] });
-      toast.success("Cronograma removido!", "Você pode criar um novo agora.");
+      toast.success("Cronograma removido.");
       onDelete?.();
     },
-    onError: () => toast.error("Erro ao deletar cronograma"),
   });
 
   if (isLoading) return (
     <div className="space-y-4">
-      {[...Array(3)].map((_, i) => (
-        <div key={i} className="h-32 bg-muted rounded-xl animate-pulse" />
-      ))}
+      {[...Array(3)].map((_, i) => <div key={i} className="h-32 bg-muted rounded-xl animate-pulse" />)}
     </div>
   );
 
   const days = data?.days || [];
   const stats = data?.stats;
 
+  const formatDate = (dateStr: string) => {
+    const d = new Date(dateStr + "T12:00:00");
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const diff = Math.round((d.getTime() - today.getTime()) / 86400000);
+    const weekday = DAYS_PT[d.getDay()];
+    const formatted = d.toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
+    if (diff === 0) return { label: "Hoje", sub: formatted, isToday: true };
+    if (diff === 1) return { label: "Amanhã", sub: formatted, isToday: false };
+    return { label: weekday, sub: formatted, isToday: false };
+  };
+
+  const daysUntilExam = stats?.target_date
+    ? Math.max(0, Math.round((new Date(stats.target_date + "T12:00:00").getTime() - Date.now()) / 86400000))
+    : null;
+
   return (
     <div className="space-y-6 animate-fade-in">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="font-display text-2xl font-bold text-foreground">Cronograma</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            Seu plano de estudos adaptativo
-          </p>
+          <p className="text-sm text-muted-foreground mt-0.5">Adaptativo · atualiza com seu desempenho</p>
         </div>
         <div className="flex gap-2">
-          <Button
-            variant="outline" size="sm"
-            onClick={() => reorganizeMutation.mutate()}
-            loading={reorganizeMutation.isPending}
-          >
+          <Button variant="outline" size="sm" onClick={() => reorganizeMutation.mutate()} loading={reorganizeMutation.isPending}>
             <RefreshCw className="h-4 w-4" />
             Reorganizar
           </Button>
-          <Button
-            variant="ghost" size="sm"
-            onClick={() => {
-              if (confirm("Deletar o cronograma atual? Você poderá criar um novo.")) {
-                deleteMutation.mutate();
-              }
-            }}
-            loading={deleteMutation.isPending}
-            className="text-destructive hover:text-destructive"
-          >
+          <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive"
+            onClick={() => { if (confirm("Deletar o cronograma?")) deleteMutation.mutate(); }}
+            loading={deleteMutation.isPending}>
             Deletar
           </Button>
         </div>
       </div>
 
-      {/* Stats */}
+      {/* KPIs */}
       {stats && (
-        <div className="grid grid-cols-3 gap-4">
-          <Card>
-            <CardContent className="p-4 text-center">
-              <p className="text-2xl font-bold text-primary">{stats.completion_rate ?? 0}%</p>
-              <p className="text-xs text-muted-foreground">Conclusão</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4 text-center">
-              <p className="text-2xl font-bold text-foreground">{stats.pending_today ?? 0}</p>
-              <p className="text-xs text-muted-foreground">Pendentes hoje</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4 text-center">
-              <p className="text-2xl font-bold text-success">{stats.completed_items ?? 0}</p>
-              <p className="text-xs text-muted-foreground">Concluídos</p>
-            </CardContent>
-          </Card>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <Card><CardContent className="p-4 text-center">
+            <p className="text-2xl font-bold text-primary">{stats.completion_rate}%</p>
+            <p className="text-xs text-muted-foreground">Conclusão</p>
+          </CardContent></Card>
+          <Card><CardContent className="p-4 text-center">
+            <p className="text-2xl font-bold text-foreground">{stats.pending_today}</p>
+            <p className="text-xs text-muted-foreground">Pendentes hoje</p>
+          </CardContent></Card>
+          <Card><CardContent className="p-4 text-center">
+            <p className="text-2xl font-bold text-success">{stats.completed_items}</p>
+            <p className="text-xs text-muted-foreground">Concluídos</p>
+          </CardContent></Card>
+          {daysUntilExam !== null ? (
+            <Card className={cn(daysUntilExam <= 14 && "border-destructive/40")}>
+              <CardContent className="p-4 text-center">
+                <p className={cn("text-2xl font-bold", daysUntilExam <= 14 ? "text-destructive" : "text-foreground")}>
+                  {daysUntilExam}
+                </p>
+                <p className="text-xs text-muted-foreground flex items-center justify-center gap-1">
+                  <Target className="h-3 w-3" />Dias p/ prova
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <Card><CardContent className="p-4 text-center">
+              <p className={cn(
+                "text-2xl font-bold",
+                stats.abandonment_risk > 0.6 ? "text-destructive" :
+                  stats.abandonment_risk > 0.3 ? "text-warning" : "text-success"
+              )}>
+                {stats.abandonment_risk > 0.6 ? "Alto" : stats.abandonment_risk > 0.3 ? "Médio" : "Baixo"}
+              </p>
+              <p className="text-xs text-muted-foreground">Risco abandono</p>
+            </CardContent></Card>
+          )}
         </div>
       )}
 
-      {/* Dias */}
-      {days.length === 0 ? (
-        <div className="text-center py-12">
-          <Calendar className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
-          <p className="text-muted-foreground">Nenhum item no cronograma.</p>
+      {/* Alerta de risco alto */}
+      {stats?.abandonment_risk > 0.6 && (
+        <div className="flex items-start gap-3 p-4 rounded-xl bg-destructive/10 border border-destructive/20">
+          <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-semibold text-destructive">Você está atrasado!</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Clique em Reorganizar para ajustar o plano ao seu ritmo atual.
+            </p>
+          </div>
         </div>
+      )}
+
+      {/* AI notes */}
+      {stats?.ai_notes && (
+        <div className="flex items-start gap-2 p-3 rounded-xl bg-primary/5 border border-primary/10">
+          <Sparkles className="h-4 w-4 text-primary shrink-0 mt-0.5" />
+          <p className="text-xs text-muted-foreground">{stats.ai_notes}</p>
+        </div>
+      )}
+
+      {/* Lista de dias */}
+      {days.length === 0 ? (
+        <Card><CardContent className="py-12 text-center">
+          <Calendar className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
+          <p className="font-semibold text-foreground">Nenhum item nos próximos 14 dias</p>
+          <p className="text-sm text-muted-foreground mt-1">Clique em Reorganizar para gerar novos itens.</p>
+        </CardContent></Card>
       ) : (
-        <div className="space-y-6">
-          {days.map((day: any) => (
-            <div key={day.date}>
-              <div className="flex items-center gap-3 mb-3">
-                <h3 className={cn(
-                  "font-display font-semibold text-sm",
-                  day.is_today ? "text-primary" : "text-muted-foreground"
-                )}>
-                  {day.is_today ? "📌 Hoje" : new Date(day.date + "T12:00:00").toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "short" })}
-                </h3>
-                {day.completion_rate > 0 && (
-                  <Badge variant={day.completion_rate === 100 ? "success" : "outline"} className="text-xs">
-                    {day.completion_rate}%
-                  </Badge>
-                )}
-              </div>
+        <div className="space-y-4">
+          {days.map(({ date: dateStr, items }: any) => {
+            const { label, sub, isToday } = formatDate(dateStr);
+            const pendingCount = items.filter((i: any) => i.status === "pending").length;
+            const doneCount = items.filter((i: any) => i.status === "done").length;
 
-              <div className="space-y-2">
-                {day.items?.map((item: any) => (
-                  <div
-                    key={item.id}
-                    className={cn(
-                      "flex items-center gap-3 p-3 rounded-xl border transition-all",
-                      item.status === "completed"
-                        ? "bg-success/5 border-success/20 opacity-60"
-                        : "bg-card border-border hover:border-primary/30"
-                    )}
-                  >
-                    <button
-                      onClick={() => checkinMutation.mutate({
-                        itemId: item.id,
-                        completed: item.status !== "completed"
-                      })}
-                      className={cn(
-                        "h-6 w-6 rounded-full border-2 flex items-center justify-center transition-all shrink-0",
-                        item.status === "completed"
-                          ? "border-success bg-success"
-                          : "border-border hover:border-primary"
-                      )}
-                    >
-                      {item.status === "completed" && (
-                        <CheckCircle2 className="h-4 w-4 text-white" />
-                      )}
-                    </button>
-
-                    <div className={cn(
-                      "h-8 w-8 rounded-lg flex items-center justify-center shrink-0",
-                      item.item_type === "lesson" ? "bg-primary/10" : "bg-warning/10"
-                    )}>
-                      {item.item_type === "lesson"
-                        ? <BookOpen className="h-4 w-4 text-primary" />
-                        : <HelpCircle className="h-4 w-4 text-warning" />
-                      }
-                    </div>
-
-                    <div className="flex-1 min-w-0">
-                      <p className={cn(
-                        "text-sm font-medium truncate",
-                        item.status === "completed" && "line-through text-muted-foreground"
-                      )}>
-                        {item.lesson?.title || item.subject?.name || (item.item_type === "questions" ? "Praticar questões" : "Estudar")}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {item.item_type === "lesson" ? "📖 Aula" : "❓ Questões"} · {item.estimated_minutes}min
-                        {item.priority_reason && ` · ${item.priority_reason}`}
-                      </p>
-                    </div>
-
-                    <Clock className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            return (
+              <div key={dateStr}>
+                <div className="flex items-center gap-3 mb-2">
+                  <div className={cn(
+                    "h-10 w-10 rounded-xl flex flex-col items-center justify-center shrink-0 text-xs font-bold",
+                    isToday ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+                  )}>
+                    <span>{label.slice(0, 3)}</span>
+                    <span className="text-[10px] font-normal opacity-80">{sub.split(" ")[0]}</span>
                   </div>
-                ))}
+                  <div>
+                    <p className={cn("text-sm font-semibold", isToday && "text-primary")}>{label}</p>
+                    <p className="text-xs text-muted-foreground">{sub} · {doneCount}/{items.length} concluídos</p>
+                  </div>
+                  {isToday && pendingCount > 0 && (
+                    <Badge variant="default" className="ml-auto text-xs">
+                      {pendingCount} pendente{pendingCount > 1 ? "s" : ""}
+                    </Badge>
+                  )}
+                </div>
+
+                <div className="space-y-2 ml-2 pl-10 border-l-2 border-border">
+                  {items.map((item: any) => (
+                    <ScheduleItemRow
+                      key={item.id}
+                      item={item}
+                      courseId={courseId}
+                      onCheckin={(id, completed) => checkinMutation.mutate({ itemId: id, completed })}
+                      loading={checkinMutation.isPending}
+                    />
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -388,12 +554,12 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
 }
 
 // ── Página principal ──────────────────────────────────────────────────────────
+
 export default function SchedulePage() {
   const [courseId, setCourseId] = useState<string | null>(null);
   const [hasSchedule, setHasSchedule] = useState<boolean | null>(null);
   const queryClient = useQueryClient();
 
-  // Carrega cursos matriculados
   const { data: coursesData } = useQuery({
     queryKey: ["courses"],
     queryFn: () => apiClient.get("/courses/").then(r => r.data),
@@ -401,15 +567,11 @@ export default function SchedulePage() {
 
   const courses = coursesData?.courses || [];
 
-  // Seleciona primeiro curso automaticamente
   useEffect(() => {
-    if (courses.length > 0 && !courseId) {
-      setCourseId(courses[0].id);
-    }
+    if (courses.length > 0 && !courseId) setCourseId(courses[0].id);
   }, [courses, courseId]);
 
-  // Verifica se já tem cronograma
-  useQuery({
+  const { isLoading: checkLoading } = useQuery({
     queryKey: ["schedule-check", courseId],
     queryFn: async () => {
       if (!courseId) return null;
@@ -417,31 +579,40 @@ export default function SchedulePage() {
       setHasSchedule(!!data?.schedule);
       return data;
     },
-    enabled: !!courseId,
+    enabled: !!courseId && hasSchedule === null,
   });
 
-  if (!courseId || hasSchedule === null) {
+  if (!courseId || checkLoading || hasSchedule === null) {
     return (
-      <div className="flex h-64 items-center justify-center">
-        <div className="h-8 w-8 rounded-full border-4 border-primary border-t-transparent animate-spin" />
+      <div className="space-y-4">
+        {[...Array(3)].map((_, i) => <div key={i} className="h-24 bg-muted rounded-xl animate-pulse" />)}
       </div>
     );
   }
 
   if (!hasSchedule) {
-    return (
-      <ScheduleWizard
-        courseId={courseId}
-        onGenerated={() => {
-          setHasSchedule(true);
-          queryClient.invalidateQueries({ queryKey: ["schedule", courseId] });
-        }}
-      />
-    );
+    return <ScheduleWizard courseId={courseId} onGenerated={() => setHasSchedule(true)} />;
   }
 
-  return <ScheduleView
-    courseId={courseId}
-    onDelete={() => setHasSchedule(false)}
-  />;
+  return (
+    <div className="space-y-4">
+      {courses.length > 1 && (
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          {courses.map((c: any) => (
+            <button key={c.id}
+              onClick={() => { setCourseId(c.id); setHasSchedule(null); }}
+              className={cn(
+                "px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all border-2",
+                courseId === c.id
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "bg-background border-border hover:border-primary/50"
+              )}>
+              {c.name}
+            </button>
+          ))}
+        </div>
+      )}
+      <ScheduleView courseId={courseId} onDelete={() => setHasSchedule(false)} />
+    </div>
+  );
 }

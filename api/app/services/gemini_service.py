@@ -30,7 +30,7 @@ except ImportError:
 
 class GeminiService:
 
-    MODEL = "gemini-1.5-flash"
+    MODEL = "gemini-1.5-flash-latest"
 
     def _call(self, prompt: str, max_tokens: int = 4096) -> Optional[str]:
         """Faz uma chamada ao Gemini e retorna o texto da resposta."""
@@ -447,3 +447,40 @@ Responda APENAS com JSON válido."""
             )
 
         return insights[:3]
+    # ── Análise de avaliações de aula ────────────────────────────────────────
+
+    def analyze_lesson_ratings(
+        self,
+        lesson_title: str,
+        avg_rating: float,
+        low_count: int,
+        total_count: int,
+        comments: list[str],
+    ) -> str | None:
+        """
+        Analisa avaliações negativas de uma aula e gera insight para o produtor.
+        Chamado quando uma aula acumula 3+ avaliações baixas (≤2 estrelas).
+        """
+        comments_text = "\n".join(f"- {c}" for c in comments[:10]) if comments else "Nenhum comentário registrado."
+
+        prompt = f"""Você é um especialista em educação online e design instrucional.
+
+Uma aula recebeu avaliações negativas dos alunos e precisa da sua análise.
+
+DADOS DA AULA:
+- Título: {{lesson_title}}
+- Nota média: {{avg_rating}}/5
+- Avaliações baixas (≤2 estrelas): {{low_count}} de {{total_count}} alunos
+- Comentários dos alunos:
+{{comments_text}}
+
+Analise os problemas e responda em português com:
+
+1. **Diagnóstico** (2-3 frases): O que está causando a insatisfação dos alunos?
+2. **Problemas identificados** (lista com bullet points): Problemas específicos com base nos comentários.
+3. **Sugestões de melhoria** (lista com bullet points): 3-5 ações concretas que o produtor pode fazer para melhorar esta aula.
+
+Seja direto, específico e construtivo. Máximo 300 palavras."""
+
+        result = self._call(prompt, max_tokens=600)
+        return result

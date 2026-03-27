@@ -7,7 +7,7 @@ const RESERVED_SLUGS = new Set([
   "admin", "api", "_next", "static", "public",
   "favicon.ico", "login", "register", "dashboard",
   "producer", "courses", "questions", "simulados", "schedule",
-  "analytics", "profile", "settings",
+  "analytics", "profile", "settings", "hall-of-fame", "desempenho",
 ]);
 
 export function proxy(request: NextRequest) {

@@ -15,6 +15,7 @@ import {
   Users, TrendingUp, AlertTriangle, Target,
   BookOpen, Eye, Trophy, ChevronDown, ChevronUp,
   BarChart3, AlertCircle, UserX, Clock,
+  Star,
 } from "lucide-react";
 import { formatRelative } from "@/lib/utils/date";
 
@@ -556,6 +557,7 @@ const TABS = [
   { id: "overview", label: "Visão Geral", icon: BarChart3 },
   { id: "lessons", label: "Aulas", icon: BookOpen },
   { id: "students", label: "Alunos", icon: Users },
+  { id: "ratings",   label: "Avaliações",  icon: Star}, 
 ];
 
 export default function ProducerAnalyticsPage() {
@@ -567,8 +569,9 @@ export default function ProducerAnalyticsPage() {
   const { data: studentsData, isLoading: studentsLoading } = useQuery({
     queryKey: ["producer", "students", "analytics"],
     queryFn: () => analyticsApi.producerStudents({ per_page: 100 }),
-    enabled: activeTab === "students",
+    enabled: activeTab === "students", 
   });
+
 
   const { data: coursesData } = useQuery({
     queryKey: ["courses", "producer"],
@@ -630,8 +633,168 @@ export default function ProducerAnalyticsPage() {
               ? <div className="space-y-2">{[...Array(5)].map((_, i) => <Skeleton key={i} className="h-16 rounded-xl" />)}</div>
               : <StudentsTab data={studentsData} />
           )}
+          {activeTab === "ratings" && <RatingsTab />}
         </>
       )}
     </div>
   );
 }
+
+export function RatingsTab() {
+  const { data, isLoading } = useQuery({
+    queryKey: ["producer", "ratings", "overview"],
+    queryFn:  () => apiClient.get("/gamification/ratings/producer/overview").then(r => r.data),
+  });
+ 
+  const [selectedLesson, setSelectedLesson] = useState<string | null>(null);
+ 
+  const { data: detailData } = useQuery({
+    queryKey: ["producer", "ratings", "lesson", selectedLesson],
+    queryFn:  () => apiClient.get(`/gamification/ratings/lessons/${selectedLesson}`).then(r => r.data),
+    enabled:  !!selectedLesson,
+  });
+ 
+  if (isLoading) return (
+    <div className="space-y-3">
+      {[...Array(4)].map((_, i) => <div key={i} className="h-16 bg-muted rounded-xl animate-pulse" />)}
+    </div>
+  );
+ 
+  const lessons = data?.lessons || [];
+  const needsAttention = data?.needs_attention || [];
+ 
+  return (
+    <div className="space-y-6">
+      {/* Alertas — aulas com nota baixa */}
+      {needsAttention.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-sm font-bold text-destructive flex items-center gap-2">
+            ⚠️ Precisam de atenção ({needsAttention.length})
+          </h3>
+          {needsAttention.map((lesson: any) => (
+            <div key={lesson.lesson_id}
+              className="p-4 rounded-xl border border-destructive/20 bg-destructive/5 space-y-2">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-foreground truncate">{lesson.lesson_title}</p>
+                  <div className="flex items-center gap-3 mt-1">
+                    <span className="text-xs text-muted-foreground">
+                      Nota média: <strong className="text-destructive">{lesson.avg_rating}/5</strong>
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {lesson.low_ratings} avaliações baixas de {lesson.total_ratings}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setSelectedLesson(selectedLesson === lesson.lesson_id ? null : lesson.lesson_id)}
+                  className="text-xs text-primary hover:underline shrink-0">
+                  {selectedLesson === lesson.lesson_id ? "Fechar" : "Ver detalhes"}
+                </button>
+              </div>
+ 
+              {/* Insight do Gemini */}
+              {lesson.ai_insight && (
+                <div className="p-3 rounded-lg bg-background border border-border">
+                  <p className="text-xs font-semibold text-primary mb-1 flex items-center gap-1">
+                    ✨ Análise por IA
+                  </p>
+                  <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-wrap">
+                    {lesson.ai_insight}
+                  </p>
+                </div>
+              )}
+ 
+              {/* Lista de avaliações detalhadas */}
+              {selectedLesson === lesson.lesson_id && detailData && (
+                <div className="space-y-2 pt-2 border-t border-border/50">
+                  <p className="text-xs font-semibold text-muted-foreground">Avaliações dos alunos:</p>
+                  {detailData.ratings.map((r: any) => (
+                    <div key={r.id} className="flex items-start gap-2 p-2 rounded-lg bg-muted/30">
+                      <div className="h-7 w-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0 text-xs font-bold text-primary">
+                        {r.student?.name?.charAt(0) || "A"}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="text-xs font-medium text-foreground">{r.student?.name || "Aluno"}</p>
+                          <div className="flex items-center gap-0.5">
+                            {[1,2,3,4,5].map(s => (
+                              <span key={s} className={s <= r.stars ? "text-warning" : "text-muted-foreground"}>★</span>
+                            ))}
+                          </div>
+                        </div>
+                        {r.comment && (
+                          <p className="text-xs text-muted-foreground mt-0.5 italic">"{r.comment}"</p>
+                        )}
+                        <p className="text-[10px] text-muted-foreground mt-0.5">
+                          {new Date(r.created_at).toLocaleDateString("pt-BR")}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+ 
+      {/* Todas as aulas avaliadas */}
+      <div className="space-y-2">
+        <h3 className="text-sm font-bold text-foreground">
+          Todas as aulas avaliadas ({lessons.length})
+        </h3>
+        {lessons.length === 0 ? (
+          <div className="py-12 text-center">
+            <p className="text-sm text-muted-foreground">Nenhuma avaliação ainda.</p>
+            <p className="text-xs text-muted-foreground mt-1">As avaliações aparecem após os alunos assistirem às aulas.</p>
+          </div>
+        ) : (
+          lessons.map((lesson: any) => (
+            <div key={lesson.lesson_id}
+              className="flex items-center gap-3 p-3 rounded-xl border border-border hover:bg-muted/20 transition-colors">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-foreground truncate">{lesson.lesson_title}</p>
+                <p className="text-xs text-muted-foreground">{lesson.total_ratings} avaliações</p>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <span className={cn(
+                  "text-sm font-bold",
+                  lesson.avg_rating >= 4 ? "text-success" :
+                  lesson.avg_rating >= 3 ? "text-warning" : "text-destructive"
+                )}>
+                  {lesson.avg_rating}
+                </span>
+                <span className="text-warning text-sm">★</span>
+              </div>
+              <button
+                onClick={() => setSelectedLesson(selectedLesson === lesson.lesson_id ? null : lesson.lesson_id)}
+                className="text-xs text-muted-foreground hover:text-primary transition-colors shrink-0">
+                {selectedLesson === lesson.lesson_id ? "Fechar" : "Ver →"}
+              </button>
+ 
+              {/* Detalhe inline */}
+              {selectedLesson === lesson.lesson_id && detailData && (
+                <div className="w-full mt-3 pt-3 border-t border-border space-y-2">
+                  {detailData.ratings.map((r: any) => (
+                    <div key={r.id} className="flex items-start gap-2">
+                      <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center shrink-0 text-xs font-bold text-primary">
+                        {r.student?.name?.charAt(0) || "A"}
+                      </div>
+                      <div>
+                        <span className="text-xs font-medium text-foreground">{r.student?.name}</span>
+                        <span className="text-warning text-xs ml-1">{"★".repeat(r.stars)}</span>
+                        {r.comment && <p className="text-xs text-muted-foreground italic">"{r.comment}"</p>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+ 

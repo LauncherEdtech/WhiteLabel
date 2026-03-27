@@ -1,19 +1,18 @@
 // frontend/src/lib/api/schedule.ts
-
 import { apiClient } from "./client";
 
 export const scheduleApi = {
     generate: async (courseId: string, targetDate?: string) => {
         const res = await apiClient.post("/schedule/generate", {
             course_id: courseId,
-            target_date: targetDate,
+            target_date: targetDate || null,
         });
         return res.data;
     },
 
-    get: async (courseId: string, daysAhead = 7) => {
+    get: async (courseId: string, days: number = 14) => {
         const res = await apiClient.get("/schedule/", {
-            params: { course_id: courseId, days_ahead: daysAhead },
+            params: { course_id: courseId, days },
         });
         return res.data;
     },
@@ -22,29 +21,31 @@ export const scheduleApi = {
         itemId: string,
         payload: {
             completed: boolean;
-            perceived_difficulty?: "easy" | "ok" | "hard";
             note?: string;
+            perceived_difficulty?: "easy" | "ok" | "hard";
         }
     ) => {
-        const res = await apiClient.post(
-            `/schedule/items/${itemId}/checkin`,
-            payload
-        );
+        const res = await apiClient.post(`/schedule/checkin/${itemId}`, payload);
         return res.data;
     },
 
-    updateAvailability: async (availability: {
+    reorganize: async (courseId: string) => {
+        const res = await apiClient.post("/schedule/reorganize", { course_id: courseId });
+        return res.data;
+    },
+
+    updateAvailability: async (payload: {
         days: number[];
         hours_per_day: number;
-        preferred_start_time: string;
+        preferred_start_time?: string;
     }) => {
-        const res = await apiClient.put("/schedule/availability", availability);
+        const res = await apiClient.put("/schedule/availability", payload);
         return res.data;
     },
 
     delete: async (courseId: string) => {
         const res = await apiClient.delete("/schedule/", {
-            data: { course_id: courseId },
+            params: { course_id: courseId },
         });
         return res.data;
     },
