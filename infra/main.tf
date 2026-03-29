@@ -231,7 +231,7 @@ resource "aws_db_instance" "postgres" {
   vpc_security_group_ids = [aws_security_group.rds.id]
 
   # Free tier settings
-  storage_encrypted       = false  # Criptografia requer instância paga
+  storage_encrypted       = false
   backup_retention_period = 1
   multi_az                = false
   publicly_accessible     = false
@@ -260,10 +260,9 @@ resource "aws_elasticache_replication_group" "redis" {
   parameter_group_name       = "default.redis7"
   automatic_failover_enabled = false
 
-  # TLS habilitado — necessário para auth_token
   auth_token                 = var.redis_auth_token
   transit_encryption_enabled = true
-  at_rest_encryption_enabled = false  # Free tier
+  at_rest_encryption_enabled = false
 
   subnet_group_name  = aws_elasticache_subnet_group.main.name
   security_group_ids = [aws_security_group.redis.id]
@@ -273,7 +272,6 @@ resource "aws_elasticache_replication_group" "redis" {
 
 # ══════════════════════════════════════════════════════════════════════════════
 # IAM — Role para ECS Task Execution
-# Permissões: pull ECR, escrever CloudWatch Logs
 # ══════════════════════════════════════════════════════════════════════════════
 
 resource "aws_iam_role" "ecs_task_execution" {
@@ -294,7 +292,6 @@ resource "aws_iam_role_policy_attachment" "ecs_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# Permissão extra para pull de imagens ECR
 resource "aws_iam_role_policy_attachment" "ecs_ecr" {
   role       = aws_iam_role.ecs_task_execution.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
@@ -306,7 +303,7 @@ resource "aws_iam_role_policy_attachment" "ecs_ecr" {
 
 resource "aws_cloudwatch_log_group" "api" {
   name              = "/ecs/${var.project_name}/api"
-  retention_in_days = 7  # Free tier: 5GB/mês
+  retention_in_days = 7
 }
 
 resource "aws_cloudwatch_log_group" "frontend" {
@@ -316,6 +313,7 @@ resource "aws_cloudwatch_log_group" "frontend" {
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ECS CLUSTER
+# ✅ CORREÇÃO: containerInsights "disabled" — economia ~$10/mês
 # ══════════════════════════════════════════════════════════════════════════════
 
 resource "aws_ecs_cluster" "main" {
@@ -323,24 +321,25 @@ resource "aws_ecs_cluster" "main" {
 
   setting {
     name  = "containerInsights"
-    value = "enabled"
+    value = "disabled"  # Era "enabled" — desabilitar economiza ~$10/mês
   }
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ECS TASK DEFINITION — API Flask
-# IMPORTANTE: Variáveis passadas como environment (não Secrets Manager)
-# Motivo: Secrets Manager requer NAT Gateway em subnets privadas (custo)
-# Em produção real: usar NAT Gateway + Secrets Manager
+# ✅ CORREÇÃO: cpu 256 + memory 512 (era 512 + 1024) — economia ~$11/mês/task
+#    Uso real observado: 0.5% CPU, 28.5% memória (~292MB de 1024MB)
+#    Com 512MB: 292MB usados + 220MB de buffer → seguro
 # ══════════════════════════════════════════════════════════════════════════════
 
 resource "aws_ecs_task_definition" "api" {
   family                   = "${var.project_name}-api"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
-  cpu                      = "512"
-  memory                   = "1024"
+  cpu                      = "256"   
+  memory                   = "512"   
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task_execution.arn
 
   container_definitions = jsonencode([{
     name      = "api"
@@ -352,16 +351,16 @@ resource "aws_ecs_task_definition" "api" {
       protocol      = "tcp"
     }]
 
-    # Variáveis de ambiente — sem Secrets Manager para evitar timeout
     environment = [
-      { name = "FLASK_ENV",        value = "production" },
-      { name = "DATABASE_URL",     value = "postgresql://concurso_user:${var.db_password}@${aws_db_instance.postgres.endpoint}/concurso_platform" },
-      { name = "REDIS_URL",        value = "rediss://:${var.redis_auth_token}@${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379/0" },
-      { name = "SECRET_KEY",       value = var.secret_key },
-      { name = "JWT_SECRET_KEY",   value = var.jwt_secret_key },
-      { name = "GEMINI_API_KEY",   value = var.gemini_api_key },
-      { name = "CELERY_BROKER_URL",   value = "rediss://:${var.redis_auth_token}@${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379/1" },
+      { name = "FLASK_ENV",             value = "production" },
+      { name = "DATABASE_URL",          value = "postgresql://concurso_user:${var.db_password}@${aws_db_instance.postgres.endpoint}/concurso_platform" },
+      { name = "REDIS_URL",             value = "rediss://:${var.redis_auth_token}@${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379/0" },
+      { name = "SECRET_KEY",            value = var.secret_key },
+      { name = "JWT_SECRET_KEY",        value = var.jwt_secret_key },
+      { name = "GEMINI_API_KEY",        value = var.gemini_api_key },
+      { name = "CELERY_BROKER_URL",     value = "rediss://:${var.redis_auth_token}@${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379/1" },
       { name = "CELERY_RESULT_BACKEND", value = "rediss://:${var.redis_auth_token}@${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379/2" },
+      { name = "AWS_DEFAULT_REGION",    value = var.aws_region },
     ]
 
     secrets = []
@@ -432,8 +431,6 @@ resource "aws_lb_listener" "http" {
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ECS SERVICE — API
-# IMPORTANTE: subnets públicas + assignPublicIp=ENABLED
-# Permite pull de imagens ECR sem NAT Gateway (free tier)
 # ══════════════════════════════════════════════════════════════════════════════
 
 resource "aws_ecs_service" "api" {
@@ -443,8 +440,6 @@ resource "aws_ecs_service" "api" {
   desired_count   = var.api_desired_count
   launch_type     = "FARGATE"
 
-  # Subnets públicas — necessário sem NAT Gateway
-  # assignPublicIp=ENABLED permite acesso ao ECR e outros serviços AWS
   network_configuration {
     subnets          = aws_subnet.public[*].id
     security_groups  = [aws_security_group.ecs_tasks.id]
@@ -457,14 +452,12 @@ resource "aws_ecs_service" "api" {
     container_port   = 5000
   }
 
-  # Aguarda o ALB listener estar pronto
   depends_on = [aws_lb_listener.http]
 
   lifecycle {
     ignore_changes = [task_definition, desired_count]
   }
 }
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ECS TASK DEFINITION — Frontend Next.js
@@ -489,10 +482,10 @@ resource "aws_ecs_task_definition" "frontend" {
     }]
 
     environment = [
-      { name = "NODE_ENV",               value = "production" },
-      { name = "NEXT_PUBLIC_API_URL",    value = "http://${aws_lb.main.dns_name}/api/v1" },
-      { name = "PORT",                   value = "3000" },
-      { name = "HOSTNAME",               value = "0.0.0.0" },
+      { name = "NODE_ENV",            value = "production" },
+      { name = "NEXT_PUBLIC_API_URL", value = "http://${aws_lb.main.dns_name}/api/v1" },
+      { name = "PORT",                value = "3000" },
+      { name = "HOSTNAME",            value = "0.0.0.0" },
     ]
 
     logConfiguration = {
@@ -515,6 +508,7 @@ resource "aws_ecs_task_definition" "frontend" {
 }
 
 # ── Target Group Frontend ──────────────────────────────────────────────────
+
 resource "aws_lb_target_group" "frontend" {
   name        = "${var.project_name}-fe-tg"
   port        = 3000
@@ -536,7 +530,7 @@ resource "aws_lb_target_group" "frontend" {
 }
 
 # ── ALB Listener Rules ────────────────────────────────────────────────────
-# /api/* → API (porta 5000)
+
 resource "aws_lb_listener_rule" "api" {
   listener_arn = aws_lb_listener.http.arn
   priority     = 10
@@ -553,7 +547,6 @@ resource "aws_lb_listener_rule" "api" {
   }
 }
 
-# /* → Frontend (porta 3000) — default já faz isso, mas deixa explícito
 resource "aws_lb_listener_rule" "frontend" {
   listener_arn = aws_lb_listener.http.arn
   priority     = 20
@@ -571,6 +564,7 @@ resource "aws_lb_listener_rule" "frontend" {
 }
 
 # ── ECS Service Frontend ───────────────────────────────────────────────────
+
 resource "aws_ecs_service" "frontend" {
   name            = "${var.project_name}-frontend"
   cluster         = aws_ecs_cluster.main.id

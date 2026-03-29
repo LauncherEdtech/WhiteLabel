@@ -15,8 +15,8 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     # Pool de conexões: evita conexões ociosas no RDS
     SQLALCHEMY_ENGINE_OPTIONS = {
-        "pool_pre_ping": True,       # Testa conexão antes de usar
-        "pool_recycle": 300,         # Recicla conexões a cada 5min
+        "pool_pre_ping": True,  # Testa conexão antes de usar
+        "pool_recycle": 300,  # Recicla conexões a cada 5min
         "pool_size": 10,
         "max_overflow": 20,
     }
@@ -32,8 +32,8 @@ class Config:
     if not JWT_SECRET_KEY:
         raise ValueError("JWT_SECRET_KEY não definida no ambiente!")
 
-    JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=1)       # Token curto
-    JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=30)      # Refresh longo
+    JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=1)  # Token curto
+    JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=30)  # Refresh longo
     JWT_ALGORITHM = "HS256"
     # SEGURANÇA: Tokens ficam no header Authorization, nunca em cookies sem httpOnly
     JWT_TOKEN_LOCATION = ["headers"]
@@ -42,8 +42,12 @@ class Config:
 
     # ── Redis / Celery ───────────────────────────────────────────────────────
     REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-    CELERY_BROKER_URL = REDIS_URL
-    CELERY_RESULT_BACKEND = REDIS_URL
+    # ssl_cert_reqs=CERT_NONE necessário para rediss:// no ElastiCache
+    _ssl_suffix = (
+        "?ssl_cert_reqs=CERT_NONE" if REDIS_URL.startswith("rediss://") else ""
+    )
+    CELERY_BROKER_URL = REDIS_URL + _ssl_suffix
+    CELERY_RESULT_BACKEND = REDIS_URL + _ssl_suffix
     # SEGURANÇA: Serializa tarefas como JSON (nunca pickle em produção)
     CELERY_TASK_SERIALIZER = "json"
     CELERY_RESULT_SERIALIZER = "json"
@@ -53,7 +57,7 @@ class Config:
     # SEGURANÇA: Limita requisições por IP via Redis para prevenir brute-force
     RATELIMIT_STORAGE_URI = REDIS_URL
     RATELIMIT_DEFAULT = "200 per hour"
-    RATELIMIT_HEADERS_ENABLED = True     # Retorna headers X-RateLimit-*
+    RATELIMIT_HEADERS_ENABLED = True  # Retorna headers X-RateLimit-*
 
     # ── CORS ─────────────────────────────────────────────────────────────────
     # Origens permitidas são definidas por tenant (ver middleware/tenant.py)
@@ -122,11 +126,12 @@ class TestingConfig(Config):
     RATELIMIT_ENABLED = False
     JWT_SECRET_KEY = "test-jwt-secret-key"
     SECRET_KEY = "test-secret-key"
-    CELERY_TASK_ALWAYS_EAGER = True   # Tasks executam sincronamente
+    CELERY_TASK_ALWAYS_EAGER = True  # Tasks executam sincronamente
     MAIL_SUPPRESS_SEND = True
+
 
 config_by_name = {
     "development": DevelopmentConfig,
-    "production":  ProductionConfig,
-    "testing":     TestingConfig,     # ← adiciona esta linha
+    "production": ProductionConfig,
+    "testing": TestingConfig,  # ← adiciona esta linha
 }

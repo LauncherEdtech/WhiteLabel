@@ -150,6 +150,11 @@ def login():
         return jsonify(GENERIC_ERROR), 401
 
     access_token, refresh_token = _create_tokens(user)
+    # FinOps: registra atividade do usuário para auto scaling inteligente
+    from app.middleware.activity_tracker import set_activity_user
+
+    set_activity_user(user.id)
+
 
     return (
         jsonify(
@@ -168,7 +173,7 @@ def login():
                     "slug": tenant.slug,
                     "plan": tenant.plan,
                     "branding": tenant.branding or {},
-                    "features": tenant.features or {},
+                    "features": list(tenant.features) if isinstance(tenant.features, set) else (tenant.features or {}),
                     "custom_domain": tenant.custom_domain,
                 },
             }

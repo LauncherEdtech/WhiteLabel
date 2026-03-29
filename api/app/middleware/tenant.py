@@ -81,7 +81,6 @@ def require_tenant(f):
         return f(*args, **kwargs)
     return decorated
 
-
 def require_feature(feature_name: str):
     """
     Decorator: garante que a feature está habilitada para o tenant.

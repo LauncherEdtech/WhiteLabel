@@ -54,7 +54,7 @@ variable "frontend_image" {
 
 variable "api_desired_count" {
   description = "Número de tarefas ECS da API"
-  default     = 2
+  default     = 1
 }
 
 variable "db_instance_class" {

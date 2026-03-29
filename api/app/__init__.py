@@ -64,8 +64,6 @@ def _init_extensions(app: Flask) -> None:
     mail.init_app(app)
     limiter.init_app(app)
 
-    # CORS — abre para qualquer origem em dev
-    # Em produção, restringir para domínios dos tenants
     cors.init_app(
         app,
         resources={
@@ -100,6 +98,14 @@ def _init_extensions(app: Flask) -> None:
             ),
             401,
         )
+
+    # FinOps: import local evita circular import na inicialização do módulo
+    from app.middleware.activity_tracker import track_user_activity
+
+    @app.after_request
+    def _track_activity(response):
+        track_user_activity()
+        return response
 
 
 def _register_blueprints(app: Flask) -> None:
@@ -203,7 +209,13 @@ def _configure_celery(app: Flask) -> None:
     celery_app.conf.beat_schedule = {
         "nightly-schedule-check": {
             "task": "app.tasks.schedule_tasks.nightly_schedule_check",
-            "schedule": 3 * 3600,  # a cada 3 horas
+            "schedule": 3 * 3600,
+        },
+        # FinOps: publica ActiveUsers no CloudWatch a cada 60s
+        # Alimenta o auto scaling da Fase 2 (Step Scaling por usuários)
+        "publish-cloudwatch-metrics": {
+            "task": "app.tasks.cloudwatch_metrics.publish_active_users_metric",
+            "schedule": 60,  # a cada 60 segundos
         },
     }
 
