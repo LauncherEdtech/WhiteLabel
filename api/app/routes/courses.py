@@ -101,6 +101,7 @@ class LessonSchema(Schema):
     video_url = fields.Str(allow_none=True, load_default=None)
     duration_minutes = fields.Int(load_default=0, validate=validate.Range(min=0))
     material_url = fields.Str(allow_none=True, load_default=None)
+    video_s3_key = fields.Str(allow_none=True, load_default=None)
     external_url = fields.Str(allow_none=True, load_default=None)
     order = fields.Int(load_default=0)
     is_published = fields.Bool(load_default=False)
@@ -971,8 +972,13 @@ def update_lesson(lesson_id: str):
     # Sem isso, toggleLesson (que não manda video_url) apagava a URL salva
     if "video_url" in raw_json:
         lesson.video_url = data.get("video_url")
+        # Mutuamente exclusivo: link externo limpa o vídeo hospedado
+        if lesson.video_url:
+            lesson.video_s3_key = None
     if "external_url" in raw_json:
         lesson.external_url = data.get("external_url")
+    if "video_s3_key" in raw_json:
+        lesson.video_s3_key = data.get("video_s3_key")
 
     db.session.commit()
 
@@ -1008,6 +1014,15 @@ def _serialize_subject(subject: Subject) -> dict:
 
 
 def _serialize_lesson(lesson: Lesson, progress=None, full: bool = False) -> dict:
+
+    # Resolve URL do vídeo: hospedado no S3 → presigned GET (HMAC local, sem HTTP)
+    # ou externo → retorna diretamente.
+    if lesson.video_s3_key:
+        from app.routes.uploads import generate_video_presigned_url
+        video_url = generate_video_presigned_url(lesson.video_s3_key)
+    else:
+        video_url = lesson.video_url
+
     data = {
         "id": lesson.id,
         "title": lesson.title,
@@ -1019,6 +1034,7 @@ def _serialize_lesson(lesson: Lesson, progress=None, full: bool = False) -> dict
         "ai_topics": lesson.ai_topics or [],
         "video_url": lesson.video_url,
         "material_url": lesson.material_url,
+        "video_hosted": bool(lesson.video_s3_key),
         "external_url": lesson.external_url,
         "progress": (
             {

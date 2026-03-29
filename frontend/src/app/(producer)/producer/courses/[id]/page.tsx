@@ -22,6 +22,8 @@ import {
 import Link from "next/link";
 import { QUERY_KEYS } from "@/lib/constants/queryKeys";
 import { PdfUploader } from "@/components/producer/PdfUploader";
+import { VideoUploader } from "@/components/producer/VideoUploader";
+import { useTenantFeatures } from "@/lib/hooks/useTenantFeatures";
 
 type EditSubjectState = { open: boolean; subject: any | null };
 type EditModuleState = { open: boolean; module: any | null };
@@ -38,6 +40,8 @@ type LessonModalState = {
 
 export default function ProducerCourseDetailPage() {
   const { id: courseId } = useParams<{ id: string }>();
+  const { data: features } = useTenantFeatures();
+  const hasVideoHosting = features?.video_hosting ?? false;
   const toast = useToast();
   const queryClient = useQueryClient();
 
@@ -443,6 +447,7 @@ export default function ProducerCourseDetailPage() {
         createdLessonId={lessonModal.createdLessonId}
         createdTitle={lessonModal.createdTitle}
         loading={createLesson.isPending}
+        hasVideoHosting={hasVideoHosting}
         onClose={() => {
           setLessonModal({ open: false, moduleId: "" });
           if (lessonModal.createdLessonId) toast.success("Aula criada com sucesso!");
@@ -453,6 +458,7 @@ export default function ProducerCourseDetailPage() {
           setLessonModal({ open: false, moduleId: "" });
           toast.success("Aula criada com PDF!");
         }}
+        onVideoSaved={() => queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) })}
       />
 
       {/* ── Modais: Editar ── */}
@@ -472,6 +478,7 @@ export default function ProducerCourseDetailPage() {
         open={editLesson.open}
         title={editLesson.lesson?.title ? `Editar: ${editLesson.lesson.title}` : "Editar Aula"}
         lessonId={editLesson.lesson?.id}
+        hasVideoHosting={hasVideoHosting}
         initialData={editLesson.lesson ? {
           title: editLesson.lesson.title,
           duration_minutes: editLesson.lesson.duration_minutes,
@@ -479,6 +486,7 @@ export default function ProducerCourseDetailPage() {
           is_free_preview: editLesson.lesson.is_free_preview,
           material_url: editLesson.lesson.material_url,
           external_url: editLesson.lesson.external_url || "",
+          video_hosted: editLesson.lesson.video_hosted,
         } : undefined}
         onClose={() => setEditLesson({ open: false, lesson: null })}
         onSubmit={d => updateLesson.mutate({
@@ -493,6 +501,7 @@ export default function ProducerCourseDetailPage() {
             is_free_preview: d.is_free_preview ?? false,
           },
         })}
+        onVideoSaved={() => queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) })}
         loading={updateLesson.isPending}
       />
     </div>
@@ -501,14 +510,16 @@ export default function ProducerCourseDetailPage() {
 
 // ── Modal criar aula (dois modos: form → PDF no mesmo dialog) ─────────────────
 
-function CreateLessonModal({ open, createdLessonId, createdTitle, loading, onClose, onSubmit, onPdfUploaded }: {
+function CreateLessonModal({ open, createdLessonId, createdTitle, loading, hasVideoHosting, onClose, onSubmit, onPdfUploaded, onVideoSaved }: {
   open: boolean;
   createdLessonId?: string;
   createdTitle?: string;
   loading: boolean;
+  hasVideoHosting: boolean;
   onClose: () => void;
   onSubmit: (d: { title: string; duration_minutes: number; video_url: string; is_free_preview?: boolean; external_url?: string | null }) => void;
   onPdfUploaded: () => void;
+  onVideoSaved: () => void;
 }) {
   const { register, handleSubmit, reset, watch } = useForm({
     defaultValues: { title: "", duration_minutes: 30, video_url: "", external_url: "", is_free_preview: false },
@@ -611,12 +622,21 @@ function CreateLessonModal({ open, createdLessonId, createdTitle, loading, onClo
         )}
 
         {/* Fase 2: upload PDF opcional */}
+
         {createdLessonId && (
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">
               <strong className="text-foreground">"{createdTitle}"</strong> foi criada.
-              Deseja adicionar um material de apoio em PDF? (opcional)
+              Adicione conteúdo opcional abaixo.
             </p>
+
+            {hasVideoHosting && (
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Vídeo hospedado (opcional)</label>
+                <VideoUploader lessonId={createdLessonId} isHosted={false} onSaved={onVideoSaved} />
+              </div>
+            )}
+
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Material de Apoio (PDF)</label>
               <PdfUploader
@@ -711,17 +731,19 @@ function SimpleModal({ open, onClose, title, placeholder, initialValue, onSubmit
   );
 }
 
-function LessonModal({ open, title, initialData, lessonId, onClose, onSubmit, loading }: {
+function LessonModal({ open, title, initialData, lessonId, hasVideoHosting, onClose, onSubmit, onVideoSaved, loading }: {
   open: boolean;
   title: string;
   lessonId?: string;
+  hasVideoHosting: boolean;
   initialData?: {
     title: string;
     duration_minutes: number;
     video_url: string;
     is_free_preview?: boolean;
     material_url?: string | null;
-    external_url?: string | null;  // ← NOVO
+    external_url?: string | null;
+    video_hosted?: boolean;
   };
   onClose: () => void;
   onSubmit: (d: {
@@ -729,8 +751,9 @@ function LessonModal({ open, title, initialData, lessonId, onClose, onSubmit, lo
     duration_minutes: number;
     video_url: string;
     is_free_preview?: boolean;
-    external_url?: string | null;  // ← NOVO
+    external_url?: string | null;
   }) => void;
+  onVideoSaved: () => void;
   loading: boolean;
 }) {
   const { register, handleSubmit, reset, watch } = useForm({
@@ -830,6 +853,23 @@ function LessonModal({ open, title, initialData, lessonId, onClose, onSubmit, lo
             <input type="checkbox" {...register("is_free_preview")} className="rounded" />
             <span className="text-sm text-foreground">Aula gratuita (preview)</span>
           </label>
+
+          {/* Aviso de Hospedagem */}
+          {hasVideoHosting && lessonId && (
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Vídeo hospedado</label>
+              {!initialData?.video_hosted && (
+                <p className="text-xs text-muted-foreground">
+                  Ao hospedar, o link externo acima será removido automaticamente.
+                </p>
+              )}
+              <VideoUploader
+                lessonId={lessonId}
+                isHosted={initialData?.video_hosted}
+                onSaved={onVideoSaved}
+              />
+            </div>
+          )}
 
           {/* PDF */}
           {lessonId && (

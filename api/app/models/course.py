@@ -2,10 +2,7 @@
 # Hierarquia de conteúdo: Course > Subject > Module > Lesson
 # Cada nível pertence a um tenant (isolamento garantido).
 
-from sqlalchemy import (
-    Column, String, Text, Boolean, Integer,
-    ForeignKey, JSON, Float
-)
+from sqlalchemy import Column, String, Text, Boolean, Integer, ForeignKey, JSON, Float
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -17,6 +14,7 @@ class Course(BaseModel, TenantMixin):
     Curso principal do infoprodutor.
     Ex: "Aprovação PCDF 2025 - Delegado"
     """
+
     __tablename__ = "courses"
 
     name = Column(String(255), nullable=False)
@@ -47,6 +45,7 @@ class Course(BaseModel, TenantMixin):
 
 class CourseEnrollment(BaseModel, TenantMixin):
     """Matrícula de aluno em um curso."""
+
     __tablename__ = "course_enrollments"
 
     course_id = Column(UUID(as_uuid=False), ForeignKey("courses.id"), nullable=False)
@@ -57,6 +56,7 @@ class CourseEnrollment(BaseModel, TenantMixin):
     user = relationship("User")
 
     from sqlalchemy import UniqueConstraint
+
     __table_args__ = (
         UniqueConstraint("course_id", "user_id", name="uq_enrollment_course_user"),
     )
@@ -67,6 +67,7 @@ class Subject(BaseModel, TenantMixin):
     Disciplina dentro do curso.
     Ex: "Direito Penal", "Português", "Raciocínio Lógico"
     """
+
     __tablename__ = "subjects"
 
     course_id = Column(UUID(as_uuid=False), ForeignKey("courses.id"), nullable=False)
@@ -93,6 +94,7 @@ class Module(BaseModel, TenantMixin):
     Módulo/Tópico dentro de uma disciplina.
     Ex: "Crimes contra a pessoa", "Ortografia"
     """
+
     __tablename__ = "modules"
 
     subject_id = Column(UUID(as_uuid=False), ForeignKey("subjects.id"), nullable=False)
@@ -114,6 +116,7 @@ class Lesson(BaseModel, TenantMixin):
     Aula dentro de um módulo.
     Pode ter vídeo, material PDF, e metadados para o cronograma.
     """
+
     __tablename__ = "lessons"
 
     module_id = Column(UUID(as_uuid=False), ForeignKey("modules.id"), nullable=False)
@@ -122,9 +125,10 @@ class Lesson(BaseModel, TenantMixin):
     order = Column(Integer, default=0, nullable=False)
 
     # Conteúdo
-    video_url = Column(String(500), nullable=True)   # URL S3 ou embed YouTube/Vimeo
+    video_url = Column(String(500), nullable=True)  # URL S3 ou embed YouTube/Vimeo
     duration_minutes = Column(Integer, default=0, nullable=False)
     material_url = Column(String(500), nullable=True)  # PDF de apoio
+    video_s3_key = Column(String(500), nullable=True)  # Key S3 — hospedagem nativa
 
     # Link externo para aulas hospedadas fora da plataforma (ex: Hotmart, Kiwify).
     # Quando preenchido, o aluno é redirecionado para esta URL em vez de
@@ -133,8 +137,10 @@ class Lesson(BaseModel, TenantMixin):
 
     # IA: resumo gerado pelo Gemini (pipeline assíncrono)
     ai_summary = Column(Text, nullable=True)
-    ai_topics = Column(JSON, default=list, nullable=False)   # ["habeas corpus", "prisão preventiva"]
-    ai_processed_at = Column(String(50), nullable=True)     # ISO datetime
+    ai_topics = Column(
+        JSON, default=list, nullable=False
+    )  # ["habeas corpus", "prisão preventiva"]
+    ai_processed_at = Column(String(50), nullable=True)  # ISO datetime
 
     is_published = Column(Boolean, default=False, nullable=False)
     is_free_preview = Column(Boolean, default=False, nullable=False)
@@ -152,6 +158,7 @@ class LessonProgress(BaseModel, TenantMixin):
     Registro de progresso do aluno em cada aula.
     Fonte de dados para o cronograma e analytics.
     """
+
     __tablename__ = "lesson_progress"
 
     lesson_id = Column(UUID(as_uuid=False), ForeignKey("lessons.id"), nullable=False)
@@ -166,12 +173,13 @@ class LessonProgress(BaseModel, TenantMixin):
     # Valores possíveis: not_started | watched | not_watched | partial
 
     watch_percentage = Column(Float, default=0.0, nullable=False)  # 0.0 a 1.0
-    last_watched_at = Column(String(50), nullable=True)            # ISO datetime
+    last_watched_at = Column(String(50), nullable=True)  # ISO datetime
 
     lesson = relationship("Lesson", back_populates="progress_records")
     user = relationship("User", back_populates="lesson_progress")
 
     from sqlalchemy import UniqueConstraint
+
     __table_args__ = (
         UniqueConstraint("lesson_id", "user_id", name="uq_progress_lesson_user"),
     )

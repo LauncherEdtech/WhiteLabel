@@ -36,6 +36,7 @@ const ALL_FEATURES: { key: string; label: string }[] = [
     { key: "ai_tutor_chat", label: "Tutor IA" },
     { key: "analytics_producer", label: "Analytics do produtor" },
     { key: "simulados", label: "Simulados" },
+    { key: "video_hosting", label: "Hospedagem de vídeos" },
 ];
 
 // ── Página principal ──────────────────────────────────────────────────────────

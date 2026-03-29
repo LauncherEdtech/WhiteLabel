@@ -495,11 +495,20 @@ def _serialize_item(item: ScheduleItem) -> dict:
     }
 
     if item.lesson_id and item.lesson:
+        lesson = item.lesson
+        if lesson.video_s3_key:
+            from app.routes.uploads import generate_video_presigned_url
+            video_url = generate_video_presigned_url(lesson.video_s3_key)
+        else:
+            video_url = lesson.video_url
+
         data["lesson"] = {
-            "id": item.lesson.id,
-            "title": item.lesson.title,
-            "duration_minutes": item.lesson.duration_minutes,
-            "video_url": item.lesson.video_url,
+            "id": lesson.id,
+            "title": lesson.title,
+            "duration_minutes": lesson.duration_minutes,
+            "video_url": video_url,
+            "video_hosted": bool(lesson.video_s3_key),
+            "external_url": lesson.external_url,
         }
 
     if item.subject_id and item.subject:

@@ -7,7 +7,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.extensions import db, limiter
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
-from app.middleware.tenant import resolve_tenant, require_tenant
+from app.middleware.tenant import get_current_tenant, resolve_tenant, require_tenant
 
 tenants_bp = Blueprint("tenants", __name__)
 
@@ -18,6 +18,7 @@ ALL_FEATURES = [
     "ai_tutor_chat",
     "analytics_producer",
     "simulados",
+    "video_hosting",  # opt-in — admin ativa após contrato
 ]
 
 
@@ -164,7 +165,10 @@ def create_tenant():
         slug=data["slug"],
         plan=data["plan"],
         custom_domain=data.get("custom_domain"),
-        features={f: True for f in ALL_FEATURES},  # ativa tudo por padrão
+        features={
+            **{f: True for f in ALL_FEATURES if f != "video_hosting"},
+            "video_hosting": False,  # desativado por padrão — custo extra
+        },
     )
     db.session.add(tenant)
     db.session.flush()
@@ -376,6 +380,23 @@ def update_features(tenant_id: str):
         jsonify({"message": "Features atualizadas.", "features": tenant.features}),
         200,
     )
+
+
+@tenants_bp.route("/my-features", methods=["GET"])
+@jwt_required()
+@require_tenant
+def get_my_features():
+    """Features do tenant atual — usado pelo frontend para gate de UI premium."""
+    claims = get_jwt()
+    if claims.get("role") not in (
+        UserRole.SUPER_ADMIN.value,
+        UserRole.PRODUCER_ADMIN.value,
+        UserRole.PRODUCER_STAFF.value,
+    ):
+        return jsonify({"error": "forbidden"}), 403
+
+    tenant = get_current_tenant()
+    return jsonify({"features": tenant.features or {}}), 200
 
 
 # ══════════════════════════════════════════════════════════════════════════════
