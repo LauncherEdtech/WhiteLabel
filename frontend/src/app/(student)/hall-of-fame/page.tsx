@@ -21,16 +21,31 @@ interface HallData {
 }
 
 const RANKS = [
-    { key: "recruta", name: "Recruta", icon: "🪖", min: 0 },
-    { key: "soldado", name: "Soldado", icon: "🎖️", min: 100 },
-    { key: "cabo", name: "Cabo", icon: "⭐", min: 300 },
-    { key: "sargento", name: "Sargento", icon: "⭐⭐", min: 600 },
-    { key: "tenente", name: "Tenente", icon: "⭐⭐⭐", min: 1000 },
-    { key: "capitao", name: "Capitão", icon: "🔰", min: 1600 },
-    { key: "major", name: "Major", icon: "🏅", min: 2500 },
-    { key: "coronel", name: "Coronel", icon: "🦅", min: 4000 },
-    { key: "general", name: "General", icon: "👑", min: 6000 },
+    { key: "recruta", name: "Recruta", icon: "🪖", stars: 0, min: 0 },
+    { key: "soldado", name: "Soldado", icon: "🎖️", stars: 0, min: 100 },
+    { key: "cabo", name: "Cabo", icon: "⭐", stars: 1, min: 300 },
+    { key: "sargento", name: "Sargento", icon: "⭐", stars: 2, min: 600 },
+    { key: "tenente", name: "Tenente", icon: "⭐", stars: 3, min: 1000 },
+    { key: "capitao", name: "Capitão", icon: "🔰", stars: 0, min: 1600 },
+    { key: "major", name: "Major", icon: "🏅", stars: 0, min: 2500 },
+    { key: "coronel", name: "Coronel", icon: "🦅", stars: 0, min: 4000 },
+    { key: "general", name: "General", icon: "👑", stars: 0, min: 6000 },
 ];
+
+// Renderiza o ícone da patente — estrelas múltiplas são renderizadas
+// como elementos individuais em flex para nunca vazar sobre o texto.
+function RankIcon({ rank, className }: { rank: typeof RANKS[0]; className?: string }) {
+    if (rank.stars > 0) {
+        return (
+            <span className={cn("flex items-center justify-center gap-px leading-none", className)}>
+                {Array.from({ length: rank.stars }).map((_, i) => (
+                    <span key={i} className="text-xl leading-none">⭐</span>
+                ))}
+            </span>
+        );
+    }
+    return <span className={cn("leading-none", className)}>{rank.icon}</span>;
+}
 
 const CATEGORY_LABELS: Record<string, { label: string; color: string }> = {
     "questões": { label: "📝 Questões", color: "from-blue-500/20 to-blue-600/10 border-blue-500/30" },
@@ -88,8 +103,8 @@ function RankHeroCard({ data }: { data: HallData }) {
             <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center gap-6">
                 {/* Emblema da patente */}
                 <div className="relative">
-                    <div className="h-24 w-24 rounded-2xl bg-gradient-to-br from-yellow-400/20 to-yellow-600/10 border-2 border-yellow-500/40 flex items-center justify-center text-5xl shadow-lg shadow-yellow-500/20">
-                        {currentRankData.icon}
+                    <div className="h-24 w-24 rounded-2xl bg-gradient-to-br from-yellow-400/30 to-yellow-600/20 border-2 border-yellow-500/60 flex items-center justify-center shadow-lg shadow-yellow-500/30">
+                        <RankIcon rank={currentRankData} className="text-5xl" />
                     </div>
                     {/* Nível badge */}
                     <div className="absolute -bottom-2 -right-2 bg-yellow-400 text-black text-xs font-black px-2 py-0.5 rounded-full">
@@ -144,7 +159,7 @@ function RankHeroCard({ data }: { data: HallData }) {
                         { label: "Badges", value: data.badges_earned, icon: "🏆" },
                         { label: "Pontos", value: total_points, icon: "⚡" },
                     ].map(stat => (
-                        <div key={stat.label} className="text-center p-3 rounded-xl bg-white/5 border border-white/10 min-w-[80px]">
+                        <div key={stat.label} className="text-center p-3 rounded-xl bg-white/10 border border-white/20 min-w-[80px]">
                             <span className="text-2xl">{stat.icon}</span>
                             <p className="text-white font-black text-lg mt-0.5">{stat.value}</p>
                             <p className="text-slate-400 text-xs">{stat.label}</p>
@@ -153,19 +168,29 @@ function RankHeroCard({ data }: { data: HallData }) {
                 </div>
             </div>
 
-            {/* Linha de patentes */}
+            {/* ── Linha de patentes ───────────────────────────────────────────
+                FIX: cada célula agora usa min-w fixa + shrink-0 para o ícone
+                     não sobrepor o nome da patente.
+            ──────────────────────────────────────────────────────────────── */}
             <div className="relative z-10 mt-6 pt-5 border-t border-white/10">
                 <div className="flex items-center gap-1 overflow-x-auto pb-1 no-scrollbar">
-                    {RANKS.map((rank, i) => {
+                    {RANKS.map((rank) => {
                         const isReached = total_points >= rank.min;
                         const isCurrent = current_rank.key === rank.key;
                         return (
                             <div key={rank.key}
                                 className={cn(
                                     "flex flex-col items-center gap-1 px-2 py-1.5 rounded-lg transition-all shrink-0",
-                                    isCurrent ? "bg-yellow-400/20 border border-yellow-400/40" : "opacity-50"
+                                    isCurrent ? "bg-yellow-400/20 border border-yellow-400/40" : "opacity-60"
                                 )}>
-                                <span className={cn("text-lg", !isReached && "grayscale")}>{rank.icon}</span>
+                                {/* Emoji container com largura mínima para evitar overflow */}
+                                <RankIcon
+                                    rank={rank}
+                                    className={cn(
+                                        "text-lg inline-flex",
+                                        !isReached && "grayscale opacity-50"
+                                    )}
+                                />
                                 <span className="text-[10px] text-slate-400 whitespace-nowrap">{rank.name}</span>
                                 {isReached && !isCurrent && (
                                     <div className="h-1 w-1 rounded-full bg-green-400" />
@@ -190,46 +215,48 @@ function BadgeItem({ badge }: { badge: BadgeDef }) {
             className={cn(
                 "relative flex flex-col items-center gap-2 p-3 rounded-2xl border-2 transition-all duration-200 cursor-default text-center group",
                 badge.earned
-                    ? "bg-gradient-to-b from-white/5 to-white/0 border-white/20 hover:border-yellow-400/50 hover:bg-yellow-400/5"
-                    : "bg-transparent border-white/5 grayscale opacity-30"
+                    ? "bg-gradient-to-b from-white/10 to-white/5 border-white/30 hover:border-yellow-400/60 hover:bg-yellow-400/10"
+                    // FIX: era opacity-30 (muito fraco) → opacity-50 para ser legível
+                    : "bg-transparent border-white/10 grayscale opacity-50"
             )}>
 
             {/* Ícone */}
             <div className={cn(
                 "h-14 w-14 rounded-xl flex items-center justify-center text-3xl transition-transform duration-200",
-                badge.earned ? "bg-white/10" : "bg-white/5",
+                // FIX: bg mais opaco para os emblemas conquistados ficarem vibrantes
+                badge.earned ? "bg-white/20 shadow-inner" : "bg-white/5",
                 badge.earned && hovered ? "scale-110" : "scale-100"
             )}>
-                {badge.earned ? badge.icon : <Lock className="h-5 w-5 text-slate-600" />}
+                {badge.earned ? badge.icon : <Lock className="h-5 w-5 text-slate-500" />}
             </div>
 
             {/* Nome */}
             <p className={cn(
                 "text-xs font-bold leading-tight",
-                badge.earned ? "text-white" : "text-slate-600"
+                badge.earned ? "text-white" : "text-slate-500"
             )}>
                 {badge.name}
             </p>
 
-            {/* Descrição — tooltip style */}
-            <p className="text-[10px] text-slate-500 leading-tight line-clamp-2">
+            {/* Descrição */}
+            <p className="text-[10px] text-slate-400 leading-tight line-clamp-2">
                 {badge.description}
             </p>
 
             {/* Pontos */}
             {badge.earned ? (
-                <span className="text-[10px] font-bold text-yellow-400 bg-yellow-400/10 px-2 py-0.5 rounded-full">
+                <span className="text-[10px] font-bold text-yellow-400 bg-yellow-400/20 px-2 py-0.5 rounded-full">
                     +{badge.points}pts
                 </span>
             ) : (
-                <span className="text-[10px] text-slate-600 bg-white/5 px-2 py-0.5 rounded-full">
+                <span className="text-[10px] text-slate-500 bg-white/5 px-2 py-0.5 rounded-full">
                     {badge.points}pts
                 </span>
             )}
 
             {/* Data */}
             {badge.earned && badge.earned_at && (
-                <p className="text-[9px] text-slate-600 absolute top-2 right-2">
+                <p className="text-[9px] text-slate-500 absolute top-2 right-2">
                     {new Date(badge.earned_at).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}
                 </p>
             )}
@@ -248,7 +275,6 @@ export default function HallOfFamePage() {
         staleTime: 30_000,
     });
 
-    // Detecta novas badges quando data muda
     useEffect(() => {
         if (data?.new_badges && data.new_badges.length > 0) {
             setNewBadges(data.new_badges);
@@ -299,7 +325,7 @@ export default function HallOfFamePage() {
                     <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar">
                         {data.recent_badges.map(badge => (
                             <div key={badge.key}
-                                className="shrink-0 flex flex-col items-center gap-2 p-3 rounded-2xl bg-gradient-to-b from-yellow-400/10 to-transparent border border-yellow-400/20 w-24 text-center">
+                                className="shrink-0 flex flex-col items-center gap-2 p-3 rounded-2xl bg-gradient-to-b from-yellow-400/15 to-transparent border border-yellow-400/30 w-24 text-center">
                                 <span className="text-3xl">{badge.icon}</span>
                                 <p className="text-[10px] font-bold text-foreground leading-tight">{badge.name}</p>
                                 <span className="text-[9px] text-yellow-400">+{badge.points}pts</span>
@@ -371,7 +397,10 @@ export default function HallOfFamePage() {
                 </div>
             </div>
 
-            {/* Tabela de patentes */}
+            {/* ── Tabela de patentes ──────────────────────────────────────────
+                FIX: ícone usa min-w-[3rem] shrink-0 para emojis múltiplos
+                     (⭐⭐, ⭐⭐⭐) não vazarem sobre o texto do nome.
+            ──────────────────────────────────────────────────────────────── */}
             <div className="rounded-2xl border border-border bg-muted/20 overflow-hidden">
                 <div className="px-4 py-3 border-b border-border flex items-center gap-2">
                     <Target className="h-4 w-4 text-primary" />
@@ -379,7 +408,7 @@ export default function HallOfFamePage() {
                 </div>
                 <div className="divide-y divide-border">
                     {RANKS.map((rank, i) => {
-                        const isReached = (data.total_points) >= rank.min;
+                        const isReached = data.total_points >= rank.min;
                         const isCurrent = data.current_rank.key === rank.key;
                         const nextRank = RANKS[i + 1];
                         return (
@@ -388,7 +417,17 @@ export default function HallOfFamePage() {
                                 isCurrent && "bg-primary/5",
                                 !isReached && "opacity-40"
                             )}>
-                                <span className={cn("text-2xl w-8 text-center", !isReached && "grayscale")}>{rank.icon}</span>
+                                {/*
+                                  FIX definitivo: RankIcon renderiza cada ⭐ individualmente
+                                  em flex, eliminando o overflow de strings multi-emoji.
+                                */}
+                                <span className={cn(
+                                    "min-w-[3rem] shrink-0 flex items-center justify-center",
+                                    !isReached && "grayscale opacity-50"
+                                )}>
+                                    <RankIcon rank={rank} className="text-2xl" />
+                                </span>
+
                                 <div className="flex-1 min-w-0">
                                     <div className="flex items-center gap-2">
                                         <p className={cn("text-sm font-bold", isCurrent ? "text-primary" : "text-foreground")}>
@@ -405,6 +444,7 @@ export default function HallOfFamePage() {
                                         {nextRank && ` → ${nextRank.min.toLocaleString("pt-BR")} pts`}
                                     </p>
                                 </div>
+
                                 {isReached && !isCurrent && (
                                     <span className="text-xs text-success font-medium">✓</span>
                                 )}
@@ -412,7 +452,10 @@ export default function HallOfFamePage() {
                                     <div className="text-right">
                                         <p className="text-xs text-muted-foreground">{data.rank_progress_pct}%</p>
                                         <div className="w-16 h-1 bg-muted rounded-full overflow-hidden mt-1">
-                                            <div className="h-full bg-primary rounded-full" style={{ width: `${data.rank_progress_pct}%` }} />
+                                            <div
+                                                className="h-full bg-primary rounded-full"
+                                                style={{ width: `${data.rank_progress_pct}%` }}
+                                            />
                                         </div>
                                     </div>
                                 )}

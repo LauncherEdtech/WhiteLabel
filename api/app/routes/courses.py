@@ -1014,11 +1014,9 @@ def _serialize_subject(subject: Subject) -> dict:
 
 
 def _serialize_lesson(lesson: Lesson, progress=None, full: bool = False) -> dict:
-
-    # Resolve URL do vídeo: hospedado no S3 → presigned GET (HMAC local, sem HTTP)
-    # ou externo → retorna diretamente.
     if lesson.video_s3_key:
         from app.routes.uploads import generate_video_presigned_url
+
         video_url = generate_video_presigned_url(lesson.video_s3_key)
     else:
         video_url = lesson.video_url
@@ -1032,9 +1030,9 @@ def _serialize_lesson(lesson: Lesson, progress=None, full: bool = False) -> dict
         "order": lesson.order,
         "has_ai_summary": bool(lesson.ai_summary),
         "ai_topics": lesson.ai_topics or [],
-        "video_url": lesson.video_url,
-        "material_url": lesson.material_url,
+        "video_url": video_url,  # ← corrigido: usa a variável, não lesson.video_url
         "video_hosted": bool(lesson.video_s3_key),
+        "material_url": lesson.material_url,
         "external_url": lesson.external_url,
         "progress": (
             {
@@ -1051,7 +1049,6 @@ def _serialize_lesson(lesson: Lesson, progress=None, full: bool = False) -> dict
             {
                 "description": lesson.description,
                 "ai_summary": lesson.ai_summary,
-                # material_url já está acima — não duplicar
             }
         )
     return data
