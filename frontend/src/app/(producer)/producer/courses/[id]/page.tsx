@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils/cn";
 import {
   BookOpen, Plus, ChevronDown, ChevronUp, ChevronLeft,
   Pencil, Eye, EyeOff, GripVertical, Video, Clock, Trash2, FileText, CheckCircle2,
+  ExternalLink,
 } from "lucide-react";
 import Link from "next/link";
 import { QUERY_KEYS } from "@/lib/constants/queryKeys";
@@ -80,11 +81,12 @@ export default function ProducerCourseDetailPage() {
   });
 
   const createLesson = useMutation({
-    mutationFn: (d: { moduleId: string; title: string; duration_minutes: number; video_url: string; is_free_preview?: boolean }) =>
+    mutationFn: (d: { moduleId: string; title: string; duration_minutes: number; video_url: string; is_free_preview?: boolean; external_url?: string | null }) =>
       apiClient.post(`/courses/modules/${d.moduleId}/lessons`, {
         title: d.title,
         duration_minutes: d.duration_minutes,
         video_url: d.video_url || null,
+        external_url: d.external_url || null,
         order: 0,
         is_published: false,
         is_free_preview: d.is_free_preview ?? false,
@@ -347,6 +349,13 @@ export default function ProducerCourseDetailPage() {
                               {lesson.material_url && (
                                 <span title="Tem PDF"><FileText className="h-3 w-3 text-destructive shrink-0" /></span>
                               )}
+
+                              {lesson.external_url && (
+                                <span title="Aula externa (Hotmart/Kiwify)">
+                                  <ExternalLink className="h-3 w-3 text-orange-500 shrink-0" />
+                                </span>
+                              )}
+
                               {lesson.duration_minutes > 0 && (
                                 <span className="text-xs text-muted-foreground flex items-center gap-0.5">
                                   <Clock className="h-3 w-3" />{lesson.duration_minutes}min
@@ -469,6 +478,7 @@ export default function ProducerCourseDetailPage() {
           video_url: editLesson.lesson.video_url || "",
           is_free_preview: editLesson.lesson.is_free_preview,
           material_url: editLesson.lesson.material_url,
+          external_url: editLesson.lesson.external_url || "",
         } : undefined}
         onClose={() => setEditLesson({ open: false, lesson: null })}
         onSubmit={d => updateLesson.mutate({
@@ -477,6 +487,7 @@ export default function ProducerCourseDetailPage() {
             title: d.title,
             duration_minutes: d.duration_minutes,
             video_url: d.video_url || null,
+            external_url: d.external_url || null,
             is_published: editLesson.lesson!.is_published,
             order: editLesson.lesson!.order ?? 0,
             is_free_preview: d.is_free_preview ?? false,
@@ -496,18 +507,20 @@ function CreateLessonModal({ open, createdLessonId, createdTitle, loading, onClo
   createdTitle?: string;
   loading: boolean;
   onClose: () => void;
-  onSubmit: (d: { title: string; duration_minutes: number; video_url: string; is_free_preview?: boolean }) => void;
+  onSubmit: (d: { title: string; duration_minutes: number; video_url: string; is_free_preview?: boolean; external_url?: string | null }) => void;
   onPdfUploaded: () => void;
 }) {
-  const { register, handleSubmit, reset } = useForm({
-    defaultValues: { title: "", duration_minutes: 30, video_url: "", is_free_preview: false },
+  const { register, handleSubmit, reset, watch } = useForm({
+    defaultValues: { title: "", duration_minutes: 30, video_url: "", external_url: "", is_free_preview: false },
   });
 
   const handleClose = () => { onClose(); reset(); };
+  const externalUrl = watch("external_url");
+  const videoUrl = watch("video_url");
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) handleClose(); }}>
-      <DialogContent className="max-w-sm">
+      <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>
             {createdLessonId ? (
@@ -528,16 +541,68 @@ function CreateLessonModal({ open, createdLessonId, createdTitle, loading, onClo
             </div>
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Duração (minutos)</label>
-              <Input {...register("duration_minutes", { valueAsNumber: true })} type="number" min="1" />
+              <Input {...register("duration_minutes", { valueAsNumber: true })} type="number" min="0" />
             </div>
+
+            {/* Divider */}
+            <div className="relative">
+              <div className="absolute inset-0 flex items-center">
+                <span className="w-full border-t border-border" />
+              </div>
+              <div className="relative flex justify-center text-xs uppercase">
+                <span className="bg-background px-2 text-muted-foreground">Conteúdo</span>
+              </div>
+            </div>
+
+            {/* Vídeo interno */}
             <div className="space-y-1.5">
               <label className="text-sm font-medium">URL do vídeo</label>
-              <Input {...register("video_url")} placeholder="YouTube, Vimeo ou link direto" />
+              <Input
+                {...register("video_url")}
+                placeholder="YouTube, Vimeo ou link direto"
+                disabled={!!externalUrl}
+                className={externalUrl ? "opacity-50" : ""}
+              />
+              <p className="text-[10px] text-muted-foreground">Para vídeos no YouTube, Vimeo ou S3.</p>
             </div>
+
+            {/* ─ OU ─ */}
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <div className="flex-1 h-px bg-border" />
+              <span className="uppercase font-medium">ou</span>
+              <div className="flex-1 h-px bg-border" />
+            </div>
+
+            {/* URL externa */}
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium flex items-center gap-1.5">
+                URL externa
+                <span className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded-full font-normal">
+                  Hotmart / Kiwify
+                </span>
+              </label>
+              <Input
+                {...register("external_url")}
+                placeholder="https://go.hotmart.com/..."
+                disabled={!!videoUrl}
+                className={videoUrl ? "opacity-50" : ""}
+              />
+              <p className="text-[10px] text-muted-foreground">
+                O aluno verá um botão para acessar na plataforma externa.
+              </p>
+            </div>
+
+            {!!externalUrl && !!videoUrl && (
+              <div className="p-3 rounded-lg bg-warning/10 border border-warning/30 text-xs text-warning">
+                ⚠️ Preencha apenas um. Quando ambos preenchidos, a URL externa tem prioridade.
+              </div>
+            )}
+
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" {...register("is_free_preview")} className="rounded" />
               <span className="text-sm text-foreground">Aula gratuita (preview)</span>
             </label>
+
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={handleClose}>Cancelar</Button>
               <Button type="submit" disabled={loading}>{loading ? "Criando..." : "Criar Aula"}</Button>
@@ -647,57 +712,141 @@ function SimpleModal({ open, onClose, title, placeholder, initialValue, onSubmit
 }
 
 function LessonModal({ open, title, initialData, lessonId, onClose, onSubmit, loading }: {
-  open: boolean; title: string; lessonId?: string;
-  initialData?: { title: string; duration_minutes: number; video_url: string; is_free_preview?: boolean; material_url?: string | null };
+  open: boolean;
+  title: string;
+  lessonId?: string;
+  initialData?: {
+    title: string;
+    duration_minutes: number;
+    video_url: string;
+    is_free_preview?: boolean;
+    material_url?: string | null;
+    external_url?: string | null;  // ← NOVO
+  };
   onClose: () => void;
-  onSubmit: (d: { title: string; duration_minutes: number; video_url: string; is_free_preview?: boolean }) => void;
+  onSubmit: (d: {
+    title: string;
+    duration_minutes: number;
+    video_url: string;
+    is_free_preview?: boolean;
+    external_url?: string | null;  // ← NOVO
+  }) => void;
   loading: boolean;
 }) {
-  const { register, handleSubmit, reset } = useForm({
+  const { register, handleSubmit, reset, watch } = useForm({
     defaultValues: {
       title: initialData?.title || "",
       duration_minutes: initialData?.duration_minutes || 30,
       video_url: initialData?.video_url || "",
+      external_url: initialData?.external_url || "",  // ← NOVO
       is_free_preview: initialData?.is_free_preview || false,
     },
   });
+
   const handleClose = () => { onClose(); reset(); };
+
+  // Detecta se URL externa está preenchida para mostrar aviso
+  const externalUrl = watch("external_url");
+  const videoUrl = watch("video_url");
+  const hasConflict = !!externalUrl && !!videoUrl;
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) handleClose(); }}>
-      <DialogContent className="max-w-sm">
+      <DialogContent className="max-w-md">
         <DialogHeader><DialogTitle>{title}</DialogTitle></DialogHeader>
+
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          {/* Título */}
           <div className="space-y-1.5">
             <label className="text-sm font-medium">Título</label>
             <Input {...register("title", { required: true })} placeholder="Ex: Introdução ao tema" />
           </div>
+
+          {/* Duração */}
           <div className="space-y-1.5">
             <label className="text-sm font-medium">Duração (minutos)</label>
-            <Input {...register("duration_minutes", { valueAsNumber: true })} type="number" min="1" />
+            <Input {...register("duration_minutes", { valueAsNumber: true })} type="number" min="0" />
           </div>
+
+          {/* Divider: vídeo interno OU externo */}
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center">
+              <span className="w-full border-t border-border" />
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-background px-2 text-muted-foreground">Conteúdo</span>
+            </div>
+          </div>
+
+          {/* URL do vídeo interno */}
           <div className="space-y-1.5">
             <label className="text-sm font-medium">URL do vídeo</label>
-            <Input {...register("video_url")} placeholder="YouTube, Vimeo ou link direto" />
+            <Input
+              {...register("video_url")}
+              placeholder="YouTube, Vimeo ou link direto"
+              disabled={!!externalUrl}
+              className={externalUrl ? "opacity-50" : ""}
+            />
+            <p className="text-[10px] text-muted-foreground">
+              Para vídeos hospedados no YouTube, Vimeo ou S3.
+            </p>
           </div>
+
+          {/* ─ OU ─ */}
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <div className="flex-1 h-px bg-border" />
+            <span className="uppercase font-medium">ou</span>
+            <div className="flex-1 h-px bg-border" />
+          </div>
+
+          {/* URL externa (Hotmart, Kiwify etc.) */}
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium flex items-center gap-1.5">
+              URL externa
+              <span className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded-full font-normal">
+                Hotmart / Kiwify
+              </span>
+            </label>
+            <Input
+              {...register("external_url")}
+              placeholder="https://go.hotmart.com/..."
+              disabled={!!videoUrl}
+              className={videoUrl ? "opacity-50" : ""}
+            />
+            <p className="text-[10px] text-muted-foreground">
+              Quando preenchido, o aluno verá um botão para acessar a aula na plataforma externa.
+            </p>
+          </div>
+
+          {/* Aviso de conflito */}
+          {hasConflict && (
+            <div className="p-3 rounded-lg bg-warning/10 border border-warning/30 text-xs text-warning">
+              ⚠️ Preencha apenas um: vídeo interno <strong>ou</strong> URL externa. Quando ambos estão preenchidos, a URL externa tem prioridade.
+            </div>
+          )}
+
+          {/* Preview gratuito */}
           <label className="flex items-center gap-2 cursor-pointer">
             <input type="checkbox" {...register("is_free_preview")} className="rounded" />
             <span className="text-sm text-foreground">Aula gratuita (preview)</span>
           </label>
+
+          {/* PDF */}
           {lessonId && (
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Material de Apoio (PDF)</label>
               <PdfUploader lessonId={lessonId} currentUrl={initialData?.material_url} onUploaded={() => { }} />
             </div>
           )}
+
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={handleClose}>Cancelar</Button>
-            <Button type="submit" disabled={loading}>{loading ? "Salvando..." : "Salvar"}</Button>
+            <Button type="submit" disabled={loading}>
+              {loading ? "Salvando..." : "Salvar"}
+            </Button>
           </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
   );
 }
-
-

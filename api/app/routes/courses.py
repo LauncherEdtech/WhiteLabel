@@ -101,6 +101,7 @@ class LessonSchema(Schema):
     video_url = fields.Str(allow_none=True, load_default=None)
     duration_minutes = fields.Int(load_default=0, validate=validate.Range(min=0))
     material_url = fields.Str(allow_none=True, load_default=None)
+    external_url = fields.Str(allow_none=True, load_default=None)
     order = fields.Int(load_default=0)
     is_published = fields.Bool(load_default=False)
     is_free_preview = fields.Bool(load_default=False)
@@ -705,6 +706,7 @@ def create_lesson(module_id: str):
         video_url=data.get("video_url"),
         duration_minutes=data["duration_minutes"],
         material_url=data.get("material_url"),
+        external_url=data.get("external_url"),
         order=data["order"],
         is_published=data.get("is_published", True),  # Publicada por padrão
         is_free_preview=data.get("is_free_preview", False),
@@ -969,6 +971,8 @@ def update_lesson(lesson_id: str):
     # Sem isso, toggleLesson (que não manda video_url) apagava a URL salva
     if "video_url" in raw_json:
         lesson.video_url = data.get("video_url")
+    if "external_url" in raw_json:
+        lesson.external_url = data.get("external_url")
 
     db.session.commit()
 
@@ -1014,7 +1018,8 @@ def _serialize_lesson(lesson: Lesson, progress=None, full: bool = False) -> dict
         "has_ai_summary": bool(lesson.ai_summary),
         "ai_topics": lesson.ai_topics or [],
         "video_url": lesson.video_url,
-        "material_url": lesson.material_url,  # ← AQUI, fora do bloco full
+        "material_url": lesson.material_url,
+        "external_url": lesson.external_url,
         "progress": (
             {
                 "status": progress.status if progress else "not_started",

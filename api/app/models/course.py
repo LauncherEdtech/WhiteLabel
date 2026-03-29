@@ -126,6 +126,11 @@ class Lesson(BaseModel, TenantMixin):
     duration_minutes = Column(Integer, default=0, nullable=False)
     material_url = Column(String(500), nullable=True)  # PDF de apoio
 
+    # Link externo para aulas hospedadas fora da plataforma (ex: Hotmart, Kiwify).
+    # Quando preenchido, o aluno é redirecionado para esta URL em vez de
+    # ver o player de vídeo interno.
+    external_url = Column(String(500), nullable=True)
+
     # IA: resumo gerado pelo Gemini (pipeline assíncrono)
     ai_summary = Column(Text, nullable=True)
     ai_topics = Column(JSON, default=list, nullable=False)   # ["habeas corpus", "prisão preventiva"]
