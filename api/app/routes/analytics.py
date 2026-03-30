@@ -885,9 +885,13 @@ def _get_class_discipline_stats(student_ids: list, tenant_id: str) -> list:
 
     by_discipline = defaultdict(lambda: {"total": 0, "correct": 0})
     for attempt in attempts:
-        if not attempt.question:
+        try:
+            question = attempt.question
+        except Exception:
             continue
-        disc = attempt.question.discipline or "Sem disciplina"
+        if not question:
+            continue
+        disc = question.discipline or "Sem disciplina"
         by_discipline[disc]["total"] += 1
         if attempt.is_correct:
             by_discipline[disc]["correct"] += 1

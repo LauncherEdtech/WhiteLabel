@@ -2,15 +2,12 @@
 
 Revision ID: d4e5f6a7b8c9
 Revises: b3f7c2e8d541
-Create Date: 2026-03-29 00:00:00.000000
-
-Separa questões de concurso (bank) das questões geradas por IA a partir
-de aulas (lesson). Questões de aula ficam vinculadas à lesson_id e
-aparecem apenas na página daquela aula — nunca no banco geral nem em simulados.
+Create Date: 2026-03-30 00:00:00.000000
 """
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import UUID
 
 revision = "d4e5f6a7b8c9"
 down_revision = "b3f7c2e8d541"
@@ -19,10 +16,8 @@ depends_on = None
 
 
 def upgrade():
-    # 1. Cria o tipo Enum no PostgreSQL
     op.execute("CREATE TYPE question_source_type AS ENUM ('bank', 'lesson')")
 
-    # 2. Adiciona coluna source_type com default "bank" (todas as existentes são do banco)
     op.add_column(
         "questions",
         sa.Column(
@@ -33,25 +28,26 @@ def upgrade():
         ),
     )
 
-    # 3. Adiciona lesson_id (nullable — só preenchido quando source_type="lesson")
     op.add_column(
         "questions",
-        sa.Column(
-            "lesson_id",
-            sa.String(36),
-            sa.ForeignKey("lessons.id", ondelete="CASCADE"),
-            nullable=True,
-        ),
+        sa.Column("lesson_id", UUID(as_uuid=False), nullable=True),
     )
 
-    # 4. Índice para busca rápida de questões por aula
+    op.create_foreign_key(
+        "fk_questions_lesson_id",
+        "questions", "lessons",
+        ["lesson_id"], ["id"],
+        ondelete="CASCADE",
+    )
+
     op.create_index("ix_questions_lesson_id", "questions", ["lesson_id"])
     op.create_index("ix_questions_source_type", "questions", ["source_type"])
 
 
 def downgrade():
-    op.drop_index("ix_questions_lesson_id", table_name="questions")
     op.drop_index("ix_questions_source_type", table_name="questions")
+    op.drop_index("ix_questions_lesson_id", table_name="questions")
+    op.drop_constraint("fk_questions_lesson_id", "questions", type_="foreignkey")
     op.drop_column("questions", "lesson_id")
     op.drop_column("questions", "source_type")
     op.execute("DROP TYPE question_source_type")

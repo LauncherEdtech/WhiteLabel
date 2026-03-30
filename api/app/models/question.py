@@ -48,7 +48,8 @@ class Question(BaseModel, TenantMixin):
 
     # ── Tipo/Origem da questão ────────────────────────────────────────────────
     source_type = Column(
-        Enum(QuestionSourceType, name="question_source_type"),
+        Enum(QuestionSourceType, name="question_source_type",
+             values_callable=lambda obj: [e.value for e in obj]),
         nullable=False,
         default=QuestionSourceType.BANK,
         index=True,
