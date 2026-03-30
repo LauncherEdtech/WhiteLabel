@@ -167,6 +167,143 @@ TEXTO PARA ANALISAR:
             ],
         }
 
+    # ── Análise de questões do banco (source_type="bank") ─────────────────────
+
+    def analyze_question_metadata(
+        self,
+        statement: str,
+        alternatives_text: str,
+        correct_key: str,
+        exam_board: str = "",
+    ) -> dict | None:
+        """
+        Analisa uma questão de concurso e extrai/completa seus metadados.
+
+        Chamado pelo analyze_question_task quando o produtor não preencheu
+        disciplina, tópico ou justificativas ao criar a questão.
+
+        Retorna dict com: discipline, topic, subtopic, difficulty,
+        competency, correct_justification, distractor_justifications.
+        """
+        banca_hint = f"Banca: {exam_board}. " if exam_board else ""
+
+        prompt = f"""Você é um especialista em concursos públicos brasileiros.
+ 
+Analise a questão abaixo e extraia seus metadados pedagógicos.
+ 
+{banca_hint}
+ 
+ENUNCIADO:
+{statement}
+ 
+ALTERNATIVAS:
+{alternatives_text}
+ 
+GABARITO: {correct_key.upper()}
+ 
+Responda APENAS com JSON válido, sem texto adicional:
+{{
+  "discipline": "nome da disciplina principal (ex: Direito Penal, Português, Matemática)",
+  "topic": "tema específico dentro da disciplina",
+  "subtopic": "subtema mais detalhado ou null",
+  "difficulty": "easy | medium | hard",
+  "competency": "habilidade ou conhecimento avaliado pela questão",
+  "correct_justification": "explicação completa de por que o gabarito está correto",
+  "distractor_justifications": {{
+    "a": "por que a alternativa A está errada (ou null se for o gabarito)",
+    "b": "por que a alternativa B está errada (ou null se for o gabarito)",
+    "c": "por que a alternativa C está errada (ou null se for o gabarito)",
+    "d": "por que a alternativa D está errada (ou null se for o gabarito)",
+    "e": "por que a alternativa E está errada (ou null se for o gabarito)"
+  }}
+}}"""
+
+        response = self._call(prompt, max_tokens=2048)
+        result = self._parse_json(response)
+
+        if isinstance(result, dict) and result.get("discipline"):
+            return result
+
+        logger.warning("analyze_question_metadata: Gemini não retornou análise válida.")
+        return None
+
+    # ── Geração de questões de aulas (source_type="lesson") ───────────────────
+
+    def generate_lesson_questions(
+        self,
+        lesson_context: str,
+        lesson_title: str,
+        count: int = 5,
+        difficulty: str = "medium",
+    ) -> list[dict]:
+        """
+        Gera questões originais baseadas no conteúdo de uma aula.
+
+        DIFERENÇA do extract_questions:
+        - extract_questions → extrai questões que JÁ EXISTEM num texto (de provas/PDFs)
+        - generate_lesson_questions → CRIA questões novas sobre o conteúdo da aula
+
+        As questões geradas são no padrão concurso público (múltipla escolha, 4 alternativas)
+        mas com conteúdo 100% baseado no que foi ensinado na aula.
+
+        Retorna lista de dicts compatíveis com o modelo Question.
+        """
+        difficulty_label = {
+            "easy": "fácil — conceitos básicos, direto ao ponto",
+            "medium": "médio — requer compreensão e aplicação do conteúdo",
+            "hard": "difícil — requer análise, interpretação ou casos complexos",
+        }.get(difficulty, "médio")
+
+        prompt = f"""Você é um professor especialista em concursos públicos brasileiros.
+ 
+Baseado EXCLUSIVAMENTE no conteúdo da aula abaixo, crie {count} questão(ões) de múltipla escolha
+no padrão concurso público.
+ 
+CONTEÚDO DA AULA:
+{lesson_context}
+ 
+INSTRUÇÕES:
+- Dificuldade: {difficulty_label}
+- Cada questão deve ter exatamente 4 alternativas (a, b, c, d)
+- As questões devem abordar os tópicos PRINCIPAIS da aula, não detalhes obscuros
+- As alternativas incorretas devem ser plausíveis (distratores bem construídos)
+- NÃO invente informações que não estão no conteúdo da aula
+- Escreva em português formal (padrão concurso público)
+ 
+Responda APENAS com JSON válido (lista), sem texto adicional:
+[
+  {{
+    "statement": "enunciado completo da questão",
+    "discipline": "disciplina ou nome da aula",
+    "topic": "tópico específico desta questão dentro da aula",
+    "difficulty": "{difficulty}",
+    "correct_alternative_key": "a | b | c | d",
+    "correct_justification": "explicação detalhada de por que esta alternativa está correta",
+    "alternatives": [
+      {{"key": "a", "text": "texto da alternativa A", "distractor_justification": null}},
+      {{"key": "b", "text": "texto da alternativa B", "distractor_justification": "por que B está errada"}},
+      {{"key": "c", "text": "texto da alternativa C", "distractor_justification": "por que C está errada"}},
+      {{"key": "d", "text": "texto da alternativa D", "distractor_justification": "por que D está errada"}}
+    ]
+  }}
+]
+ 
+IMPORTANTE: a distractor_justification deve ser null para a alternativa correta
+e preenchida para todas as incorretas."""
+
+        response = self._call(prompt, max_tokens=6144)
+        result = self._parse_json(response)
+
+        if isinstance(result, list):
+            return [
+                self._validate_question(q) for q in result if self._is_valid_question(q)
+            ]
+
+        logger.warning(
+            f"generate_lesson_questions: Gemini não retornou lista válida para '{lesson_title}'."
+        )
+        return []
+
     # ── Insights do aluno ─────────────────────────────────────────────────────
 
     def generate_student_insights(
@@ -447,6 +584,7 @@ Responda APENAS com JSON válido."""
             )
 
         return insights[:3]
+
     # ── Análise de avaliações de aula ────────────────────────────────────────
 
     def analyze_lesson_ratings(
@@ -461,7 +599,11 @@ Responda APENAS com JSON válido."""
         Analisa avaliações negativas de uma aula e gera insight para o produtor.
         Chamado quando uma aula acumula 3+ avaliações baixas (≤2 estrelas).
         """
-        comments_text = "\n".join(f"- {c}" for c in comments[:10]) if comments else "Nenhum comentário registrado."
+        comments_text = (
+            "\n".join(f"- {c}" for c in comments[:10])
+            if comments
+            else "Nenhum comentário registrado."
+        )
 
         prompt = f"""Você é um especialista em educação online e design instrucional.
 

@@ -152,6 +152,14 @@ class Lesson(BaseModel, TenantMixin):
         lazy="dynamic",
     )
 
+    questions = relationship(
+        "Question",
+        back_populates="lesson",
+        cascade="all, delete-orphan",
+        lazy="dynamic",
+        foreign_keys="Question.lesson_id",
+    )
+
 
 class LessonProgress(BaseModel, TenantMixin):
     """

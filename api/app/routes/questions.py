@@ -1,6 +1,13 @@
 # api/app/routes/questions.py
 # Banco de questões com filtros avançados + registro de respostas com tempo.
 # SEGURANÇA: Questões pertencem ao tenant — nunca visíveis entre produtores.
+#
+# ── SEPARAÇÃO DE TIPOS ────────────────────────────────────────────────────────
+#   GET /questions/         → apenas source_type="bank" (nunca retorna questões de aula)
+#   POST /questions/        → cria questão source_type="bank" + dispara análise Gemini
+#   GET /lessons/:id/questions  → questões source_type="lesson" (em courses.py)
+#   POST /lessons/:id/questions/generate → gera questões da aula via Gemini (em courses.py)
+# ─────────────────────────────────────────────────────────────────────────────
 
 from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify
@@ -9,14 +16,26 @@ from marshmallow import Schema, fields, validate, ValidationError, EXCLUDE
 from sqlalchemy import and_, or_
 
 from app.extensions import db, limiter
-from app.models.question import Question, Alternative, QuestionAttempt, DifficultyLevel
+from app.models.question import (
+    Question,
+    Alternative,
+    QuestionAttempt,
+    DifficultyLevel,
+    QuestionSourceType,
+)
 from app.models.course import Subject
 from app.models.user import UserRole
-from app.middleware.tenant import resolve_tenant, require_tenant, require_feature, get_current_tenant
+from app.middleware.tenant import (
+    resolve_tenant,
+    require_tenant,
+    require_feature,
+    get_current_tenant,
+)
 
 questions_bp = Blueprint("questions", __name__)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _is_producer_or_above(claims: dict) -> bool:
     return claims.get("role") in (
@@ -25,7 +44,9 @@ def _is_producer_or_above(claims: dict) -> bool:
         UserRole.PRODUCER_STAFF.value,
     )
 
+
 # ── Schemas ───────────────────────────────────────────────────────────────────
+
 
 class AlternativeSchema(Schema):
     key = fields.Str(required=True, validate=validate.OneOf(["a", "b", "c", "d", "e"]))
@@ -34,6 +55,7 @@ class AlternativeSchema(Schema):
 
     class Meta:
         unknown = EXCLUDE
+
 
 class QuestionSchema(Schema):
     statement = fields.Str(required=True, validate=validate.Length(min=10))
@@ -67,6 +89,7 @@ class QuestionSchema(Schema):
     class Meta:
         unknown = EXCLUDE
 
+
 class AnswerSchema(Schema):
     """Aluno responde uma questão."""
 
@@ -82,11 +105,14 @@ class AnswerSchema(Schema):
     )
     context = fields.Str(
         load_default="practice",
-        validate=validate.OneOf(["practice", "simulado", "schedule", "review"]),
+        validate=validate.OneOf(
+            ["practice", "simulado", "schedule", "review", "lesson"]
+        ),
     )
 
     class Meta:
         unknown = EXCLUDE
+
 
 class QuestionFilterSchema(Schema):
     """Parâmetros de filtro para listagem de questões."""
@@ -111,22 +137,29 @@ class QuestionFilterSchema(Schema):
     class Meta:
         unknown = EXCLUDE
 
+
 # ── Before request ────────────────────────────────────────────────────────────
+
 
 @questions_bp.before_request
 def before_request():
     resolve_tenant()
 
+
 # ══════════════════════════════════════════════════════════════════════════════
-# LISTAGEM COM FILTROS
+# LISTAGEM COM FILTROS — apenas questões do banco (source_type="bank")
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 @questions_bp.route("/", methods=["GET"])
 @jwt_required()
 @require_tenant
 def list_questions():
     """
-    Lista questões com filtros avançados.
+    Lista questões do banco de concursos com filtros avançados.
+
+    IMPORTANTE: Retorna APENAS questões source_type="bank" (enviadas pelo produtor).
+    Questões de aula (source_type="lesson") são acessadas via GET /lessons/:id/questions.
 
     Filtros disponíveis (query params):
     - subject_id, discipline, topic, difficulty
@@ -147,11 +180,12 @@ def list_questions():
     except ValidationError as e:
         return jsonify({"error": "validation_error", "details": e.messages}), 400
 
-    # ── Query base com tenant filter ──────────────────────────────────────────
+    # ── Query base: tenant + apenas questões do banco ─────────────────────────
     query = Question.query.filter_by(
         tenant_id=tenant.id,
         is_active=True,
         is_deleted=False,
+        source_type=QuestionSourceType.BANK,  # ← NUNCA retorna questões de aula aqui
     )
 
     # ── Filtros de metadados ──────────────────────────────────────────────────
@@ -175,7 +209,6 @@ def list_questions():
 
     # ── Filtros baseados no histórico do aluno ────────────────────────────────
     if filters.get("previously_correct") is True:
-        # Questões que o aluno já acertou pelo menos uma vez
         correct_ids = (
             db.session.query(QuestionAttempt.question_id)
             .filter_by(
@@ -189,7 +222,6 @@ def list_questions():
         query = query.filter(Question.id.in_(correct_ids))
 
     elif filters.get("previously_wrong") is True:
-        # Questões que o aluno já errou pelo menos uma vez (e nunca acertou)
         wrong_ids = (
             db.session.query(QuestionAttempt.question_id)
             .filter_by(
@@ -216,7 +248,6 @@ def list_questions():
         )
 
     elif filters.get("not_answered") is True:
-        # Questões que o aluno nunca respondeu
         answered_ids = (
             db.session.query(QuestionAttempt.question_id)
             .filter_by(
@@ -239,7 +270,6 @@ def list_questions():
         error_out=False,
     )
 
-    # Para cada questão, inclui o resultado da última tentativa do aluno
     attempt_map = _get_last_attempts_map(
         user_id, tenant.id, [q.id for q in questions.items]
     )
@@ -264,9 +294,11 @@ def list_questions():
         200,
     )
 
+
 # ══════════════════════════════════════════════════════════════════════════════
-# CRUD DE QUESTÕES (produtor)
+# CRUD DE QUESTÕES (produtor) — sempre source_type="bank"
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 @questions_bp.route("/", methods=["POST"])
 @jwt_required()
@@ -274,8 +306,9 @@ def list_questions():
 @limiter.limit("100 per hour")
 def create_question():
     """
-    Cria questão manualmente.
-    Produtor pode criar; Gemini pipeline também usa esta lógica internamente.
+    Cria questão manualmente no banco de concursos.
+    Sempre cria como source_type="bank".
+    Dispara análise automática via Gemini se metadados incompletos.
     """
     claims = get_jwt()
     if not _is_producer_or_above(claims):
@@ -301,6 +334,8 @@ def create_question():
 
     question = Question(
         tenant_id=tenant.id,
+        source_type=QuestionSourceType.BANK,  # ← sempre bank quando criada pelo produtor
+        lesson_id=None,  # ← nunca vinculada a aula aqui
         subject_id=data.get("subject_id"),
         statement=data["statement"],
         context=data.get("context"),
@@ -316,7 +351,7 @@ def create_question():
         correct_alternative_key=data["correct_alternative_key"],
         correct_justification=data.get("correct_justification"),
         is_active=True,
-        is_reviewed=True,
+        is_reviewed=True,  # Marcada como revisada — foi o produtor que criou
     )
     db.session.add(question)
     db.session.flush()
@@ -334,6 +369,17 @@ def create_question():
 
     db.session.commit()
 
+    # ── Dispara análise Gemini se metadados incompletos ───────────────────────
+    # Se o produtor não preencheu disciplina/tópico/dificuldade, o Gemini preenche
+    _needs_analysis = not data.get("discipline") or not data.get("topic")
+    if _needs_analysis:
+        try:
+            from app.tasks import analyze_question_task
+
+            analyze_question_task.delay(question.id, tenant.id)
+        except Exception:
+            pass  # Falha no Celery não bloqueia a criação da questão
+
     return (
         jsonify(
             {
@@ -344,6 +390,7 @@ def create_question():
         201,
     )
 
+
 @questions_bp.route("/<string:question_id>", methods=["GET"])
 @jwt_required()
 @require_tenant
@@ -352,6 +399,10 @@ def get_question(question_id: str):
     Retorna questão completa com alternativas.
     Aluno: NÃO recebe gabarito nem justificativas (isso vem apenas após responder).
     Produtor: recebe tudo.
+
+    SEGURANÇA: Questões de aula (source_type="lesson") também são acessíveis aqui
+    desde que o aluno tenha acesso ao tenant — o isolamento é feito pela lesson_id
+    na listagem, não no GET individual.
     """
     tenant = get_current_tenant()
     claims = get_jwt()
@@ -368,7 +419,6 @@ def get_question(question_id: str):
 
     is_producer = _is_producer_or_above(claims)
 
-    # Verifica se o aluno já respondeu esta questão
     last_attempt = (
         QuestionAttempt.query.filter_by(
             question_id=question.id,
@@ -382,7 +432,6 @@ def get_question(question_id: str):
         else None
     )
 
-    # Aluno vê gabarito apenas se já respondeu
     show_answer = is_producer or (last_attempt is not None)
 
     return (
@@ -395,6 +444,7 @@ def get_question(question_id: str):
         ),
         200,
     )
+
 
 @questions_bp.route("/<string:question_id>", methods=["PUT"])
 @jwt_required()
@@ -422,12 +472,15 @@ def update_question(question_id: str):
 
     question.statement = data["statement"]
     question.context = data.get("context", question.context)
-    question.difficulty = DifficultyLevel(data["difficulty"])
     question.discipline = data.get("discipline", question.discipline)
     question.topic = data.get("topic", question.topic)
     question.subtopic = data.get("subtopic", question.subtopic)
+    question.microtopic = data.get("microtopic", question.microtopic)
+    question.difficulty = DifficultyLevel(data["difficulty"])
     question.exam_board = data.get("exam_board", question.exam_board)
     question.exam_year = data.get("exam_year", question.exam_year)
+    question.exam_name = data.get("exam_name", question.exam_name)
+    question.competency = data.get("competency", question.competency)
     question.correct_alternative_key = data["correct_alternative_key"]
     question.correct_justification = data.get(
         "correct_justification", question.correct_justification
@@ -435,7 +488,10 @@ def update_question(question_id: str):
     question.is_reviewed = True
 
     # Recria alternativas
-    Alternative.query.filter_by(question_id=question.id).delete()
+    for alt in question.alternatives:
+        db.session.delete(alt)
+    db.session.flush()
+
     for alt_data in data["alternatives"]:
         alt = Alternative(
             tenant_id=tenant.id,
@@ -447,6 +503,7 @@ def update_question(question_id: str):
         db.session.add(alt)
 
     db.session.commit()
+
     return (
         jsonify(
             {
@@ -457,16 +514,14 @@ def update_question(question_id: str):
         200,
     )
 
+
 @questions_bp.route("/<string:question_id>", methods=["DELETE"])
 @jwt_required()
 @require_tenant
 def delete_question(question_id: str):
-    """Soft delete de questão. Apenas produtor admin."""
+    """Soft delete de questão. Apenas produtor."""
     claims = get_jwt()
-    if claims.get("role") not in (
-        UserRole.SUPER_ADMIN.value,
-        UserRole.PRODUCER_ADMIN.value,
-    ):
+    if not _is_producer_or_above(claims):
         return jsonify({"error": "forbidden"}), 403
 
     tenant = get_current_tenant()
@@ -478,33 +533,27 @@ def delete_question(question_id: str):
     if not question:
         return jsonify({"error": "not_found"}), 404
 
-    question.soft_delete()
+    question.is_deleted = True
+    question.is_active = False
     db.session.commit()
+
     return jsonify({"message": "Questão removida."}), 200
 
+
 # ══════════════════════════════════════════════════════════════════════════════
-# RESPONDER QUESTÃO
+# RESPONDER QUESTÃO (aluno)
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 @questions_bp.route("/<string:question_id>/answer", methods=["POST"])
 @jwt_required()
 @require_tenant
-@limiter.limit("300 per hour")
+@limiter.limit("200 per hour")
 def answer_question(question_id: str):
     """
     Aluno responde uma questão.
-
-    O sistema:
-    1. Registra a alternativa escolhida
-    2. Registra o tempo de resposta
-    3. Avalia se acertou
-    4. Retorna gabarito + justificativa da correta + justificativa do erro cometido
-    5. Atualiza estatísticas da questão (via Celery futuramente)
-
-    SEGURANÇA:
-    - Valida que a questão pertence ao tenant
-    - Valida que a alternativa escolhida existe na questão
-    - Tempo de resposta validado (1s a 1h)
+    Retorna: se acertou, gabarito, justificativas, XP ganho.
+    Funciona para questões de banco E questões de aula.
     """
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
@@ -525,24 +574,9 @@ def answer_question(question_id: str):
         return jsonify({"error": "validation_error", "details": e.messages}), 400
 
     chosen_key = data["chosen_alternative_key"]
-
-    # SEGURANÇA: Valida que a alternativa escolhida existe nesta questão
-    chosen_alternative = Alternative.query.filter_by(
-        question_id=question.id,
-        key=chosen_key,
-        tenant_id=tenant.id,
-    ).first()
-    if not chosen_alternative:
-        return (
-            jsonify(
-                {"error": "invalid_alternative", "message": "Alternativa inválida."}
-            ),
-            400,
-        )
-
     is_correct = chosen_key == question.correct_alternative_key
 
-    # ── Registra a tentativa ──────────────────────────────────────────────────
+    # Registra a tentativa
     attempt = QuestionAttempt(
         tenant_id=tenant.id,
         user_id=user_id,
@@ -550,82 +584,69 @@ def answer_question(question_id: str):
         chosen_alternative_key=chosen_key,
         is_correct=is_correct,
         response_time_seconds=data.get("response_time_seconds"),
-        context=data["context"],
+        context=data.get("context", "practice"),
     )
     db.session.add(attempt)
 
-    # ── Atualiza stats da questão ─────────────────────────────────────────────
+    # Atualiza stats da questão
     question.total_attempts += 1
     if is_correct:
         question.correct_attempts += 1
 
-    # Recalcula média de tempo de resposta
-    if data.get("response_time_seconds"):
-        prev_avg = question.avg_response_time_seconds or 0
-        prev_total = question.total_attempts - 1
-        question.avg_response_time_seconds = (
-            prev_avg * prev_total + data["response_time_seconds"]
-        ) / question.total_attempts
-
     db.session.commit()
 
-    # ── Monta resposta com justificativas ─────────────────────────────────────
-    correct_alt = Alternative.query.filter_by(
-        question_id=question.id,
-        key=question.correct_alternative_key,
-        tenant_id=tenant.id,
-    ).first()
+    # Monta resposta com justificativas
+    alternatives_with_feedback = []
+    for alt in sorted(question.alternatives, key=lambda a: a.key):
+        alt_data = {
+            "key": alt.key,
+            "text": alt.text,
+            "is_correct": alt.key == question.correct_alternative_key,
+            "is_chosen": alt.key == chosen_key,
+        }
+        if alt.key == question.correct_alternative_key:
+            alt_data["justification"] = question.correct_justification
+        elif alt.distractor_justification:
+            alt_data["justification"] = alt.distractor_justification
+        alternatives_with_feedback.append(alt_data)
 
-    # Justificativa do erro (distrator marcado)
-    distractor_justification = None
-    if not is_correct and chosen_alternative.distractor_justification:
-        distractor_justification = chosen_alternative.distractor_justification
+    xp_gained = 10 if is_correct else 2
+
+    # Dispara atualização de gamificação via Celery (não bloqueia a resposta)
+    try:
+        from app.tasks import update_gamification_after_answer
+
+        update_gamification_after_answer.delay(
+            user_id, tenant.id, is_correct, xp_gained
+        )
+    except Exception:
+        pass
 
     return (
         jsonify(
             {
-                "result": {
-                    "is_correct": is_correct,
-                    "chosen_key": chosen_key,
-                    "correct_key": question.correct_alternative_key,
-                    "response_time_seconds": data.get("response_time_seconds"),
-                },
-                # O que o sistema ensina após a resposta
-                "feedback": {
-                    # Por que a correta está certa
-                    "correct_justification": question.correct_justification,
-                    # Por que o aluno errou (apenas se errou)
-                    "distractor_justification": distractor_justification,
-                    # Texto da alternativa correta
-                    "correct_alternative_text": (
-                        correct_alt.text if correct_alt else None
-                    ),
-                },
-                # Stats atualizadas da questão
-                "question_stats": {
-                    "total_attempts": question.total_attempts,
-                    "accuracy_rate": round(question.accuracy_rate * 100, 1),
-                    "avg_response_time_seconds": round(
-                        question.avg_response_time_seconds or 0, 1
-                    ),
-                },
+                "is_correct": is_correct,
+                "chosen_key": chosen_key,
+                "correct_key": question.correct_alternative_key,
+                "xp_gained": xp_gained,
+                "alternatives": alternatives_with_feedback,
+                "attempt_id": attempt.id,
             }
         ),
         200,
     )
 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # HISTÓRICO DO ALUNO
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 @questions_bp.route("/my-history", methods=["GET"])
 @jwt_required()
 @require_tenant
 def my_history():
-    """
-    Histórico de questões respondidas pelo aluno.
-    Retorna estatísticas por disciplina para o dashboard.
-    """
+    """Histórico de tentativas do aluno agrupado por disciplina."""
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
@@ -640,7 +661,6 @@ def my_history():
         .all()
     )
 
-    # Agrupa por disciplina
     by_discipline = {}
     for attempt in attempts:
         question = attempt.question
@@ -655,7 +675,6 @@ def my_history():
         else:
             by_discipline[discipline]["wrong"] += 1
 
-    # Adiciona taxa de acerto por disciplina
     for disc in by_discipline:
         total = by_discipline[disc]["total"]
         correct = by_discipline[disc]["correct"]
@@ -685,7 +704,9 @@ def my_history():
         200,
     )
 
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _get_last_attempts_map(user_id: str, tenant_id: str, question_ids: list) -> dict:
     """
@@ -706,12 +727,12 @@ def _get_last_attempts_map(user_id: str, tenant_id: str, question_ids: list) -> 
         .all()
     )
 
-    # Mantém apenas a última tentativa por questão
     attempt_map = {}
     for attempt in attempts:
         if attempt.question_id not in attempt_map:
             attempt_map[attempt.question_id] = attempt
     return attempt_map
+
 
 def _serialize_question(
     question: Question, last_attempt=None, include_answer: bool = False
@@ -727,13 +748,14 @@ def _serialize_question(
             "key": alt.key,
             "text": alt.text,
         }
-        # Justificativas dos distratores: apenas se include_answer=True
         if include_answer:
             alt_data["distractor_justification"] = alt.distractor_justification
         alternatives.append(alt_data)
 
     data = {
         "id": question.id,
+        "source_type": question.source_type.value if question.source_type else "bank",
+        "lesson_id": question.lesson_id,
         "statement": question.statement,
         "context": question.context,
         "discipline": question.discipline,
@@ -744,8 +766,8 @@ def _serialize_question(
         "exam_year": question.exam_year,
         "exam_name": question.exam_name,
         "competency": question.competency,
+        "is_reviewed": question.is_reviewed,
         "alternatives": alternatives,
-        # Stats públicas (não revelam gabarito)
         "stats": {
             "total_attempts": question.total_attempts,
             "accuracy_rate": round(question.accuracy_rate * 100, 1),
@@ -753,7 +775,6 @@ def _serialize_question(
                 question.avg_response_time_seconds or 0, 1
             ),
         },
-        # Status do aluno nesta questão
         "my_status": {
             "answered": last_attempt is not None,
             "is_correct": last_attempt.is_correct if last_attempt else None,
@@ -761,62 +782,79 @@ def _serialize_question(
         },
     }
 
-    # Gabarito e justificativas: apenas se autorizado
     if include_answer:
         data["correct_alternative_key"] = question.correct_alternative_key
         data["correct_justification"] = question.correct_justification
 
     return data
 
-# ── Pipeline Gemini ────────────────────────────────────────────────────────────
+
+# ── Pipeline Gemini — Importação de questões de concurso (source_type="bank") ──
+
 
 @questions_bp.route("/extract-text", methods=["POST"])
 @jwt_required()
 @require_tenant
 @require_feature("ai_features")
 def extract_questions_from_text():
-    """Extrai questões de texto usando Gemini."""
+    """
+    Extrai questões de concurso de um texto via Gemini.
+    As questões extraídas são source_type="bank" — vão para o banco geral.
+    """
     data = request.get_json() or {}
     context = data.get("context", "").strip()
-    course_id = data.get("course_id")
 
     if not context or len(context) < 50:
-        return jsonify({"error": "bad_request",
-                        "message": "Forneça pelo menos 50 caracteres de contexto."}), 400
+        return (
+            jsonify(
+                {
+                    "error": "bad_request",
+                    "message": "Forneça pelo menos 50 caracteres de contexto.",
+                }
+            ),
+            400,
+        )
 
     from app.services.gemini_service import GeminiService
+
     svc = GeminiService()
     questions = svc.extract_questions(context)
 
     return jsonify({"questions": questions, "total": len(questions)}), 200
+
 
 @questions_bp.route("/extract", methods=["POST"])
 @jwt_required()
 @require_tenant
 @require_feature("ai_features")
 def extract_questions_from_file():
-    """Extrai questões de PDF/arquivo usando Gemini."""
+    """
+    Extrai questões de concurso de PDF/arquivo via Gemini.
+    As questões extraídas são source_type="bank" — vão para o banco geral.
+    """
     if "file" not in request.files:
         return jsonify({"error": "bad_request", "message": "Arquivo não enviado."}), 400
 
     file = request.files["file"]
-    course_id = request.form.get("course_id")
     context_hint = request.form.get("context", "")
 
-    # Lê conteúdo
     content = file.read()
     filename = file.filename or ""
 
-    # Extrai texto do PDF
     if filename.lower().endswith(".pdf"):
         try:
             import io
             import pypdf
+
             reader = pypdf.PdfReader(io.BytesIO(content))
             text = "\n".join(page.extract_text() or "" for page in reader.pages)
         except Exception:
-            return jsonify({"error": "bad_request",
-                            "message": "Não foi possível ler o PDF."}), 400
+            return (
+                jsonify(
+                    {"error": "bad_request", "message": "Não foi possível ler o PDF."}
+                ),
+                400,
+            )
     else:
         try:
             text = content.decode("utf-8")
@@ -824,11 +862,16 @@ def extract_questions_from_file():
             text = content.decode("latin-1")
 
     if len(text.strip()) < 50:
-        return jsonify({"error": "bad_request",
-                        "message": "Arquivo sem conteúdo suficiente."}), 400
+        return (
+            jsonify(
+                {"error": "bad_request", "message": "Arquivo sem conteúdo suficiente."}
+            ),
+            400,
+        )
 
     from app.services.gemini_service import GeminiService
+
     svc = GeminiService()
-    questions = svc.extract_questions(text[:15000])  # máx 15k chars
+    questions = svc.extract_questions(text[:15000])
 
     return jsonify({"questions": questions, "total": len(questions)}), 200
