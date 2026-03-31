@@ -1,53 +1,94 @@
 # api/app/services/gemini_service.py
 """
 Serviço de integração com Google Gemini API.
-Responsável por:
-- Extração de questões de texto/PDF
-- Geração de insights do aluno
-- Resumo de aulas
+
+Pipeline de geração de questões:
+1. Se video_url YouTube → passa URL diretamente ao Gemini via file_data
+   (Gemini busca o vídeo nos servidores do Google — sem bloqueio de IP AWS)
+2. Fallback → usa title + description + ai_summary + ai_topics
 """
 
 import os
+import re
 import json
 import logging
-import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Fallback rules-based quando Gemini não está configurado
 _GEMINI_AVAILABLE = False
 try:
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types as genai_types
 
     _GEMINI_AVAILABLE = bool(os.environ.get("GEMINI_API_KEY"))
     if _GEMINI_AVAILABLE:
-        genai.configure(api_key=os.environ["GEMINI_API_KEY"])
         logger.info("Gemini API configurada com sucesso.")
 except ImportError:
     logger.warning("google-generativeai não instalado. Usando fallback.")
 
 
+def _get_client():
+    """Retorna cliente Gemini configurado com a API key."""
+    return genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+
+
+# Modelo estável com suporte nativo a YouTube URL e contexto de 1M tokens
+MODEL = "gemini-3-flash-preview"
+
+
 class GeminiService:
 
-    MODEL = "gemini-1.5-flash-latest"
-
-    def _call(self, prompt: str, max_tokens: int = 4096) -> Optional[str]:
-        """Faz uma chamada ao Gemini e retorna o texto da resposta."""
+    def _call(self, prompt: str, max_tokens: int = 6144) -> Optional[str]:
+        """Chamada simples de texto ao Gemini."""
         if not _GEMINI_AVAILABLE:
             return None
         try:
-            model = genai.GenerativeModel(self.MODEL)
-            response = model.generate_content(
-                prompt,
-                generation_config=genai.GenerationConfig(
+            client = _get_client()
+            response = client.models.generate_content(
+                model=MODEL,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
                     max_output_tokens=max_tokens,
                     temperature=0.3,
                 ),
             )
             return response.text
         except Exception as e:
-            logger.error(f"Erro Gemini: {e}")
+            logger.error(f"Erro Gemini (_call): {e}")
+            return None
+
+    def _call_with_video(
+        self, video_url: str, prompt: str, max_tokens: int = 8192
+    ) -> Optional[str]:
+        """
+        Passa a URL do YouTube diretamente ao Gemini via file_data.
+        O Gemini busca o vídeo nos próprios servidores do Google —
+        sem youtube-transcript-api, sem bloqueio de IP da AWS.
+        Analisa áudio + vídeo nativamente.
+        """
+        if not _GEMINI_AVAILABLE:
+            return None
+        try:
+            client = _get_client()
+            response = client.models.generate_content(
+                model=MODEL,
+                contents=genai_types.Content(
+                    parts=[
+                        genai_types.Part(
+                            file_data=genai_types.FileData(file_uri=video_url)
+                        ),
+                        genai_types.Part(text=prompt),
+                    ]
+                ),
+                config=genai_types.GenerateContentConfig(
+                    max_output_tokens=max_tokens,
+                    temperature=0.3,
+                ),
+            )
+            return response.text
+        except Exception as e:
+            logger.error(f"Erro Gemini (_call_with_video) para {video_url}: {e}")
             return None
 
     def _parse_json(self, text: str) -> Optional[dict | list]:
@@ -55,12 +96,9 @@ class GeminiService:
         if not text:
             return None
         try:
-            # Remove markdown code blocks se presentes
-            clean = re.sub(r"```(?:json)?\n?", "", text).strip()
-            clean = clean.rstrip("`").strip()
+            clean = re.sub(r"```(?:json)?\n?", "", text).strip().rstrip("`").strip()
             return json.loads(clean)
         except json.JSONDecodeError:
-            # Tenta extrair apenas o JSON do texto
             match = re.search(r"[\[{].*[\]}]", text, re.DOTALL)
             if match:
                 try:
@@ -69,69 +107,186 @@ class GeminiService:
                     pass
         return None
 
-    # ── Extração de questões ──────────────────────────────────────────────────
+    # ── Geração de questões de aulas ──────────────────────────────────────────
 
-    def extract_questions(self, text: str) -> list[dict]:
+    def generate_lesson_questions(
+        self,
+        lesson_context: str,
+        lesson_title: str,
+        count: int = 5,
+        difficulty: str = "medium",
+        video_url: Optional[str] = None,
+    ) -> list[dict]:
         """
-        Extrai questões de um texto usando Gemini.
-        Retorna lista de dicts compatíveis com o modelo Question.
+        Gera questões para uma aula.
+
+        Se video_url for YouTube, passa a URL diretamente ao Gemini.
+        O Gemini analisa o vídeo nos próprios servidores do Google.
+        Fallback para contexto textual se não houver vídeo ou se falhar.
         """
-        prompt = f"""Você é um especialista em concursos públicos brasileiros.
+        is_youtube = video_url and (
+            "youtube.com" in video_url or "youtu.be" in video_url
+        )
 
-Analise o texto abaixo e extraia TODAS as questões de múltipla escolha encontradas.
+        if is_youtube:
+            logger.info(
+                f"generate_lesson_questions: usando YouTube URL para '{lesson_title}'"
+            )
+            result = self._generate_from_youtube_url(
+                video_url, lesson_title, count, difficulty
+            )
+            if result:
+                return result
+            logger.warning(
+                f"generate_lesson_questions: YouTube URL falhou, usando fallback de contexto"
+            )
 
-Para cada questão extraída, forneça:
-- statement: enunciado completo da questão
-- discipline: disciplina (ex: "Direito Penal", "Português", "Matemática")
-- topic: tema específico dentro da disciplina
-- difficulty: "easy", "medium" ou "hard"
-- exam_board: banca examinadora se mencionada (ex: "CESPE", "FGV")
-- exam_year: ano se mencionado (número inteiro ou null)
-- correct_alternative_key: letra da alternativa correta ("a", "b", "c", "d" ou "e")
-- correct_justification: explicação de por que a alternativa está correta
-- alternatives: lista de objetos com:
-  - key: letra ("a", "b", "c", "d", "e")
-  - text: texto da alternativa
-  - distractor_justification: por que esta alternativa está errada (apenas para as incorretas)
+        return self._generate_from_context(
+            lesson_context, lesson_title, count, difficulty
+        )
 
-Se não houver questões completas no texto, retorne uma lista vazia.
+    def _generate_from_youtube_url(
+        self,
+        video_url: str,
+        lesson_title: str,
+        count: int,
+        difficulty: str,
+    ) -> list[dict]:
+        """
+        Gera questões passando a URL do YouTube diretamente ao Gemini.
+        Sem youtube-transcript-api — Gemini busca o vídeo no Google.
+        """
+        if count >= 5:
+            easy = max(1, count // 4)
+            hard = max(1, count // 4)
+            medium = count - easy - hard
+            dist = f"{easy} fáceis, {medium} médias e {hard} difíceis"
+        else:
+            dist = f"{count} questão(ões)"
 
-Responda APENAS com JSON válido, sem texto adicional. Formato:
+        prompt = f"""Você é um professor especialista em concursos públicos brasileiros.
+
+Assista ao vídeo desta aula e crie {count} questões de múltipla escolha no padrão concurso público.
+
+TÍTULO DA AULA: {lesson_title}
+DISTRIBUIÇÃO: {dist}
+
+INSTRUÇÕES:
+- Cada questão deve ter exatamente 4 alternativas: A, B, C, D
+- Use APENAS o conteúdo explicado no vídeo — não invente informações externas
+- As questões devem avaliar compreensão real do que foi ensinado
+- Os distratores (alternativas erradas) devem ser plausíveis
+- Escreva em português formal (padrão concurso público)
+- A justificativa deve citar o conteúdo explicado no vídeo
+
+Responda APENAS com JSON válido (lista), sem texto adicional:
 [
   {{
-    "statement": "...",
-    "discipline": "...",
-    "topic": "...",
-    "difficulty": "medium",
-    "exam_board": null,
-    "exam_year": null,
-    "correct_alternative_key": "a",
-    "correct_justification": "...",
+    "statement": "enunciado completo da questão",
+    "discipline": "disciplina ou tema da aula",
+    "topic": "tópico específico desta questão",
+    "difficulty": "easy | medium | hard",
+    "correct_alternative_key": "a | b | c | d",
+    "correct_justification": "explicação citando o vídeo",
     "alternatives": [
-      {{"key": "a", "text": "...", "distractor_justification": null}},
-      {{"key": "b", "text": "...", "distractor_justification": "..."}},
-      {{"key": "c", "text": "...", "distractor_justification": "..."}},
-      {{"key": "d", "text": "...", "distractor_justification": "..."}}
+      {{"key": "a", "text": "texto da alternativa A", "distractor_justification": null}},
+      {{"key": "b", "text": "texto da alternativa B", "distractor_justification": "por que B está errada"}},
+      {{"key": "c", "text": "texto da alternativa C", "distractor_justification": "por que C está errada"}},
+      {{"key": "d", "text": "texto da alternativa D", "distractor_justification": "por que D está errada"}}
     ]
   }}
 ]
 
-TEXTO PARA ANALISAR:
-{text}"""
+distractor_justification deve ser null para a alternativa correta."""
 
-        response = self._call(prompt, max_tokens=8192)
+        response = self._call_with_video(video_url, prompt, max_tokens=8192)
         result = self._parse_json(response)
 
+        if isinstance(result, list):
+            valid = [
+                self._validate_question(q) for q in result if self._is_valid_question(q)
+            ]
+            logger.info(
+                f"_generate_from_youtube_url: {len(valid)} questões para '{lesson_title}'"
+            )
+            return valid
+
+        logger.warning(
+            f"_generate_from_youtube_url: sem resultado para '{lesson_title}'"
+        )
+        return []
+
+    def _generate_from_context(
+        self,
+        lesson_context: str,
+        lesson_title: str,
+        count: int,
+        difficulty: str,
+    ) -> list[dict]:
+        """Fallback: gera questões baseadas no contexto textual da aula."""
+        difficulty_label = {
+            "easy": "fácil — conceitos básicos",
+            "medium": "médio — requer compreensão e aplicação",
+            "hard": "difícil — análise, interpretação, casos complexos",
+        }.get(difficulty, "médio")
+
+        prompt = f"""Você é um professor especialista em concursos públicos.
+
+Baseado no conteúdo da aula abaixo, crie {count} questão(ões) de múltipla escolha.
+
+CONTEÚDO:
+{lesson_context}
+
+INSTRUÇÕES:
+- Dificuldade: {difficulty_label}
+- 4 alternativas por questão (a, b, c, d)
+- Apenas conteúdo presente acima
+- Português formal (padrão concurso)
+
+APENAS JSON válido (lista):
+[{{
+  "statement": "...", "discipline": "...", "topic": "...", "difficulty": "{difficulty}",
+  "correct_alternative_key": "a|b|c|d", "correct_justification": "...",
+  "alternatives": [
+    {{"key": "a", "text": "...", "distractor_justification": null}},
+    {{"key": "b", "text": "...", "distractor_justification": "..."}},
+    {{"key": "c", "text": "...", "distractor_justification": "..."}},
+    {{"key": "d", "text": "...", "distractor_justification": "..."}}
+  ]
+}}]"""
+
+        response = self._call(prompt, max_tokens=6144)
+        result = self._parse_json(response)
         if isinstance(result, list):
             return [
                 self._validate_question(q) for q in result if self._is_valid_question(q)
             ]
-
-        logger.warning("Gemini não retornou lista de questões. Usando fallback.")
         return []
 
+    # ── Extração de questões do banco ─────────────────────────────────────────
+
+    def extract_questions(self, text: str) -> list[dict]:
+        prompt = f"""Analise o texto e extraia TODAS as questões de múltipla escolha.
+
+Para cada questão: statement, discipline, topic, difficulty (easy/medium/hard),
+exam_board (null se não mencionado), exam_year (inteiro ou null),
+correct_alternative_key, correct_justification, alternatives (key, text, distractor_justification).
+
+APENAS JSON válido (lista). Se não houver questões, retorne [].
+
+TEXTO:
+{text}"""
+        response = self._call(prompt, max_tokens=8192)
+        result = self._parse_json(response)
+        if isinstance(result, list):
+            return [
+                self._validate_question(q) for q in result if self._is_valid_question(q)
+            ]
+        return []
+
+    # ── Validação ─────────────────────────────────────────────────────────────
+
     def _is_valid_question(self, q: dict) -> bool:
-        """Valida se uma questão extraída tem os campos mínimos."""
         return (
             isinstance(q, dict)
             and q.get("statement", "").strip()
@@ -141,7 +296,6 @@ TEXTO PARA ANALISAR:
         )
 
     def _validate_question(self, q: dict) -> dict:
-        """Normaliza campos da questão extraída."""
         return {
             "statement": q.get("statement", "").strip(),
             "discipline": q.get("discipline", "").strip() or None,
@@ -167,216 +321,65 @@ TEXTO PARA ANALISAR:
             ],
         }
 
-    # ── Análise de questões do banco (source_type="bank") ─────────────────────
+    # ── Análise de questões do banco ──────────────────────────────────────────
 
     def analyze_question_metadata(
-        self,
-        statement: str,
-        alternatives_text: str,
-        correct_key: str,
-        exam_board: str = "",
-    ) -> dict | None:
-        """
-        Analisa uma questão de concurso e extrai/completa seus metadados.
+        self, statement, alternatives_text, correct_key, exam_board=""
+    ):
+        banca = f"Banca: {exam_board}. " if exam_board else ""
+        prompt = f"""{banca}Analise a questão e extraia metadados pedagógicos.
 
-        Chamado pelo analyze_question_task quando o produtor não preencheu
-        disciplina, tópico ou justificativas ao criar a questão.
-
-        Retorna dict com: discipline, topic, subtopic, difficulty,
-        competency, correct_justification, distractor_justifications.
-        """
-        banca_hint = f"Banca: {exam_board}. " if exam_board else ""
-
-        prompt = f"""Você é um especialista em concursos públicos brasileiros.
- 
-Analise a questão abaixo e extraia seus metadados pedagógicos.
- 
-{banca_hint}
- 
-ENUNCIADO:
-{statement}
- 
-ALTERNATIVAS:
-{alternatives_text}
- 
+ENUNCIADO: {statement}
+ALTERNATIVAS: {alternatives_text}
 GABARITO: {correct_key.upper()}
- 
-Responda APENAS com JSON válido, sem texto adicional:
-{{
-  "discipline": "nome da disciplina principal (ex: Direito Penal, Português, Matemática)",
-  "topic": "tema específico dentro da disciplina",
-  "subtopic": "subtema mais detalhado ou null",
-  "difficulty": "easy | medium | hard",
-  "competency": "habilidade ou conhecimento avaliado pela questão",
-  "correct_justification": "explicação completa de por que o gabarito está correto",
-  "distractor_justifications": {{
-    "a": "por que a alternativa A está errada (ou null se for o gabarito)",
-    "b": "por que a alternativa B está errada (ou null se for o gabarito)",
-    "c": "por que a alternativa C está errada (ou null se for o gabarito)",
-    "d": "por que a alternativa D está errada (ou null se for o gabarito)",
-    "e": "por que a alternativa E está errada (ou null se for o gabarito)"
-  }}
-}}"""
 
+APENAS JSON: {{"discipline":"...","topic":"...","subtopic":"...","difficulty":"easy|medium|hard",
+"competency":"...","correct_justification":"...",
+"distractor_justifications":{{"a":"...","b":"...","c":"...","d":"...","e":"..."}}}}"""
         response = self._call(prompt, max_tokens=2048)
         result = self._parse_json(response)
+        return result if isinstance(result, dict) and result.get("discipline") else None
 
-        if isinstance(result, dict) and result.get("discipline"):
-            return result
-
-        logger.warning("analyze_question_metadata: Gemini não retornou análise válida.")
-        return None
-
-    # ── Geração de questões de aulas (source_type="lesson") ───────────────────
-
-    def generate_lesson_questions(
-        self,
-        lesson_context: str,
-        lesson_title: str,
-        count: int = 5,
-        difficulty: str = "medium",
-    ) -> list[dict]:
-        """
-        Gera questões originais baseadas no conteúdo de uma aula.
-
-        DIFERENÇA do extract_questions:
-        - extract_questions → extrai questões que JÁ EXISTEM num texto (de provas/PDFs)
-        - generate_lesson_questions → CRIA questões novas sobre o conteúdo da aula
-
-        As questões geradas são no padrão concurso público (múltipla escolha, 4 alternativas)
-        mas com conteúdo 100% baseado no que foi ensinado na aula.
-
-        Retorna lista de dicts compatíveis com o modelo Question.
-        """
-        difficulty_label = {
-            "easy": "fácil — conceitos básicos, direto ao ponto",
-            "medium": "médio — requer compreensão e aplicação do conteúdo",
-            "hard": "difícil — requer análise, interpretação ou casos complexos",
-        }.get(difficulty, "médio")
-
-        prompt = f"""Você é um professor especialista em concursos públicos brasileiros.
- 
-Baseado EXCLUSIVAMENTE no conteúdo da aula abaixo, crie {count} questão(ões) de múltipla escolha
-no padrão concurso público.
- 
-CONTEÚDO DA AULA:
-{lesson_context}
- 
-INSTRUÇÕES:
-- Dificuldade: {difficulty_label}
-- Cada questão deve ter exatamente 4 alternativas (a, b, c, d)
-- As questões devem abordar os tópicos PRINCIPAIS da aula, não detalhes obscuros
-- As alternativas incorretas devem ser plausíveis (distratores bem construídos)
-- NÃO invente informações que não estão no conteúdo da aula
-- Escreva em português formal (padrão concurso público)
- 
-Responda APENAS com JSON válido (lista), sem texto adicional:
-[
-  {{
-    "statement": "enunciado completo da questão",
-    "discipline": "disciplina ou nome da aula",
-    "topic": "tópico específico desta questão dentro da aula",
-    "difficulty": "{difficulty}",
-    "correct_alternative_key": "a | b | c | d",
-    "correct_justification": "explicação detalhada de por que esta alternativa está correta",
-    "alternatives": [
-      {{"key": "a", "text": "texto da alternativa A", "distractor_justification": null}},
-      {{"key": "b", "text": "texto da alternativa B", "distractor_justification": "por que B está errada"}},
-      {{"key": "c", "text": "texto da alternativa C", "distractor_justification": "por que C está errada"}},
-      {{"key": "d", "text": "texto da alternativa D", "distractor_justification": "por que D está errada"}}
-    ]
-  }}
-]
- 
-IMPORTANTE: a distractor_justification deve ser null para a alternativa correta
-e preenchida para todas as incorretas."""
-
-        response = self._call(prompt, max_tokens=6144)
-        result = self._parse_json(response)
-
-        if isinstance(result, list):
-            return [
-                self._validate_question(q) for q in result if self._is_valid_question(q)
-            ]
-
-        logger.warning(
-            f"generate_lesson_questions: Gemini não retornou lista válida para '{lesson_title}'."
-        )
-        return []
-
-    # ── Insights do aluno ─────────────────────────────────────────────────────
+    # ── Insights ──────────────────────────────────────────────────────────────
 
     def generate_student_insights(
         self,
-        student_name: str,
-        discipline_performance: list[dict],
-        pending_count: int,
-        weekly_progress_percent: int,
-    ) -> list[dict]:
-        """Gera insights personalizados para o dashboard do aluno."""
+        student_name,
+        discipline_performance,
+        pending_count,
+        weekly_progress_percent,
+    ):
         if not _GEMINI_AVAILABLE:
             return self._fallback_student_insights(
                 discipline_performance, pending_count, weekly_progress_percent
             )
-
-        # Formata dados para o prompt
-        perf_text = (
+        perf = (
             "\n".join(
                 [
-                    f"- {d['discipline']}: {d['accuracy_rate']}% acerto ({d['performance_label']})"
+                    f"- {d['discipline']}: {d['accuracy_rate']}% ({d['performance_label']})"
                     for d in discipline_performance[:5]
                 ]
             )
-            or "Nenhum dado ainda."
+            or "Sem dados."
         )
-
-        prompt = f"""Você é um tutor especializado em aprovação em concursos públicos.
-
-Analise o desempenho do aluno {student_name} e gere EXATAMENTE 3 insights motivadores e acionáveis.
-
-DADOS:
-- Disciplinas:
-{perf_text}
-- Itens pendentes hoje: {pending_count}
-- Progresso da meta semanal: {weekly_progress_percent}%
-
-Gere 3 insights no formato JSON:
-[
-  {{
-    "type": "motivation|weakness|warning|positive|alert",
-    "icon": "emoji",
-    "title": "título curto (max 40 chars)",
-    "message": "mensagem motivadora e específica (max 120 chars)",
-    "action": {{"label": "texto do botão", "href": "/rota"}} ou null
-  }}
-]
-
-Regras:
-- Seja específico com os dados (cite a disciplina, o percentual)
-- Tom encorajador mesmo para pontos fracos
-- Ações práticas (ex: link para questões da disciplina fraca)
-- Responda APENAS com JSON válido"""
-
+        prompt = f"""3 insights motivadores para {student_name}. Disciplinas:\n{perf}
+Pendentes: {pending_count}. Meta semanal: {weekly_progress_percent}%.
+JSON: [{{"type":"motivation|weakness|warning|positive|alert","icon":"emoji","title":"max 40","message":"max 120","action":{{"label":"...","href":"/"}}}}]
+APENAS JSON."""
         response = self._call(prompt, max_tokens=1024)
         result = self._parse_json(response)
-
-        if isinstance(result, list) and len(result) >= 1:
-            return result[:3]
-
-        return self._fallback_student_insights(
-            discipline_performance, pending_count, weekly_progress_percent
+        return (
+            result[:3]
+            if isinstance(result, list) and result
+            else self._fallback_student_insights(
+                discipline_performance, pending_count, weekly_progress_percent
+            )
         )
 
     def _fallback_student_insights(
-        self,
-        discipline_performance: list[dict],
-        pending_count: int,
-        weekly_progress_percent: int,
-    ) -> list[dict]:
-        """Insights baseados em regras quando Gemini não está disponível."""
+        self, discipline_performance, pending_count, weekly_progress_percent
+    ):
         insights = []
-
-        # Disciplina mais fraca
         weak = [d for d in discipline_performance if d["performance_label"] == "fraco"]
         if weak:
             worst = min(weak, key=lambda x: x["accuracy_rate"])
@@ -385,19 +388,17 @@ Regras:
                     "type": "weakness",
                     "icon": "📚",
                     "title": f"{worst['discipline']} precisa de atenção",
-                    "message": f"Taxa de acerto de {worst['accuracy_rate']}%. Foque nas questões desta disciplina.",
+                    "message": f"Taxa de acerto de {worst['accuracy_rate']}%.",
                     "action": {"label": "Praticar questões", "href": "/questions"},
                 }
             )
-
-        # Meta semanal
         if weekly_progress_percent >= 80:
             insights.append(
                 {
                     "type": "positive",
                     "icon": "🏆",
                     "title": "Meta semanal quase batida!",
-                    "message": f"Você está em {weekly_progress_percent}% da sua meta. Continue assim!",
+                    "message": f"{weekly_progress_percent}% da meta. Continue assim!",
                     "action": None,
                 }
             )
@@ -407,138 +408,61 @@ Regras:
                     "type": "warning",
                     "icon": "⏰",
                     "title": "Fique atento à sua meta",
-                    "message": f"Apenas {weekly_progress_percent}% da meta semanal concluída. Há tempo para recuperar!",
+                    "message": f"Apenas {weekly_progress_percent}% da meta semanal.",
                     "action": {"label": "Ver cronograma", "href": "/schedule"},
                 }
             )
-
-        # Pendências
         if pending_count > 0:
             insights.append(
                 {
                     "type": "motivation",
                     "icon": "✅",
                     "title": f"{pending_count} item(ns) para hoje",
-                    "message": "Você tem itens no cronograma de hoje. Cada aula te aproxima da aprovação!",
+                    "message": "Cada aula te aproxima da aprovação!",
                     "action": {"label": "Ver cronograma", "href": "/schedule"},
                 }
             )
-
-        # Fallback genérico
         if not insights:
             insights.append(
                 {
                     "type": "motivation",
                     "icon": "🎯",
                     "title": "Continue estudando!",
-                    "message": "Consistência é a chave da aprovação. Estude um pouco todos os dias.",
+                    "message": "Consistência é a chave da aprovação.",
                     "action": {"label": "Praticar questões", "href": "/questions"},
                 }
             )
-
         return insights[:3]
 
-    # ── Resumo de aula ────────────────────────────────────────────────────────
-
-    def generate_lesson_summary(
-        self,
-        lesson_title: str,
-        lesson_content: str,
-        discipline: str,
-    ) -> Optional[str]:
-        """Gera resumo estruturado de uma aula para o aluno."""
-        if not _GEMINI_AVAILABLE:
-            return None
-
-        prompt = f"""Você é um professor especialista em concursos públicos.
-
-Crie um resumo CONCISO e ESTRUTURADO da aula abaixo, ideal para revisão rápida.
-
-AULA: {lesson_title}
-DISCIPLINA: {discipline}
-
-CONTEÚDO:
-{lesson_content[:5000]}
-
-Formato do resumo:
-1. **Pontos principais** (3-5 bullet points)
-2. **Conceitos-chave** (termos importantes com definição breve)
-3. **Dica para prova** (1 observação sobre como esse tema cai em provas)
-
-Seja direto, use linguagem clara e concisa. Máximo 300 palavras."""
-
-        return self._call(prompt, max_tokens=512)
-
-    # ── Análise de turma ──────────────────────────────────────────────────────
-
     def generate_class_insights(
-        self,
-        total_students: int,
-        engagement_rate: float,
-        at_risk_count: int,
-        discipline_performance: list[dict],
-    ) -> list[dict]:
-        """Gera insights para o dashboard do produtor."""
+        self, total_students, engagement_rate, at_risk_count, discipline_performance
+    ):
         if not _GEMINI_AVAILABLE:
             return self._fallback_class_insights(
                 total_students, engagement_rate, at_risk_count, discipline_performance
             )
-
-        worst_disciplines = sorted(
+        worst = sorted(
             discipline_performance, key=lambda x: x.get("accuracy_rate", 100)
         )[:3]
-        worst_text = (
-            ", ".join(
-                [
-                    f"{d['discipline']} ({d['accuracy_rate']}%)"
-                    for d in worst_disciplines
-                ]
-            )
-            or "dados insuficientes"
+        worst_text = ", ".join(
+            [f"{d['discipline']} ({d['accuracy_rate']}%)" for d in worst]
         )
-
-        prompt = f"""Você é um analista educacional especializado em concursos públicos.
-
-Analise os dados da turma e gere EXATAMENTE 3 insights para o produtor de conteúdo.
-
-DADOS:
-- Total de alunos: {total_students}
-- Taxa de engajamento (7 dias): {engagement_rate}%
-- Alunos em risco de abandono: {at_risk_count}
-- Disciplinas com menor acerto: {worst_text}
-
-Gere insights que ajudem o produtor a tomar ações concretas:
-[
-  {{
-    "type": "alert|warning|positive|info",
-    "icon": "emoji",
-    "title": "título (max 40 chars)",
-    "message": "insight específico com dado numérico (max 150 chars)"
-  }}
-]
-
-Responda APENAS com JSON válido."""
-
+        prompt = f"""3 insights para produtor. {total_students} alunos, {engagement_rate}% engajamento, {at_risk_count} em risco, piores: {worst_text}.
+[{{"type":"alert|warning|positive|info","icon":"emoji","title":"...","message":"..."}}] APENAS JSON."""
         response = self._call(prompt, max_tokens=1024)
         result = self._parse_json(response)
-
-        if isinstance(result, list):
-            return result[:3]
-
-        return self._fallback_class_insights(
-            total_students, engagement_rate, at_risk_count, discipline_performance
+        return (
+            result[:3]
+            if isinstance(result, list)
+            else self._fallback_class_insights(
+                total_students, engagement_rate, at_risk_count, discipline_performance
+            )
         )
 
     def _fallback_class_insights(
-        self,
-        total_students: int,
-        engagement_rate: float,
-        at_risk_count: int,
-        discipline_performance: list[dict],
-    ) -> list[dict]:
-        """Insights baseados em regras para o produtor."""
+        self, total_students, engagement_rate, at_risk_count, discipline_performance
+    ):
         insights = []
-
         if at_risk_count > 0:
             pct = round(at_risk_count / max(total_students, 1) * 100)
             insights.append(
@@ -546,17 +470,16 @@ Responda APENAS com JSON válido."""
                     "type": "alert",
                     "icon": "🚨",
                     "title": f"{at_risk_count} aluno(s) em risco",
-                    "message": f"{pct}% da turma pode abandonar. Envie uma mensagem motivacional agora.",
+                    "message": f"{pct}% pode abandonar.",
                 }
             )
-
         if engagement_rate < 50:
             insights.append(
                 {
                     "type": "warning",
                     "icon": "📉",
                     "title": "Engajamento baixo",
-                    "message": f"Apenas {engagement_rate}% da turma ativa nos últimos 7 dias. Publique novo conteúdo.",
+                    "message": f"Apenas {engagement_rate}% ativo nos últimos 7 dias.",
                 }
             )
         elif engagement_rate >= 75:
@@ -565,10 +488,9 @@ Responda APENAS com JSON válido."""
                     "type": "positive",
                     "icon": "🔥",
                     "title": "Turma engajada!",
-                    "message": f"{engagement_rate}% de engajamento nos últimos 7 dias. Ótimo resultado!",
+                    "message": f"{engagement_rate}% de engajamento.",
                 }
             )
-
         worst = sorted(
             discipline_performance, key=lambda x: x.get("accuracy_rate", 100)
         )
@@ -579,50 +501,19 @@ Responda APENAS com JSON válido."""
                     "type": "info",
                     "icon": "📊",
                     "title": f"{d['discipline']} precisa de reforço",
-                    "message": f"Média de {d['accuracy_rate']}% nesta disciplina. Considere adicionar mais questões.",
+                    "message": f"Média de {d['accuracy_rate']}%.",
                 }
             )
-
         return insights[:3]
 
-    # ── Análise de avaliações de aula ────────────────────────────────────────
-
     def analyze_lesson_ratings(
-        self,
-        lesson_title: str,
-        avg_rating: float,
-        low_count: int,
-        total_count: int,
-        comments: list[str],
-    ) -> str | None:
-        """
-        Analisa avaliações negativas de uma aula e gera insight para o produtor.
-        Chamado quando uma aula acumula 3+ avaliações baixas (≤2 estrelas).
-        """
+        self, lesson_title, avg_rating, low_count, total_count, comments
+    ):
         comments_text = (
             "\n".join(f"- {c}" for c in comments[:10])
             if comments
-            else "Nenhum comentário registrado."
+            else "Sem comentários."
         )
-
-        prompt = f"""Você é um especialista em educação online e design instrucional.
-
-Uma aula recebeu avaliações negativas dos alunos e precisa da sua análise.
-
-DADOS DA AULA:
-- Título: {{lesson_title}}
-- Nota média: {{avg_rating}}/5
-- Avaliações baixas (≤2 estrelas): {{low_count}} de {{total_count}} alunos
-- Comentários dos alunos:
-{{comments_text}}
-
-Analise os problemas e responda em português com:
-
-1. **Diagnóstico** (2-3 frases): O que está causando a insatisfação dos alunos?
-2. **Problemas identificados** (lista com bullet points): Problemas específicos com base nos comentários.
-3. **Sugestões de melhoria** (lista com bullet points): 3-5 ações concretas que o produtor pode fazer para melhorar esta aula.
-
-Seja direto, específico e construtivo. Máximo 300 palavras."""
-
-        result = self._call(prompt, max_tokens=600)
-        return result
+        prompt = f"""Aula "{lesson_title}" com nota {avg_rating}/5 ({low_count}/{total_count} baixas).
+Comentários:\n{comments_text}\nDiagnóstico, problemas e sugestões. Máx 300 palavras."""
+        return self._call(prompt, max_tokens=600)

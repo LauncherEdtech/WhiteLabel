@@ -6,7 +6,12 @@
 from flask import Blueprint, request, jsonify, g
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from marshmallow import Schema, fields, validate, ValidationError, EXCLUDE
-from app.models.question import Question, Alternative, QuestionSourceType, DifficultyLevel
+from app.models.question import (
+    Question,
+    Alternative,
+    QuestionSourceType,
+    DifficultyLevel,
+)
 
 from app.extensions import db, limiter
 from app.models.course import (
@@ -1054,31 +1059,33 @@ def _serialize_lesson(lesson: Lesson, progress=None, full: bool = False) -> dict
         )
     return data
 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # QUESTÕES DA AULA — source_type="lesson"
 # Completamente separadas do banco geral de concursos.
 # ══════════════════════════════════════════════════════════════════════════════
- 
+
+
 @courses_bp.route("/lessons/<string:lesson_id>/questions", methods=["GET"])
 @jwt_required()
 @require_tenant
 def list_lesson_questions(lesson_id: str):
     """
     Lista questões geradas pelo Gemini para uma aula específica.
- 
+
     Estas questões são source_type="lesson" e vinculadas à lesson_id.
     São COMPLETAMENTE separadas do banco de questões de concurso:
     - Não aparecem em GET /questions/
     - Não entram em simulados automáticos
     - Não alimentam o cronograma global
- 
+
     Aluno vê as questões da aula sem o gabarito.
     Produtor vê tudo (inclusive gabarito e status de revisão).
     """
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
     claims = get_jwt()
- 
+
     # Verifica que a aula pertence ao tenant
     lesson = Lesson.query.filter_by(
         id=lesson_id,
@@ -1087,9 +1094,9 @@ def list_lesson_questions(lesson_id: str):
     ).first()
     if not lesson:
         return jsonify({"error": "not_found"}), 404
- 
+
     is_producer = _is_producer_or_above(claims)
- 
+
     # Busca APENAS questões desta aula específica
     questions_query = Question.query.filter_by(
         tenant_id=tenant.id,
@@ -1097,31 +1104,39 @@ def list_lesson_questions(lesson_id: str):
         source_type=QuestionSourceType.LESSON,
         is_active=True,
         is_deleted=False,
-    ).order_by(Question.created_at.asc())
- 
-    questions = questions_query.all()
- 
+    )
+
+    # Aluno só vê questões já revisadas/aprovadas pelo produtor
+    if not is_producer:
+        questions_query = questions_query.filter_by(is_reviewed=True)
+
+    questions = questions_query.order_by(Question.created_at.asc()).all()
+
     # Carrega última tentativa do aluno para cada questão
     from app.routes.questions import _get_last_attempts_map, _serialize_question
-    attempt_map = _get_last_attempts_map(
-        user_id, tenant.id, [q.id for q in questions]
+
+    attempt_map = _get_last_attempts_map(user_id, tenant.id, [q.id for q in questions])
+
+    return (
+        jsonify(
+            {
+                "lesson_id": lesson_id,
+                "lesson_title": lesson.title,
+                "total": len(questions),
+                "questions": [
+                    _serialize_question(
+                        q,
+                        attempt_map.get(q.id),
+                        include_answer=is_producer,  # produtor vê gabarito; aluno vê após responder
+                    )
+                    for q in questions
+                ],
+            }
+        ),
+        200,
     )
- 
-    return jsonify({
-        "lesson_id": lesson_id,
-        "lesson_title": lesson.title,
-        "total": len(questions),
-        "questions": [
-            _serialize_question(
-                q,
-                attempt_map.get(q.id),
-                include_answer=is_producer,  # produtor vê gabarito; aluno vê após responder
-            )
-            for q in questions
-        ],
-    }), 200
- 
- 
+
+
 @courses_bp.route("/lessons/<string:lesson_id>/questions/generate", methods=["POST"])
 @jwt_required()
 @require_tenant
@@ -1129,11 +1144,11 @@ def list_lesson_questions(lesson_id: str):
 def generate_lesson_questions(lesson_id: str):
     """
     Dispara geração de questões para uma aula via Gemini (Celery assíncrono).
- 
+
     Apenas produtor pode acionar.
     As questões geradas são source_type="lesson" e ficam vinculadas à lesson_id.
     O produtor pode revisar e publicar antes que os alunos vejam (is_reviewed=False por padrão).
- 
+
     Body (opcional):
     {
         "count": 5,           // Número de questões a gerar (default: 5, max: 10)
@@ -1143,9 +1158,9 @@ def generate_lesson_questions(lesson_id: str):
     claims = get_jwt()
     if not _is_producer_or_above(claims):
         return jsonify({"error": "forbidden"}), 403
- 
+
     tenant = get_current_tenant()
- 
+
     lesson = Lesson.query.filter_by(
         id=lesson_id,
         tenant_id=tenant.id,
@@ -1153,7 +1168,7 @@ def generate_lesson_questions(lesson_id: str):
     ).first()
     if not lesson:
         return jsonify({"error": "not_found"}), 404
- 
+
     # Valida que a aula tem conteúdo suficiente para gerar questões
     has_content = (
         lesson.description
@@ -1162,18 +1177,23 @@ def generate_lesson_questions(lesson_id: str):
         or lesson.title
     )
     if not has_content:
-        return jsonify({
-            "error": "insufficient_content",
-            "message": "A aula não tem descrição ou resumo suficiente para gerar questões. "
-                       "Adicione uma descrição ou aguarde o resumo automático ser gerado.",
-        }), 422
- 
+        return (
+            jsonify(
+                {
+                    "error": "insufficient_content",
+                    "message": "A aula não tem descrição ou resumo suficiente para gerar questões. "
+                    "Adicione uma descrição ou aguarde o resumo automático ser gerado.",
+                }
+            ),
+            422,
+        )
+
     body = request.get_json(force=True) or {}
-    count = min(int(body.get("count", 5)), 10)   # máx 10 por vez
+    count = min(int(body.get("count", 5)), 10)  # máx 10 por vez
     difficulty = body.get("difficulty", "medium")
     if difficulty not in ("easy", "medium", "hard"):
         difficulty = "medium"
- 
+
     # Conta questões já existentes para esta aula
     existing = Question.query.filter_by(
         tenant_id=tenant.id,
@@ -1181,10 +1201,11 @@ def generate_lesson_questions(lesson_id: str):
         source_type=QuestionSourceType.LESSON,
         is_deleted=False,
     ).count()
- 
+
     # Dispara Celery task — resposta imediata, geração acontece em background
     try:
         from app.tasks import generate_lesson_questions_task
+
         task = generate_lesson_questions_task.delay(
             lesson_id=lesson_id,
             tenant_id=tenant.id,
@@ -1195,9 +1216,13 @@ def generate_lesson_questions(lesson_id: str):
     except Exception as e:
         # Se Celery não estiver disponível, tenta executar sincronamente
         import logging
-        logging.getLogger(__name__).warning(f"Celery indisponível, executando sync: {e}")
+
+        logging.getLogger(__name__).warning(
+            f"Celery indisponível, executando sync: {e}"
+        )
         try:
             from app.tasks import generate_lesson_questions_task
+
             generate_lesson_questions_task(
                 lesson_id=lesson_id,
                 tenant_id=tenant.id,
@@ -1206,25 +1231,37 @@ def generate_lesson_questions(lesson_id: str):
             )
             task_id = None
         except Exception as e2:
-            return jsonify({
-                "error": "generation_failed",
-                "message": "Não foi possível iniciar a geração de questões. Verifique se o serviço de IA está configurado.",
-            }), 503
- 
-    return jsonify({
-        "message": f"Geração de {count} questão(ões) iniciada.",
-        "lesson_id": lesson_id,
-        "lesson_title": lesson.title,
-        "count_requested": count,
-        "existing_questions": existing,
-        "task_id": task_id,
-        "status": "processing",
-        "note": "As questões aparecerão em GET /lessons/{lesson_id}/questions quando prontas. "
+            return (
+                jsonify(
+                    {
+                        "error": "generation_failed",
+                        "message": "Não foi possível iniciar a geração de questões. Verifique se o serviço de IA está configurado.",
+                    }
+                ),
+                503,
+            )
+
+    return (
+        jsonify(
+            {
+                "message": f"Geração de {count} questão(ões) iniciada.",
+                "lesson_id": lesson_id,
+                "lesson_title": lesson.title,
+                "count_requested": count,
+                "existing_questions": existing,
+                "task_id": task_id,
+                "status": "processing",
+                "note": "As questões aparecerão em GET /lessons/{lesson_id}/questions quando prontas. "
                 "O produtor deve revisar antes de publicar.",
-    }), 202
- 
- 
-@courses_bp.route("/lessons/<string:lesson_id>/questions/<string:question_id>", methods=["DELETE"])
+            }
+        ),
+        202,
+    )
+
+
+@courses_bp.route(
+    "/lessons/<string:lesson_id>/questions/<string:question_id>", methods=["DELETE"]
+)
 @jwt_required()
 @require_tenant
 def delete_lesson_question(lesson_id: str, question_id: str):
@@ -1235,9 +1272,9 @@ def delete_lesson_question(lesson_id: str, question_id: str):
     claims = get_jwt()
     if not _is_producer_or_above(claims):
         return jsonify({"error": "forbidden"}), 403
- 
+
     tenant = get_current_tenant()
- 
+
     question = Question.query.filter_by(
         id=question_id,
         lesson_id=lesson_id,
@@ -1247,15 +1284,18 @@ def delete_lesson_question(lesson_id: str, question_id: str):
     ).first()
     if not question:
         return jsonify({"error": "not_found"}), 404
- 
+
     question.is_deleted = True
     question.is_active = False
     db.session.commit()
- 
+
     return jsonify({"message": "Questão da aula removida."}), 200
- 
- 
-@courses_bp.route("/lessons/<string:lesson_id>/questions/<string:question_id>/approve", methods=["POST"])
+
+
+@courses_bp.route(
+    "/lessons/<string:lesson_id>/questions/<string:question_id>/approve",
+    methods=["POST"],
+)
 @jwt_required()
 @require_tenant
 def approve_lesson_question(lesson_id: str, question_id: str):
@@ -1267,9 +1307,9 @@ def approve_lesson_question(lesson_id: str, question_id: str):
     claims = get_jwt()
     if not _is_producer_or_above(claims):
         return jsonify({"error": "forbidden"}), 403
- 
+
     tenant = get_current_tenant()
- 
+
     question = Question.query.filter_by(
         id=question_id,
         lesson_id=lesson_id,
@@ -1279,17 +1319,23 @@ def approve_lesson_question(lesson_id: str, question_id: str):
     ).first()
     if not question:
         return jsonify({"error": "not_found"}), 404
- 
+
     question.is_reviewed = True
     db.session.commit()
- 
+
     from app.routes.questions import _serialize_question
-    return jsonify({
-        "message": "Questão aprovada e visível para alunos.",
-        "question": _serialize_question(question, include_answer=True),
-    }), 200
- 
- 
+
+    return (
+        jsonify(
+            {
+                "message": "Questão aprovada e visível para alunos.",
+                "question": _serialize_question(question, include_answer=True),
+            }
+        ),
+        200,
+    )
+
+
 @courses_bp.route("/lessons/<string:lesson_id>", methods=["DELETE"])
 @jwt_required()
 @require_tenant

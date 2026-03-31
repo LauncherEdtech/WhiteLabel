@@ -36,3 +36,4 @@ gunicorn==23.0.0              # WSGI server de produçãopypdf
 google-generativeai
 pypdf
 google-generativeai
+youtube-transcript-api>=0.6.2

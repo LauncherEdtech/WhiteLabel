@@ -325,13 +325,11 @@ def generate_lesson_questions_task(
     """
     Gera questões para uma aula específica via Gemini.
 
-    Questões geradas são source_type="lesson" e lesson_id=lesson_id.
-    - NUNCA aparecem no banco geral (GET /questions/)
-    - NUNCA entram em simulados automáticos
-    - Ficam em GET /lessons/:id/questions
-    - is_reviewed=False por padrão — produtor precisa aprovar antes dos alunos verem
+    Pipeline (em ordem de prioridade):
+    1. Se video_url YouTube → busca transcrição real → Gemini analisa conteúdo real
+    2. Fallback → usa title + description + ai_summary + ai_topics (comportamento antigo)
 
-    Usa como contexto: title, description, ai_summary, ai_topics da aula.
+    Questões geradas são source_type="lesson", is_reviewed=False.
     """
     import logging
 
@@ -359,48 +357,62 @@ def generate_lesson_questions_task(
             )
             return {"status": "skipped", "reason": "lesson_not_found"}
 
-        # Monta contexto rico da aula para o Gemini
-        context_parts = [f"Título da aula: {lesson.title}"]
-
-        if lesson.description:
-            context_parts.append(f"Descrição: {lesson.description}")
-
-        if lesson.ai_summary:
-            context_parts.append(f"Resumo: {lesson.ai_summary}")
-
-        if lesson.ai_topics and len(lesson.ai_topics) > 0:
-            topics_str = ", ".join(lesson.ai_topics)
-            context_parts.append(f"Tópicos abordados: {topics_str}")
-
-        lesson_context = "\n\n".join(context_parts)
-
-        if len(lesson_context.strip()) < 30:
-            logger.warning(
-                f"generate_lesson_questions_task: aula {lesson_id} sem conteúdo suficiente."
-            )
-            return {"status": "skipped", "reason": "insufficient_content"}
-
         from app.services.gemini_service import GeminiService
 
         svc = GeminiService()
 
-        # Gera questões específicas para o conteúdo da aula
+        # ── Tenta buscar transcrição YouTube ─────────────────────────────────
+        transcript = None
+        source_used = "context"
+
+        is_youtube = lesson.video_url and (
+            "youtube.com" in lesson.video_url or "youtu.be" in lesson.video_url
+        )
+
+        if is_youtube:
+            logger.info(
+                f"generate_lesson_questions_task: tentando transcrição YouTube para aula {lesson_id}"
+            )
+            transcript = svc.fetch_youtube_transcript(lesson.video_url)
+            if transcript:
+                source_used = "youtube_transcript"
+                logger.info(
+                    f"generate_lesson_questions_task: transcrição obtida ({len(transcript)} chars)"
+                )
+            else:
+                logger.warning(
+                    f"generate_lesson_questions_task: transcrição não disponível, usando fallback"
+                )
+
+        # ── Monta contexto fallback (título + descrição + resumo + tópicos) ──
+        context_parts = [f"Título da aula: {lesson.title}"]
+        if lesson.description:
+            context_parts.append(f"Descrição: {lesson.description}")
+        if lesson.ai_summary:
+            context_parts.append(f"Resumo: {lesson.ai_summary}")
+        if lesson.ai_topics and len(lesson.ai_topics) > 0:
+            context_parts.append(f"Tópicos abordados: {', '.join(lesson.ai_topics)}")
+
+        lesson_context = "\n\n".join(context_parts)
+
+        # ── Gera questões ─────────────────────────────────────────────────────
         questions_data = svc.generate_lesson_questions(
             lesson_context=lesson_context,
             lesson_title=lesson.title,
             count=count,
             difficulty=difficulty,
+            video_url=lesson.video_url,
         )
 
         if not questions_data:
             logger.warning(
-                f"generate_lesson_questions_task: Gemini não gerou questões para aula {lesson_id}."
+                f"generate_lesson_questions_task: Gemini não gerou questões para aula {lesson_id}"
             )
             return {"status": "failed", "reason": "gemini_no_questions"}
 
+        # ── Salva no banco ────────────────────────────────────────────────────
         created = 0
         for q_data in questions_data:
-            # Valida estrutura mínima
             if not q_data.get("statement") or not q_data.get("alternatives"):
                 continue
             if len(q_data["alternatives"]) < 2:
@@ -408,7 +420,6 @@ def generate_lesson_questions_task(
             if not q_data.get("correct_alternative_key"):
                 continue
 
-            # Detecta dificuldade do dado retornado
             diff_raw = q_data.get("difficulty", difficulty)
             try:
                 diff_level = DifficultyLevel(diff_raw)
@@ -417,9 +428,9 @@ def generate_lesson_questions_task(
 
             question = Question(
                 tenant_id=tenant_id,
-                source_type=QuestionSourceType.LESSON,  # ← SEMPRE lesson para questões de aula
-                lesson_id=lesson_id,  # ← VINCULADA à aula
-                subject_id=None,  # ← não associa a disciplina do banco
+                source_type=QuestionSourceType.LESSON,
+                lesson_id=lesson_id,
+                subject_id=None,
                 statement=q_data["statement"],
                 context=q_data.get("context"),
                 discipline=q_data.get("discipline") or lesson.title,
@@ -428,7 +439,7 @@ def generate_lesson_questions_task(
                 correct_alternative_key=q_data["correct_alternative_key"].lower(),
                 correct_justification=q_data.get("correct_justification"),
                 is_active=True,
-                is_reviewed=False,  # ← produtor precisa revisar antes de publicar aos alunos
+                is_reviewed=False,
             )
             db.session.add(question)
             db.session.flush()
@@ -450,12 +461,14 @@ def generate_lesson_questions_task(
         db.session.commit()
 
         logger.info(
-            f"generate_lesson_questions_task: {created} questão(ões) gerada(s) para aula {lesson_id}."
+            f"generate_lesson_questions_task: {created} questão(ões) gerada(s) "
+            f"para aula {lesson_id} (source: {source_used})"
         )
         return {
             "status": "ok",
             "lesson_id": lesson_id,
             "questions_created": created,
+            "source_used": source_used,
         }
 
     except Exception as exc:

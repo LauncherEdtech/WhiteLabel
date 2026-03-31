@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils/cn";
 import {
   BookOpen, Plus, ChevronDown, ChevronUp, ChevronLeft,
   Pencil, Eye, EyeOff, GripVertical, Video, Clock, Trash2, FileText, CheckCircle2,
-  ExternalLink,
+  ExternalLink, Sparkles, BookOpenCheck, CheckCheck, X as XIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { QUERY_KEYS } from "@/lib/constants/queryKeys";
@@ -28,6 +28,7 @@ import { useTenantFeatures } from "@/lib/hooks/useTenantFeatures";
 type EditSubjectState = { open: boolean; subject: any | null };
 type EditModuleState = { open: boolean; module: any | null };
 type EditLessonState = { open: boolean; lesson: any | null };
+type LessonQuestionsState = { open: boolean; lessonId: string; lessonTitle: string };
 type ConfirmDelete = { open: boolean; type: "subject" | "module" | "lesson"; id: string; name: string; parentCount?: number } | null;
 
 // Estado do modal de criar aula — suporta fase 2 (PDF) após criação
@@ -56,6 +57,7 @@ export default function ProducerCourseDetailPage() {
   const [editModule, setEditModule] = useState<EditModuleState>({ open: false, module: null });
   const [editLesson, setEditLesson] = useState<EditLessonState>({ open: false, lesson: null });
   const [confirmDelete, setConfirmDelete] = useState<ConfirmDelete>(null);
+  const [lessonQuestionsModal, setLessonQuestionsModal] = useState<LessonQuestionsState>({ open: false, lessonId: "", lessonTitle: "" });
 
   const { data: course, isLoading } = useQuery({
     queryKey: QUERY_KEYS.COURSE(courseId),
@@ -163,6 +165,38 @@ export default function ProducerCourseDetailPage() {
   });
 
   // ── Mutations: excluir ──────────────────────────────────────────────────────
+
+  const generateLessonQuestions = useMutation({
+    mutationFn: ({ lessonId, count, difficulty }: { lessonId: string; count: number; difficulty: string }) =>
+      apiClient.post(`/courses/lessons/${lessonId}/questions/generate`, { count, difficulty }).then(r => r.data),
+    onSuccess: (data) => {
+      toast.success(`Gerando ${data.count_requested} questão(ões)... Aguarde ~20s.`);
+    },
+    onError: (err: any) => {
+      const msg = err?.response?.data?.message || "Erro ao iniciar geração";
+      toast.error(msg);
+    },
+  });
+
+  const approveLessonQuestion = useMutation({
+    mutationFn: ({ lessonId, questionId }: { lessonId: string; questionId: string }) =>
+      apiClient.post(`/courses/lessons/${lessonId}/questions/${questionId}/approve`).then(r => r.data),
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["lesson-questions", vars.lessonId] });
+      toast.success("Questão aprovada — alunos já podem ver.");
+    },
+    onError: () => toast.error("Erro ao aprovar questão"),
+  });
+
+  const deleteLessonQuestion = useMutation({
+    mutationFn: ({ lessonId, questionId }: { lessonId: string; questionId: string }) =>
+      apiClient.delete(`/courses/lessons/${lessonId}/questions/${questionId}`).then(r => r.data),
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["lesson-questions", vars.lessonId] });
+      toast.success("Questão removida.");
+    },
+    onError: () => toast.error("Erro ao remover questão"),
+  });
 
   const deleteSubject = useMutation({
     mutationFn: (subjectId: string) =>
@@ -383,6 +417,13 @@ export default function ProducerCourseDetailPage() {
                                   : <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />
                                 }
                               </button>
+                              <button
+                                onClick={() => setLessonQuestionsModal({ open: true, lessonId: lesson.id, lessonTitle: lesson.title })}
+                                title="Questões da aula com IA"
+                                className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                              >
+                                <Sparkles className="h-3.5 w-3.5 text-purple-500 hover:text-purple-700" />
+                              </button>
                             </div>
                           ))}
                         </div>
@@ -395,6 +436,18 @@ export default function ProducerCourseDetailPage() {
           ))}
         </div>
       )}
+
+      {/* ── Modal: Questões da Aula com IA ── */}
+      <LessonQuestionsModal
+        open={lessonQuestionsModal.open}
+        lessonId={lessonQuestionsModal.lessonId}
+        lessonTitle={lessonQuestionsModal.lessonTitle}
+        onClose={() => setLessonQuestionsModal({ open: false, lessonId: "", lessonTitle: "" })}
+        onGenerate={(count, difficulty) => generateLessonQuestions.mutate({ lessonId: lessonQuestionsModal.lessonId, count, difficulty })}
+        onApprove={(questionId) => approveLessonQuestion.mutate({ lessonId: lessonQuestionsModal.lessonId, questionId })}
+        onDelete={(questionId) => deleteLessonQuestion.mutate({ lessonId: lessonQuestionsModal.lessonId, questionId })}
+        isGenerating={generateLessonQuestions.isPending}
+      />
 
       {/* ── Modal: Confirmação de exclusão ── */}
       <Dialog open={!!confirmDelete?.open} onOpenChange={v => { if (!v) setConfirmDelete(null); }}>
@@ -888,5 +941,240 @@ function LessonModal({ open, title, initialData, lessonId, hasVideoHosting, onCl
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+// ═══════════════════════════════════════════════════════════════════════════
+// Modal de Questões da Aula com IA
+// ═══════════════════════════════════════════════════════════════════════════
+function LessonQuestionsModal({
+  open, lessonId, lessonTitle, onClose,
+  onGenerate, onApprove, onDelete, isGenerating,
+}: {
+  open: boolean; lessonId: string; lessonTitle: string; onClose: () => void;
+  onGenerate: (count: number, difficulty: string) => void;
+  onApprove: (questionId: string) => void;
+  onDelete: (questionId: string) => void;
+  isGenerating: boolean;
+}) {
+  const [count, setCount] = useState(3);
+  const [difficulty, setDifficulty] = useState("medium");
+
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: ["lesson-questions", lessonId],
+    queryFn: () => apiClient.get(`/courses/lessons/${lessonId}/questions`).then(r => r.data),
+    enabled: open && !!lessonId,
+    refetchInterval: 8000, // auto-refresh enquanto processa
+  });
+
+  const questions = data?.questions || [];
+  const pending = questions.filter((q: any) => !q.is_reviewed);
+  const approved = questions.filter((q: any) => q.is_reviewed);
+
+  const diffLabel: Record<string, string> = { easy: "Fácil", medium: "Médio", hard: "Difícil" };
+
+  return (
+    <Dialog open={open} onOpenChange={v => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-base">
+            <Sparkles className="h-4 w-4 text-purple-500" />
+            Questões da aula — {lessonTitle}
+          </DialogTitle>
+        </DialogHeader>
+
+        {/* Gerador */}
+        <div className="rounded-lg border border-purple-200 bg-purple-50 dark:bg-purple-950/20 dark:border-purple-800 p-4 space-y-3">
+          <p className="text-sm font-medium text-foreground">Gerar novas questões com IA</p>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-muted-foreground">Quantidade</label>
+              <select
+                value={count}
+                onChange={e => setCount(Number(e.target.value))}
+                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+              >
+                {[1, 2, 3, 5, 8, 10].map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-muted-foreground">Dificuldade</label>
+              <select
+                value={difficulty}
+                onChange={e => setDifficulty(e.target.value)}
+                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+              >
+                <option value="easy">Fácil</option>
+                <option value="medium">Médio</option>
+                <option value="hard">Difícil</option>
+              </select>
+            </div>
+
+            <Button
+              size="sm"
+              onClick={() => onGenerate(count, difficulty)}
+              disabled={isGenerating}
+              className="bg-purple-600 hover:bg-purple-700 text-white ml-auto"
+            >
+              <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+              {isGenerating ? "Iniciando..." : "Gerar com IA"}
+            </Button>
+          </div>
+          {isGenerating && (
+            <div className="flex items-center gap-2 text-xs text-purple-600 bg-purple-50 dark:bg-purple-950/30 rounded-md px-3 py-2">
+              <div className="h-3 w-3 rounded-full border-2 border-purple-500 border-t-transparent animate-spin shrink-0" />
+              Gerando questões com IA... Clique em "Atualizar" após ~20 segundos.
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground">
+            O Gemini analisa o conteúdo da aula e cria questões no padrão concurso público.
+            As questões ficam pendentes para sua revisão antes de ficarem visíveis aos alunos.
+          </p>
+        </div>
+
+        {/* Loading */}
+        {isLoading && (
+          <div className="space-y-2">
+            {[1, 2].map(i => <div key={i} className="h-20 rounded-lg bg-muted animate-pulse" />)}
+          </div>
+        )}
+
+        {/* Pendentes de revisão */}
+        {!isLoading && pending.length > 0 && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-medium text-foreground">Aguardando revisão</p>
+              <Badge variant="outline" className="text-xs text-amber-600 border-amber-300 bg-amber-50">
+                {pending.length}
+              </Badge>
+            </div>
+            {pending.map((q: any) => (
+              <QuestionCard
+                key={q.id}
+                question={q}
+                isPending={true}
+                lessonId={lessonId}
+                onApprove={() => onApprove(q.id)}
+                onDelete={() => onDelete(q.id)}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Aprovadas */}
+        {!isLoading && approved.length > 0 && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-medium text-foreground">Publicadas para alunos</p>
+              <Badge variant="outline" className="text-xs text-green-600 border-green-300 bg-green-50">
+                {approved.length}
+              </Badge>
+            </div>
+            {approved.map((q: any) => (
+              <QuestionCard
+                key={q.id}
+                question={q}
+                isPending={false}
+                lessonId={lessonId}
+                onApprove={() => { }}
+                onDelete={() => onDelete(q.id)}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Vazio */}
+        {!isLoading && questions.length === 0 && (
+          <div className="py-10 text-center">
+            <BookOpenCheck className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
+            <p className="text-sm font-medium text-foreground">Nenhuma questão ainda</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Clique em "Gerar com IA" para criar questões baseadas no conteúdo desta aula.
+            </p>
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" size="sm" onClick={onClose}>Fechar</Button>
+          <Button variant="ghost" size="sm" onClick={() => refetch()}>Atualizar</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function QuestionCard({ question, isPending, lessonId, onApprove, onDelete }: {
+  question: any; isPending: boolean; lessonId: string;
+  onApprove: () => void; onDelete: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const diffColor: Record<string, string> = {
+    easy: "text-green-600 bg-green-50 border-green-200",
+    medium: "text-amber-600 bg-amber-50 border-amber-200",
+    hard: "text-red-600 bg-red-50 border-red-200",
+  };
+  const diffLabel: Record<string, string> = { easy: "Fácil", medium: "Médio", hard: "Difícil" };
+
+  return (
+    <div className={`rounded-lg border p-3 space-y-2 text-sm ${isPending ? "border-amber-200 bg-amber-50/30 dark:bg-amber-950/10" : "border-border bg-muted/20"}`}>
+      <div className="flex items-start gap-2">
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-medium text-foreground leading-snug line-clamp-2">{question.statement}</p>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {question.difficulty && (
+            <span className={`text-xs px-1.5 py-0.5 rounded border ${diffColor[question.difficulty] || "text-muted-foreground"}`}>
+              {diffLabel[question.difficulty] || question.difficulty}
+            </span>
+          )}
+          <button onClick={() => setExpanded(e => !e)} className="text-muted-foreground hover:text-foreground">
+            {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+          </button>
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="space-y-1.5 pt-1 border-t border-border/50">
+          {question.discipline && (
+            <p className="text-xs text-muted-foreground">Disciplina: <span className="text-foreground">{question.discipline}</span></p>
+          )}
+          <div className="space-y-1">
+            {(question.alternatives || []).map((alt: any) => (
+              <div key={alt.key} className={`flex items-start gap-1.5 text-xs rounded px-2 py-1 ${alt.key === question.correct_alternative_key ? "bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300" : "text-muted-foreground"}`}>
+                <span className="font-bold shrink-0">{alt.key.toUpperCase()})</span>
+                <span>{alt.text}</span>
+              </div>
+            ))}
+          </div>
+          {question.correct_justification && (
+            <p className="text-xs text-muted-foreground mt-1 italic">💡 {question.correct_justification}</p>
+          )}
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 pt-1">
+        {isPending && (
+          <Button size="sm" variant="outline"
+            className="h-7 text-xs text-green-700 border-green-300 hover:bg-green-50"
+            onClick={onApprove}>
+            <CheckCheck className="h-3 w-3 mr-1" />Aprovar
+          </Button>
+        )}
+        <Button size="sm" variant="ghost"
+          className="h-7 text-xs text-destructive hover:bg-destructive/10"
+          onClick={onDelete}>
+          <XIcon className="h-3 w-3 mr-1" />Remover
+        </Button>
+        {!isPending && (
+          <span className="text-xs text-green-600 flex items-center gap-1 ml-auto">
+            <CheckCheck className="h-3 w-3" />Visível para alunos
+          </span>
+        )}
+        {isPending && (
+          <span className="text-xs text-amber-600 flex items-center gap-1 ml-auto">
+            Pendente de revisão
+          </span>
+        )}
+      </div>
+    </div>
   );
 }
