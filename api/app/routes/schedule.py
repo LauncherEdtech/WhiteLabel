@@ -492,12 +492,16 @@ def _serialize_item(item: ScheduleItem) -> dict:
         "estimated_minutes": item.estimated_minutes,
         "priority_reason": item.priority_reason,
         "has_checkin": item.checkin is not None,
+        "question_filters": item.question_filters,
+        "template_item_title": item.template_item_title,
+        "template_item_notes": item.template_item_notes,
     }
 
     if item.lesson_id and item.lesson:
         lesson = item.lesson
         if lesson.video_s3_key:
             from app.routes.uploads import generate_video_presigned_url
+
             video_url = generate_video_presigned_url(lesson.video_s3_key)
         else:
             video_url = lesson.video_url

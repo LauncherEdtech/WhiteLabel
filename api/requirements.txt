@@ -24,7 +24,8 @@ redis==5.2.1
 flower==2.0.1                 # Monitor Celery
 
 # ── IA ──────────────────────────────────────────────────────────────────────
-google-generativeai==0.8.3    # Gemini API
+google-genai>=1.0.0   # Gemini API (novo SDK - tasks)
+google-generativeai>=0.8.0  # Gemini API (analytics)
 
 # ── Storage ─────────────────────────────────────────────────────────────────
 boto3==1.35.86                # AWS S3
@@ -33,7 +34,5 @@ boto3==1.35.86                # AWS S3
 python-dotenv==1.0.1
 Pillow==11.1.0                # Processamento de imagem (logo dos tenants)
 gunicorn==23.0.0              # WSGI server de produçãopypdf
-google-generativeai
 pypdf
-google-generativeai
-youtube-transcript-api>=0.6.2
+

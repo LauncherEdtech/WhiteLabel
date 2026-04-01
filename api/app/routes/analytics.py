@@ -1034,12 +1034,12 @@ def _generate_insights(
     Fallback para insights baseados em regras se Gemini falhar.
     """
     from flask import current_app
-    import google.generativeai as genai
 
     api_key = current_app.config.get("GEMINI_API_KEY", "")
 
     if api_key:
         try:
+            import google.generativeai as genai  # noqa
             return _gemini_student_insights(
                 api_key,
                 user,
@@ -1069,7 +1069,7 @@ def _gemini_student_insights(
     import google.generativeai as genai
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-2.5-flash-lite")
 
     # Identifica pontos fracos e fortes
     weak = [d for d in discipline_stats if d["performance_label"] == "fraco"]

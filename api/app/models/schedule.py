@@ -44,9 +44,23 @@ class StudySchedule(BaseModel, TenantMixin):
     # Última vez que a IA reorganizou o cronograma
     last_reorganized_at = Column(String(50), nullable=True)   # ISO datetime
 
+
     # Notas da IA sobre o plano atual (visível apenas para o produtor)
     ai_notes = Column(Text, nullable=True)
-
+    # ── NOVOS CAMPOS ──────────────────────────────────────────────────────────
+    source_type = Column(
+        String(30),
+        default="ai",
+        nullable=False,
+    )
+    # Valores: "ai" | "producer_template"
+ 
+    template_id = Column(
+        UUID(as_uuid=False),
+        ForeignKey("producer_schedule_templates.id"),
+        nullable=True,
+    )
+    # ─────────────────────────────────────────────────────────────────────────
     user = relationship("User")
     course = relationship("Course")
     items = relationship(
@@ -96,7 +110,14 @@ class ScheduleItem(BaseModel, TenantMixin):
     # Status de conclusão
     status = Column(String(20), default="pending", nullable=False)
     # Valores: "pending" | "done" | "skipped" | "rescheduled"
-
+    # Filtros para itens de questões/revisão do template do produtor
+    # Estrutura: { "tags": [...], "difficulty": "...", "quantity": 10 }
+    question_filters = Column(JSON, nullable=True)
+ 
+    # Título e notas herdados do template do produtor (exibidos ao aluno)
+    template_item_title = Column(String(255), nullable=True)
+    template_item_notes = Column(Text, nullable=True)
+    # ─────────────────────────────────────────────────────────────────────────
     schedule = relationship("StudySchedule", back_populates="items")
     lesson = relationship("Lesson")
     subject = relationship("Subject")

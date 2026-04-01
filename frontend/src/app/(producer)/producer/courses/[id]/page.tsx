@@ -1,5 +1,5 @@
-// frontend/src/app/(producer)/producer/courses/[id]/page.tsx
 "use client";
+// frontend/src/app/(producer)/producer/courses/[id]/page.tsx
 
 import { useState } from "react";
 import { useParams } from "next/navigation";
@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils/cn";
 import {
   BookOpen, Plus, ChevronDown, ChevronUp, ChevronLeft,
   Pencil, Eye, EyeOff, GripVertical, Video, Clock, Trash2, FileText, CheckCircle2,
-  ExternalLink, Sparkles, BookOpenCheck, CheckCheck, X as XIcon,
+  ExternalLink, Sparkles, BookOpenCheck, CheckCheck, X as XIcon, Calendar,
 } from "lucide-react";
 import Link from "next/link";
 import { QUERY_KEYS } from "@/lib/constants/queryKeys";
@@ -31,11 +31,10 @@ type EditLessonState = { open: boolean; lesson: any | null };
 type LessonQuestionsState = { open: boolean; lessonId: string; lessonTitle: string };
 type ConfirmDelete = { open: boolean; type: "subject" | "module" | "lesson"; id: string; name: string; parentCount?: number } | null;
 
-// Estado do modal de criar aula — suporta fase 2 (PDF) após criação
 type LessonModalState = {
   open: boolean;
   moduleId: string;
-  createdLessonId?: string;   // presente na fase 2
+  createdLessonId?: string;
   createdTitle?: string;
 };
 
@@ -100,7 +99,6 @@ export default function ProducerCourseDetailPage() {
     onSuccess: (data, variables) => {
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) });
       if (data?.lesson?.id) {
-        // Fase 2: mantém o modal aberto mas muda para tela de PDF
         setLessonModal({
           open: true,
           moduleId: variables.moduleId,
@@ -164,7 +162,7 @@ export default function ProducerCourseDetailPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) }),
   });
 
-  // ── Mutations: excluir ──────────────────────────────────────────────────────
+  // ── Mutations: IA + excluir ─────────────────────────────────────────────────
 
   const generateLessonQuestions = useMutation({
     mutationFn: ({ lessonId, count, difficulty }: { lessonId: string; count: number; difficulty: string }) =>
@@ -247,7 +245,7 @@ export default function ProducerCourseDetailPage() {
   return (
     <div className="space-y-5 animate-fade-in max-w-4xl">
 
-      {/* Header */}
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <Link href="/producer/courses">
@@ -263,7 +261,17 @@ export default function ProducerCourseDetailPage() {
             <p className="text-sm text-muted-foreground mt-0.5">Gerencie o conteúdo do curso</p>
           </div>
         </div>
+
+        {/* Ações do header */}
         <div className="flex items-center gap-2">
+          {/* ── NOVO: botão de cronograma do produtor ── */}
+          <Link href={`/producer/courses/${courseId}/schedule`}>
+            <Button variant="outline" size="sm" className="gap-1.5">
+              <Calendar className="h-3.5 w-3.5" />
+              Cronograma
+            </Button>
+          </Link>
+
           <Link href={`/producer/courses/${courseId}/edit`}>
             <Button variant="outline" size="sm">
               <Pencil className="h-3.5 w-3.5 mr-1.5" />Editar Curso
@@ -275,7 +283,7 @@ export default function ProducerCourseDetailPage() {
         </div>
       </div>
 
-      {/* Stats */}
+      {/* ── Stats ──────────────────────────────────────────────────────────── */}
       <div className="grid grid-cols-3 gap-3">
         {[
           { label: "Disciplinas", value: subjects.length },
@@ -291,7 +299,7 @@ export default function ProducerCourseDetailPage() {
         ))}
       </div>
 
-      {/* Árvore */}
+      {/* ── Árvore de conteúdo ─────────────────────────────────────────────── */}
       {subjects.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center">
@@ -304,6 +312,7 @@ export default function ProducerCourseDetailPage() {
         <div className="space-y-3">
           {subjects.map((subject: any) => (
             <Card key={subject.id} className="overflow-hidden">
+              {/* Disciplina */}
               <div className="w-full p-4 flex items-center gap-3 hover:bg-accent/50 transition-colors">
                 <div role="button" tabIndex={0}
                   onClick={() => setExpandedSubjects(prev => {
@@ -343,6 +352,7 @@ export default function ProducerCourseDetailPage() {
                   )}
                   {(subject.modules || []).map((module: any) => (
                     <div key={module.id} className="border-b border-border last:border-0">
+                      {/* Módulo */}
                       <div className="w-full px-5 py-3 flex items-center gap-3 hover:bg-accent/30 transition-colors group">
                         <div role="button" tabIndex={0}
                           onClick={() => setExpandedModules(prev => {
@@ -387,13 +397,11 @@ export default function ProducerCourseDetailPage() {
                               {lesson.material_url && (
                                 <span title="Tem PDF"><FileText className="h-3 w-3 text-destructive shrink-0" /></span>
                               )}
-
                               {lesson.external_url && (
                                 <span title="Aula externa (Hotmart/Kiwify)">
                                   <ExternalLink className="h-3 w-3 text-orange-500 shrink-0" />
                                 </span>
                               )}
-
                               {lesson.duration_minutes > 0 && (
                                 <span className="text-xs text-muted-foreground flex items-center gap-0.5">
                                   <Clock className="h-3 w-3" />{lesson.duration_minutes}min
@@ -437,7 +445,7 @@ export default function ProducerCourseDetailPage() {
         </div>
       )}
 
-      {/* ── Modal: Questões da Aula com IA ── */}
+      {/* ── Modal: Questões da Aula com IA ──────────────────────────────────── */}
       <LessonQuestionsModal
         open={lessonQuestionsModal.open}
         lessonId={lessonQuestionsModal.lessonId}
@@ -449,7 +457,7 @@ export default function ProducerCourseDetailPage() {
         isGenerating={generateLessonQuestions.isPending}
       />
 
-      {/* ── Modal: Confirmação de exclusão ── */}
+      {/* ── Modal: Confirmação de exclusão ──────────────────────────────────── */}
       <Dialog open={!!confirmDelete?.open} onOpenChange={v => { if (!v) setConfirmDelete(null); }}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
@@ -483,7 +491,7 @@ export default function ProducerCourseDetailPage() {
         </DialogContent>
       </Dialog>
 
-      {/* ── Modais: Criar ── */}
+      {/* ── Modais: Criar ───────────────────────────────────────────────────── */}
       <SubjectModal open={subjectModal} title="Nova Disciplina"
         onClose={() => setSubjectModal(false)}
         onSubmit={d => createSubject.mutate(d)}
@@ -494,7 +502,6 @@ export default function ProducerCourseDetailPage() {
         onSubmit={name => createModule.mutate({ subjectId: moduleModal.subjectId, name })}
         loading={createModule.isPending} />
 
-      {/* Modal criar aula — dois modos: fase 1 (form) e fase 2 (PDF) no mesmo modal */}
       <CreateLessonModal
         open={lessonModal.open}
         createdLessonId={lessonModal.createdLessonId}
@@ -514,7 +521,7 @@ export default function ProducerCourseDetailPage() {
         onVideoSaved={() => queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) })}
       />
 
-      {/* ── Modais: Editar ── */}
+      {/* ── Modais: Editar ──────────────────────────────────────────────────── */}
       <SubjectModal open={editSubject.open} title="Editar Disciplina"
         initialData={editSubject.subject ? { name: editSubject.subject.name, color: editSubject.subject.color, edital_weight: editSubject.subject.edital_weight } : undefined}
         onClose={() => setEditSubject({ open: false, subject: null })}
@@ -561,7 +568,7 @@ export default function ProducerCourseDetailPage() {
   );
 }
 
-// ── Modal criar aula (dois modos: form → PDF no mesmo dialog) ─────────────────
+// ── Modal criar aula (dois modos: form → PDF) ─────────────────────────────────
 
 function CreateLessonModal({ open, createdLessonId, createdTitle, loading, hasVideoHosting, onClose, onSubmit, onPdfUploaded, onVideoSaved }: {
   open: boolean;
@@ -596,7 +603,6 @@ function CreateLessonModal({ open, createdLessonId, createdTitle, loading, hasVi
           </DialogTitle>
         </DialogHeader>
 
-        {/* Fase 1: formulário */}
         {!createdLessonId && (
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
             <div className="space-y-1.5">
@@ -607,66 +613,39 @@ function CreateLessonModal({ open, createdLessonId, createdTitle, loading, hasVi
               <label className="text-sm font-medium">Duração (minutos)</label>
               <Input {...register("duration_minutes", { valueAsNumber: true })} type="number" min="0" />
             </div>
-
-            {/* Divider */}
             <div className="relative">
-              <div className="absolute inset-0 flex items-center">
-                <span className="w-full border-t border-border" />
-              </div>
+              <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-border" /></div>
               <div className="relative flex justify-center text-xs uppercase">
                 <span className="bg-background px-2 text-muted-foreground">Conteúdo</span>
               </div>
             </div>
-
-            {/* Vídeo interno */}
             <div className="space-y-1.5">
               <label className="text-sm font-medium">URL do vídeo</label>
-              <Input
-                {...register("video_url")}
-                placeholder="YouTube, Vimeo ou link direto"
-                disabled={!!externalUrl}
-                className={externalUrl ? "opacity-50" : ""}
-              />
+              <Input {...register("video_url")} placeholder="YouTube, Vimeo ou link direto"
+                disabled={!!externalUrl} className={externalUrl ? "opacity-50" : ""} />
               <p className="text-[10px] text-muted-foreground">Para vídeos no YouTube, Vimeo ou S3.</p>
             </div>
-
-            {/* ─ OU ─ */}
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <div className="flex-1 h-px bg-border" />
-              <span className="uppercase font-medium">ou</span>
-              <div className="flex-1 h-px bg-border" />
+              <div className="flex-1 h-px bg-border" /><span className="uppercase font-medium">ou</span><div className="flex-1 h-px bg-border" />
             </div>
-
-            {/* URL externa */}
             <div className="space-y-1.5">
               <label className="text-sm font-medium flex items-center gap-1.5">
                 URL externa
-                <span className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded-full font-normal">
-                  Hotmart / Kiwify
-                </span>
+                <span className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded-full font-normal">Hotmart / Kiwify</span>
               </label>
-              <Input
-                {...register("external_url")}
-                placeholder="https://go.hotmart.com/..."
-                disabled={!!videoUrl}
-                className={videoUrl ? "opacity-50" : ""}
-              />
-              <p className="text-[10px] text-muted-foreground">
-                O aluno verá um botão para acessar na plataforma externa.
-              </p>
+              <Input {...register("external_url")} placeholder="https://go.hotmart.com/..."
+                disabled={!!videoUrl} className={videoUrl ? "opacity-50" : ""} />
+              <p className="text-[10px] text-muted-foreground">O aluno verá um botão para acessar na plataforma externa.</p>
             </div>
-
             {!!externalUrl && !!videoUrl && (
               <div className="p-3 rounded-lg bg-warning/10 border border-warning/30 text-xs text-warning">
                 ⚠️ Preencha apenas um. Quando ambos preenchidos, a URL externa tem prioridade.
               </div>
             )}
-
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" {...register("is_free_preview")} className="rounded" />
               <span className="text-sm text-foreground">Aula gratuita (preview)</span>
             </label>
-
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={handleClose}>Cancelar</Button>
               <Button type="submit" disabled={loading}>{loading ? "Criando..." : "Criar Aula"}</Button>
@@ -674,29 +653,22 @@ function CreateLessonModal({ open, createdLessonId, createdTitle, loading, hasVi
           </form>
         )}
 
-        {/* Fase 2: upload PDF opcional */}
-
         {createdLessonId && (
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">
               <strong className="text-foreground">"{createdTitle}"</strong> foi criada.
               Adicione conteúdo opcional abaixo.
             </p>
-
             {hasVideoHosting && (
               <div className="space-y-1.5">
                 <label className="text-sm font-medium">Vídeo hospedado (opcional)</label>
                 <VideoUploader lessonId={createdLessonId} isHosted={false} onSaved={onVideoSaved} />
               </div>
             )}
-
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Material de Apoio (PDF)</label>
-              <PdfUploader
-                lessonId={createdLessonId}
-                currentUrl={null}
-                onUploaded={(url) => { if (url) onPdfUploaded(); }}
-              />
+              <PdfUploader lessonId={createdLessonId} currentUrl={null}
+                onUploaded={(url) => { if (url) onPdfUploaded(); }} />
             </div>
             <DialogFooter>
               <Button variant="ghost" onClick={handleClose}>Pular por agora</Button>
@@ -785,27 +757,14 @@ function SimpleModal({ open, onClose, title, placeholder, initialValue, onSubmit
 }
 
 function LessonModal({ open, title, initialData, lessonId, hasVideoHosting, onClose, onSubmit, onVideoSaved, loading }: {
-  open: boolean;
-  title: string;
-  lessonId?: string;
-  hasVideoHosting: boolean;
+  open: boolean; title: string; lessonId?: string; hasVideoHosting: boolean;
   initialData?: {
-    title: string;
-    duration_minutes: number;
-    video_url: string;
-    is_free_preview?: boolean;
-    material_url?: string | null;
-    external_url?: string | null;
-    video_hosted?: boolean;
+    title: string; duration_minutes: number; video_url: string;
+    is_free_preview?: boolean; material_url?: string | null;
+    external_url?: string | null; video_hosted?: boolean;
   };
   onClose: () => void;
-  onSubmit: (d: {
-    title: string;
-    duration_minutes: number;
-    video_url: string;
-    is_free_preview?: boolean;
-    external_url?: string | null;
-  }) => void;
+  onSubmit: (d: { title: string; duration_minutes: number; video_url: string; is_free_preview?: boolean; external_url?: string | null }) => void;
   onVideoSaved: () => void;
   loading: boolean;
 }) {
@@ -814,14 +773,12 @@ function LessonModal({ open, title, initialData, lessonId, hasVideoHosting, onCl
       title: initialData?.title || "",
       duration_minutes: initialData?.duration_minutes || 30,
       video_url: initialData?.video_url || "",
-      external_url: initialData?.external_url || "",  // ← NOVO
+      external_url: initialData?.external_url || "",
       is_free_preview: initialData?.is_free_preview || false,
     },
   });
 
   const handleClose = () => { onClose(); reset(); };
-
-  // Detecta se URL externa está preenchida para mostrar aviso
   const externalUrl = watch("external_url");
   const videoUrl = watch("video_url");
   const hasConflict = !!externalUrl && !!videoUrl;
@@ -830,125 +787,77 @@ function LessonModal({ open, title, initialData, lessonId, hasVideoHosting, onCl
     <Dialog open={open} onOpenChange={v => { if (!v) handleClose(); }}>
       <DialogContent className="max-w-md">
         <DialogHeader><DialogTitle>{title}</DialogTitle></DialogHeader>
-
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-          {/* Título */}
           <div className="space-y-1.5">
             <label className="text-sm font-medium">Título</label>
             <Input {...register("title", { required: true })} placeholder="Ex: Introdução ao tema" />
           </div>
-
-          {/* Duração */}
           <div className="space-y-1.5">
             <label className="text-sm font-medium">Duração (minutos)</label>
             <Input {...register("duration_minutes", { valueAsNumber: true })} type="number" min="0" />
           </div>
-
-          {/* Divider: vídeo interno OU externo */}
           <div className="relative">
-            <div className="absolute inset-0 flex items-center">
-              <span className="w-full border-t border-border" />
-            </div>
+            <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-border" /></div>
             <div className="relative flex justify-center text-xs uppercase">
               <span className="bg-background px-2 text-muted-foreground">Conteúdo</span>
             </div>
           </div>
-
-          {/* URL do vídeo interno */}
           <div className="space-y-1.5">
             <label className="text-sm font-medium">URL do vídeo</label>
-            <Input
-              {...register("video_url")}
-              placeholder="YouTube, Vimeo ou link direto"
-              disabled={!!externalUrl}
-              className={externalUrl ? "opacity-50" : ""}
-            />
-            <p className="text-[10px] text-muted-foreground">
-              Para vídeos hospedados no YouTube, Vimeo ou S3.
-            </p>
+            <Input {...register("video_url")} placeholder="YouTube, Vimeo ou link direto"
+              disabled={!!externalUrl} className={externalUrl ? "opacity-50" : ""} />
+            <p className="text-[10px] text-muted-foreground">Para vídeos hospedados no YouTube, Vimeo ou S3.</p>
           </div>
-
-          {/* ─ OU ─ */}
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <div className="flex-1 h-px bg-border" />
-            <span className="uppercase font-medium">ou</span>
-            <div className="flex-1 h-px bg-border" />
+            <div className="flex-1 h-px bg-border" /><span className="uppercase font-medium">ou</span><div className="flex-1 h-px bg-border" />
           </div>
-
-          {/* URL externa (Hotmart, Kiwify etc.) */}
           <div className="space-y-1.5">
             <label className="text-sm font-medium flex items-center gap-1.5">
               URL externa
-              <span className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded-full font-normal">
-                Hotmart / Kiwify
-              </span>
+              <span className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded-full font-normal">Hotmart / Kiwify</span>
             </label>
-            <Input
-              {...register("external_url")}
-              placeholder="https://go.hotmart.com/..."
-              disabled={!!videoUrl}
-              className={videoUrl ? "opacity-50" : ""}
-            />
-            <p className="text-[10px] text-muted-foreground">
-              Quando preenchido, o aluno verá um botão para acessar a aula na plataforma externa.
-            </p>
+            <Input {...register("external_url")} placeholder="https://go.hotmart.com/..."
+              disabled={!!videoUrl} className={videoUrl ? "opacity-50" : ""} />
+            <p className="text-[10px] text-muted-foreground">Quando preenchido, o aluno verá um botão para acessar a aula na plataforma externa.</p>
           </div>
-
-          {/* Aviso de conflito */}
           {hasConflict && (
             <div className="p-3 rounded-lg bg-warning/10 border border-warning/30 text-xs text-warning">
-              ⚠️ Preencha apenas um: vídeo interno <strong>ou</strong> URL externa. Quando ambos estão preenchidos, a URL externa tem prioridade.
+              ⚠️ Preencha apenas um: vídeo interno <strong>ou</strong> URL externa. Quando ambos preenchidos, a URL externa tem prioridade.
             </div>
           )}
-
-          {/* Preview gratuito */}
           <label className="flex items-center gap-2 cursor-pointer">
             <input type="checkbox" {...register("is_free_preview")} className="rounded" />
             <span className="text-sm text-foreground">Aula gratuita (preview)</span>
           </label>
-
-          {/* Aviso de Hospedagem */}
           {hasVideoHosting && lessonId && (
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Vídeo hospedado</label>
               {!initialData?.video_hosted && (
-                <p className="text-xs text-muted-foreground">
-                  Ao hospedar, o link externo acima será removido automaticamente.
-                </p>
+                <p className="text-xs text-muted-foreground">Ao hospedar, o link externo acima será removido automaticamente.</p>
               )}
-              <VideoUploader
-                lessonId={lessonId}
-                isHosted={initialData?.video_hosted}
-                onSaved={onVideoSaved}
-              />
+              <VideoUploader lessonId={lessonId} isHosted={initialData?.video_hosted} onSaved={onVideoSaved} />
             </div>
           )}
-
-          {/* PDF */}
           {lessonId && (
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Material de Apoio (PDF)</label>
               <PdfUploader lessonId={lessonId} currentUrl={initialData?.material_url} onUploaded={() => { }} />
             </div>
           )}
-
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={handleClose}>Cancelar</Button>
-            <Button type="submit" disabled={loading}>
-              {loading ? "Salvando..." : "Salvar"}
-            </Button>
+            <Button type="submit" disabled={loading}>{loading ? "Salvando..." : "Salvar"}</Button>
           </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
   );
 }
-// ═══════════════════════════════════════════════════════════════════════════
-// Modal de Questões da Aula com IA
-// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Modal de Questões da Aula com IA ─────────────────────────────────────────
+
 function LessonQuestionsModal({
-  open, lessonId, lessonTitle, onClose,
-  onGenerate, onApprove, onDelete, isGenerating,
+  open, lessonId, lessonTitle, onClose, onGenerate, onApprove, onDelete, isGenerating,
 }: {
   open: boolean; lessonId: string; lessonTitle: string; onClose: () => void;
   onGenerate: (count: number, difficulty: string) => void;
@@ -963,14 +872,12 @@ function LessonQuestionsModal({
     queryKey: ["lesson-questions", lessonId],
     queryFn: () => apiClient.get(`/courses/lessons/${lessonId}/questions`).then(r => r.data),
     enabled: open && !!lessonId,
-    refetchInterval: 8000, // auto-refresh enquanto processa
+    refetchInterval: 8000,
   });
 
   const questions = data?.questions || [];
   const pending = questions.filter((q: any) => !q.is_reviewed);
   const approved = questions.filter((q: any) => q.is_reviewed);
-
-  const diffLabel: Record<string, string> = { easy: "Fácil", medium: "Médio", hard: "Difícil" };
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose(); }}>
@@ -988,33 +895,22 @@ function LessonQuestionsModal({
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
               <label className="text-xs text-muted-foreground">Quantidade</label>
-              <select
-                value={count}
-                onChange={e => setCount(Number(e.target.value))}
-                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-              >
+              <select value={count} onChange={e => setCount(Number(e.target.value))}
+                className="h-8 rounded-md border border-input bg-background px-2 text-xs">
                 {[1, 2, 3, 5, 8, 10].map(n => <option key={n} value={n}>{n}</option>)}
               </select>
             </div>
             <div className="flex items-center gap-2">
               <label className="text-xs text-muted-foreground">Dificuldade</label>
-              <select
-                value={difficulty}
-                onChange={e => setDifficulty(e.target.value)}
-                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-              >
+              <select value={difficulty} onChange={e => setDifficulty(e.target.value)}
+                className="h-8 rounded-md border border-input bg-background px-2 text-xs">
                 <option value="easy">Fácil</option>
                 <option value="medium">Médio</option>
                 <option value="hard">Difícil</option>
               </select>
             </div>
-
-            <Button
-              size="sm"
-              onClick={() => onGenerate(count, difficulty)}
-              disabled={isGenerating}
-              className="bg-purple-600 hover:bg-purple-700 text-white ml-auto"
-            >
+            <Button size="sm" onClick={() => onGenerate(count, difficulty)} disabled={isGenerating}
+              className="bg-purple-600 hover:bg-purple-700 text-white ml-auto">
               <Sparkles className="h-3.5 w-3.5 mr-1.5" />
               {isGenerating ? "Iniciando..." : "Gerar com IA"}
             </Button>
@@ -1031,58 +927,38 @@ function LessonQuestionsModal({
           </p>
         </div>
 
-        {/* Loading */}
         {isLoading && (
           <div className="space-y-2">
             {[1, 2].map(i => <div key={i} className="h-20 rounded-lg bg-muted animate-pulse" />)}
           </div>
         )}
 
-        {/* Pendentes de revisão */}
         {!isLoading && pending.length > 0 && (
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <p className="text-sm font-medium text-foreground">Aguardando revisão</p>
-              <Badge variant="outline" className="text-xs text-amber-600 border-amber-300 bg-amber-50">
-                {pending.length}
-              </Badge>
+              <Badge variant="outline" className="text-xs text-amber-600 border-amber-300 bg-amber-50">{pending.length}</Badge>
             </div>
             {pending.map((q: any) => (
-              <QuestionCard
-                key={q.id}
-                question={q}
-                isPending={true}
-                lessonId={lessonId}
-                onApprove={() => onApprove(q.id)}
-                onDelete={() => onDelete(q.id)}
-              />
+              <QuestionCard key={q.id} question={q} isPending={true} lessonId={lessonId}
+                onApprove={() => onApprove(q.id)} onDelete={() => onDelete(q.id)} />
             ))}
           </div>
         )}
 
-        {/* Aprovadas */}
         {!isLoading && approved.length > 0 && (
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <p className="text-sm font-medium text-foreground">Publicadas para alunos</p>
-              <Badge variant="outline" className="text-xs text-green-600 border-green-300 bg-green-50">
-                {approved.length}
-              </Badge>
+              <Badge variant="outline" className="text-xs text-green-600 border-green-300 bg-green-50">{approved.length}</Badge>
             </div>
             {approved.map((q: any) => (
-              <QuestionCard
-                key={q.id}
-                question={q}
-                isPending={false}
-                lessonId={lessonId}
-                onApprove={() => { }}
-                onDelete={() => onDelete(q.id)}
-              />
+              <QuestionCard key={q.id} question={q} isPending={false} lessonId={lessonId}
+                onApprove={() => { }} onDelete={() => onDelete(q.id)} />
             ))}
           </div>
         )}
 
-        {/* Vazio */}
         {!isLoading && questions.length === 0 && (
           <div className="py-10 text-center">
             <BookOpenCheck className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
@@ -1153,15 +1029,11 @@ function QuestionCard({ question, isPending, lessonId, onApprove, onDelete }: {
 
       <div className="flex items-center gap-2 pt-1">
         {isPending && (
-          <Button size="sm" variant="outline"
-            className="h-7 text-xs text-green-700 border-green-300 hover:bg-green-50"
-            onClick={onApprove}>
+          <Button size="sm" variant="outline" className="h-7 text-xs text-green-700 border-green-300 hover:bg-green-50" onClick={onApprove}>
             <CheckCheck className="h-3 w-3 mr-1" />Aprovar
           </Button>
         )}
-        <Button size="sm" variant="ghost"
-          className="h-7 text-xs text-destructive hover:bg-destructive/10"
-          onClick={onDelete}>
+        <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive hover:bg-destructive/10" onClick={onDelete}>
           <XIcon className="h-3 w-3 mr-1" />Remover
         </Button>
         {!isPending && (
@@ -1170,9 +1042,7 @@ function QuestionCard({ question, isPending, lessonId, onApprove, onDelete }: {
           </span>
         )}
         {isPending && (
-          <span className="text-xs text-amber-600 flex items-center gap-1 ml-auto">
-            Pendente de revisão
-          </span>
+          <span className="text-xs text-amber-600 flex items-center gap-1 ml-auto">Pendente de revisão</span>
         )}
       </div>
     </div>

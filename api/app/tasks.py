@@ -368,21 +368,11 @@ def generate_lesson_questions_task(
         is_youtube = lesson.video_url and (
             "youtube.com" in lesson.video_url or "youtu.be" in lesson.video_url
         )
+        source_used = "youtube_native" if is_youtube else "context"
 
-        if is_youtube:
-            logger.info(
-                f"generate_lesson_questions_task: tentando transcrição YouTube para aula {lesson_id}"
-            )
-            transcript = svc.fetch_youtube_transcript(lesson.video_url)
-            if transcript:
-                source_used = "youtube_transcript"
-                logger.info(
-                    f"generate_lesson_questions_task: transcrição obtida ({len(transcript)} chars)"
-                )
-            else:
-                logger.warning(
-                    f"generate_lesson_questions_task: transcrição não disponível, usando fallback"
-                )
+        logger.info(
+            f"generate_lesson_questions_task: iniciando geração para aula {lesson_id} (source: {source_used})"
+        )
 
         # ── Monta contexto fallback (título + descrição + resumo + tópicos) ──
         context_parts = [f"Título da aula: {lesson.title}"]

@@ -1,11 +1,13 @@
-// frontend/src/app/(student)/schedule/page.tsx
 "use client";
+// frontend/src/app/(student)/schedule/page.tsx
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { scheduleApi } from "@/lib/api/schedule";
 import { apiClient } from "@/lib/api/client";
+import { studentScheduleTemplateApi } from "@/lib/api/producer-schedule";
+import { ProducerTemplateChoice, buildQuestionsUrl } from "@/components/schedule/ProducerTemplateChoice";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -21,38 +23,28 @@ import {
 const DAYS_PT = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 
 // ── Redirecionamento inteligente por tipo de item ─────────────────────────────
-//
-// lesson    → /courses/[courseId]/lessons/[lessonId]
-// review    → /courses/[courseId]/lessons/[lessonId]  (mesma aula, contexto revisão)
-//             se não tiver lesson_id → /questions?subject_id=X&previously_wrong=true
-// questions → /questions?subject_id=X  (filtrado pela disciplina do item)
-// simulado  → /simulados
-
+// Suporta question_filters do cronograma do produtor
 function buildItemUrl(item: any, courseId: string): string {
   switch (item.item_type) {
     case "lesson":
-      if (item.lesson?.id) {
-        return `/courses/${courseId}/lessons/${item.lesson.id}`;
-      }
+      if (item.lesson?.id) return `/courses/${courseId}/lessons/${item.lesson.id}`;
       return `/courses/${courseId}`;
 
     case "review":
-      // Revisão de aula específica → vai para a aula
-      if (item.lesson?.id) {
-        return `/courses/${courseId}/lessons/${item.lesson.id}`;
+      // Revisão com filtros pré-setados pelo produtor
+      if (item.question_filters) {
+        return buildQuestionsUrl(item.question_filters, item.subject?.id);
       }
-      // Revisão de disciplina → questões já erradas nessa disciplina
-      if (item.subject?.id) {
-        return `/questions?subject_id=${item.subject.id}&previously_wrong=true`;
-      }
+      if (item.lesson?.id) return `/courses/${courseId}/lessons/${item.lesson.id}`;
+      if (item.subject?.id) return `/questions?subject_id=${item.subject.id}&previously_wrong=true`;
       return `/questions`;
 
     case "questions":
-      // Filtra por disciplina e por questões não respondidas (prioridade)
-      // ou erradas anteriormente
-      if (item.subject?.id) {
-        return `/questions?subject_id=${item.subject.id}&not_answered=true`;
+      // Questões com filtros pré-setados pelo produtor
+      if (item.question_filters) {
+        return buildQuestionsUrl(item.question_filters, item.subject?.id);
       }
+      if (item.subject?.id) return `/questions?subject_id=${item.subject.id}&not_answered=true`;
       return `/questions`;
 
     case "simulado":
@@ -73,7 +65,7 @@ function itemActionLabel(item: any): string {
   }
 }
 
-// ── Wizard ────────────────────────────────────────────────────────────────────
+// ── Wizard de criação de cronograma IA ───────────────────────────────────────
 
 function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerated: () => void }) {
   const [step, setStep] = useState(1);
@@ -226,13 +218,63 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
           </div>
           <div className="flex gap-2">
             <Button variant="outline" className="flex-1" onClick={() => setStep(3)}>Voltar</Button>
-            <Button className="flex-1" loading={saveMutation.isPending} onClick={() => saveMutation.mutate()}>
+            <Button className="flex-1" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}>
               <Sparkles className="h-4 w-4" />
-              Gerar Cronograma
+              {saveMutation.isPending ? "Gerando..." : "Gerar Cronograma"}
             </Button>
           </div>
         </CardContent></Card>
       )}
+    </div>
+  );
+}
+
+// ── Tela inicial: escolha entre template do professor ou cronograma IA ────────
+// Exibida quando o aluno ainda não tem cronograma para o curso.
+// Fluxo:
+//   1. Consulta se há template publicado para o curso
+//   2. Se sim → exibe ProducerTemplateChoice (adotar ou criar próprio)
+//   3. Se não (ou se aluno escolheu "criar próprio") → exibe ScheduleWizard
+
+function ScheduleStartView({ courseId, onGenerated }: { courseId: string; onGenerated: () => void }) {
+  const [forceAI, setForceAI] = useState(false);
+  const queryClient = useQueryClient();
+
+  const { data: templateData, isLoading: templateLoading } = useQuery({
+    queryKey: ["course-template", courseId],
+    queryFn: () => studentScheduleTemplateApi.getCourseTemplate(courseId),
+    enabled: !forceAI,
+  });
+
+  // Enquanto carrega, exibe skeleton
+  if (templateLoading && !forceAI) {
+    return (
+      <div className="max-w-lg mx-auto space-y-4">
+        <div className="h-32 rounded-xl bg-muted animate-pulse" />
+        <div className="h-14 rounded-xl bg-muted animate-pulse" />
+      </div>
+    );
+  }
+
+  const hasPublishedTemplate = !forceAI && !!templateData?.template;
+
+  // Sem template publicado → vai direto para o wizard de criação IA
+  if (!hasPublishedTemplate || forceAI) {
+    return <ScheduleWizard courseId={courseId} onGenerated={onGenerated} />;
+  }
+
+  // Tem template → exibe a tela de escolha
+  return (
+    <div className="max-w-lg mx-auto">
+      <ProducerTemplateChoice
+        courseId={courseId}
+        onAdopted={() => {
+          queryClient.invalidateQueries({ queryKey: ["schedule", courseId] });
+          queryClient.invalidateQueries({ queryKey: ["schedule-check", courseId] });
+          onGenerated();
+        }}
+        onChooseAI={() => setForceAI(true)}
+      />
     </div>
   );
 }
@@ -259,20 +301,17 @@ function ScheduleItemRow({ item, courseId, onCheckin, loading }: {
   const cfg = typeConfig[item.item_type] || typeConfig.lesson;
   const Icon = cfg.icon;
 
-  const destination = buildItemUrl(item, courseId);
-  const actionLabel = itemActionLabel(item);
-
-  const handleStart = () => {
-    router.push(destination);
-  };
-
-  // Título do item
+  // Título: prioridade para título do template do professor, depois título da aula, depois padrão
   const title =
-    item.lesson?.title
+    item.template_item_title
+    || item.lesson?.title
     || (item.item_type === "questions" ? `Questões — ${item.subject?.name || "Geral"}` : null)
     || (item.item_type === "review" ? `Revisão — ${item.subject?.name || "Geral"}` : null)
     || (item.item_type === "simulado" ? "Simulado de verificação" : null)
     || "Estudar";
+
+  const destination = buildItemUrl(item, courseId);
+  const actionLabel = itemActionLabel(item);
 
   return (
     <div className={cn(
@@ -319,17 +358,46 @@ function ScheduleItemRow({ item, courseId, onCheckin, loading }: {
           )}
         </div>
 
-        {item.priority_reason && (
+        {/* Nota do professor (template do produtor) */}
+        {item.template_item_notes && (
+          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mt-1.5">
+            📌 {item.template_item_notes}
+          </p>
+        )}
+
+        {/* Dica da IA (cronograma adaptativo) */}
+        {item.priority_reason && !item.template_item_notes && (
           <p className="text-xs text-muted-foreground mt-1 italic">
             💡 {item.priority_reason}
           </p>
         )}
 
-        {/* Botão de ação com redirecionamento inteligente */}
+        {/* Filtros aplicados (questões/revisão do template) */}
+        {(item.item_type === "questions" || item.item_type === "review") && item.question_filters && (
+          <div className="flex flex-wrap gap-1 mt-1.5">
+            {item.question_filters.difficulty && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground border">
+                {({ easy: "Fácil", medium: "Médio", hard: "Difícil", expert: "Expert" } as any)[item.question_filters.difficulty] || item.question_filters.difficulty}
+              </span>
+            )}
+            {item.question_filters.quantity && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground border">
+                {item.question_filters.quantity} questões
+              </span>
+            )}
+            {item.question_filters.tags?.slice(0, 2).map((tag: string) => (
+              <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/20">
+                {tag}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* Botões de ação */}
         {!isDoneOrSkipped && (
           <div className="flex items-center gap-2 mt-2">
             <button
-              onClick={handleStart}
+              onClick={() => router.push(destination)}
               className="flex items-center gap-1.5 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
             >
               <Play className="h-3 w-3" />
@@ -398,6 +466,7 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
 
   const days = data?.days || [];
   const stats = data?.stats;
+  const isProducerTemplate = data?.schedule?.source_type === "producer_template";
 
   const formatDate = (dateStr: string) => {
     const d = new Date(dateStr + "T12:00:00");
@@ -421,20 +490,41 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
       <div className="flex items-center justify-between">
         <div>
           <h1 className="font-display text-2xl font-bold text-foreground">Cronograma</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">Adaptativo · atualiza com seu desempenho</p>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            {isProducerTemplate
+              ? "Cronograma do professor · adaptado à sua disponibilidade"
+              : "Adaptativo · atualiza com seu desempenho"}
+          </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => reorganizeMutation.mutate()} loading={reorganizeMutation.isPending}>
-            <RefreshCw className="h-4 w-4" />
-            Reorganizar
-          </Button>
-          <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive"
+          {/* Reorganizar só disponível para cronograma IA */}
+          {!isProducerTemplate && (
+            <Button variant="outline" size="sm" onClick={() => reorganizeMutation.mutate()} disabled={reorganizeMutation.isPending}>
+              <RefreshCw className="h-4 w-4" />
+              Reorganizar
+            </Button>
+          )}
+          <Button
+            variant="ghost" size="sm"
+            className="text-destructive hover:text-destructive"
             onClick={() => { if (confirm("Deletar o cronograma?")) deleteMutation.mutate(); }}
-            loading={deleteMutation.isPending}>
+            disabled={deleteMutation.isPending}
+          >
             Deletar
           </Button>
         </div>
       </div>
+
+      {/* Badge: cronograma do professor */}
+      {isProducerTemplate && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/5 border border-primary/20">
+          <Calendar className="h-4 w-4 text-primary shrink-0" />
+          <p className="text-xs text-muted-foreground">
+            Você está seguindo o <strong className="text-foreground">cronograma do professor</strong>.
+            As datas foram ajustadas para os seus dias de estudo.
+          </p>
+        </div>
+      )}
 
       {/* KPIs */}
       {stats && (
@@ -477,8 +567,8 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
         </div>
       )}
 
-      {/* Alerta de risco alto */}
-      {stats?.abandonment_risk > 0.6 && (
+      {/* Alerta de risco alto (somente cronograma IA) */}
+      {!isProducerTemplate && stats?.abandonment_risk > 0.6 && (
         <div className="flex items-start gap-3 p-4 rounded-xl bg-destructive/10 border border-destructive/20">
           <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
           <div>
@@ -490,8 +580,8 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
         </div>
       )}
 
-      {/* AI notes */}
-      {stats?.ai_notes && (
+      {/* AI notes (somente cronograma IA) */}
+      {!isProducerTemplate && stats?.ai_notes && (
         <div className="flex items-start gap-2 p-3 rounded-xl bg-primary/5 border border-primary/10">
           <Sparkles className="h-4 w-4 text-primary shrink-0 mt-0.5" />
           <p className="text-xs text-muted-foreground">{stats.ai_notes}</p>
@@ -503,7 +593,11 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
         <Card><CardContent className="py-12 text-center">
           <Calendar className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
           <p className="font-semibold text-foreground">Nenhum item nos próximos 14 dias</p>
-          <p className="text-sm text-muted-foreground mt-1">Clique em Reorganizar para gerar novos itens.</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            {isProducerTemplate
+              ? "Você concluiu os itens programados. Parabéns!"
+              : "Clique em Reorganizar para gerar novos itens."}
+          </p>
         </CardContent></Card>
       ) : (
         <div className="space-y-4">
@@ -567,9 +661,8 @@ export default function SchedulePage() {
 
   const courses = coursesData?.courses || [];
 
-  useEffect(() => {
-    if (courses.length > 0 && !courseId) setCourseId(courses[0].id);
-  }, [courses, courseId]);
+  // Seleciona primeiro curso automaticamente
+  if (courses.length > 0 && !courseId) setCourseId(courses[0].id);
 
   const { isLoading: checkLoading } = useQuery({
     queryKey: ["schedule-check", courseId],
@@ -590,12 +683,9 @@ export default function SchedulePage() {
     );
   }
 
-  if (!hasSchedule) {
-    return <ScheduleWizard courseId={courseId} onGenerated={() => setHasSchedule(true)} />;
-  }
-
   return (
     <div className="space-y-4">
+      {/* Seletor de curso (se houver mais de 1) */}
       {courses.length > 1 && (
         <div className="flex gap-2 overflow-x-auto pb-1">
           {courses.map((c: any) => (
@@ -612,7 +702,22 @@ export default function SchedulePage() {
           ))}
         </div>
       )}
-      <ScheduleView courseId={courseId} onDelete={() => setHasSchedule(false)} />
+
+      {/* Sem cronograma → tela de escolha (professor ou IA) */}
+      {!hasSchedule && (
+        <ScheduleStartView
+          courseId={courseId}
+          onGenerated={() => setHasSchedule(true)}
+        />
+      )}
+
+      {/* Com cronograma → visualização */}
+      {hasSchedule && (
+        <ScheduleView
+          courseId={courseId}
+          onDelete={() => setHasSchedule(false)}
+        />
+      )}
     </div>
   );
 }

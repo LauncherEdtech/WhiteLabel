@@ -26,6 +26,7 @@ export const ROUTES = {
         COURSES: "/producer/courses",
         COURSE_NEW: "/producer/courses/new",
         COURSE: (id: string) => `/producer/courses/${id}`,
+        COURSE_SCHEDULE: (id: string) => `/producer/courses/${id}/schedule`,
         QUESTIONS: "/producer/questions",
         SIMULADOS: "/producer/simulados",
         STUDENTS: "/producer/students",

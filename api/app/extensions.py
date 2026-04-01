@@ -31,3 +31,4 @@ mail = Mail()
 
 # ── Celery (instância global, configurada na factory) ────────────────────────
 celery_app = Celery(__name__)
+celery_app.conf.include = ["app.tasks"]

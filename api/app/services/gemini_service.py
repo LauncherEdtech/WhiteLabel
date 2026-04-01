@@ -34,7 +34,7 @@ def _get_client():
 
 
 # Modelo estável com suporte nativo a YouTube URL e contexto de 1M tokens
-MODEL = "gemini-3-flash-preview"
+MODEL = "gemini-2.5-flash-lite"
 
 
 class GeminiService:
@@ -58,26 +58,18 @@ class GeminiService:
             logger.error(f"Erro Gemini (_call): {e}")
             return None
 
-    def _call_with_video(
-        self, video_url: str, prompt: str, max_tokens: int = 8192
-    ) -> Optional[str]:
-        """
-        Passa a URL do YouTube diretamente ao Gemini via file_data.
-        O Gemini busca o vídeo nos próprios servidores do Google —
-        sem youtube-transcript-api, sem bloqueio de IP da AWS.
-        Analisa áudio + vídeo nativamente.
-        """
+    def _call_with_video(self, video_url: str, prompt: str, max_tokens: int = 8192) -> Optional[str]:
         if not _GEMINI_AVAILABLE:
+            logger.error("GEMINI INDISPONÍVEL — verifique GEMINI_API_KEY e pacote google-genai")
             return None
+        logger.info(f"Gemini video: url={video_url[:60]} modelo={MODEL}")
         try:
             client = _get_client()
             response = client.models.generate_content(
                 model=MODEL,
                 contents=genai_types.Content(
                     parts=[
-                        genai_types.Part(
-                            file_data=genai_types.FileData(file_uri=video_url)
-                        ),
+                        genai_types.Part(file_data=genai_types.FileData(file_uri=video_url)),
                         genai_types.Part(text=prompt),
                     ]
                 ),
@@ -86,10 +78,12 @@ class GeminiService:
                     temperature=0.3,
                 ),
             )
+            logger.info(f"Gemini respondeu: {len(response.text)} chars")
             return response.text
         except Exception as e:
-            logger.error(f"Erro Gemini (_call_with_video) para {video_url}: {e}")
+            logger.error(f"Erro Gemini _call_with_video: {type(e).__name__}: {e}")
             return None
+
 
     def _parse_json(self, text: str) -> Optional[dict | list]:
         """Extrai JSON de uma resposta do Gemini."""
@@ -517,3 +511,4 @@ APENAS JSON."""
         prompt = f"""Aula "{lesson_title}" com nota {avg_rating}/5 ({low_count}/{total_count} baixas).
 Comentários:\n{comments_text}\nDiagnóstico, problemas e sugestões. Máx 300 palavras."""
         return self._call(prompt, max_tokens=600)
+
