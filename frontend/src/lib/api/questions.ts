@@ -5,6 +5,7 @@ import { Question, AnswerResult } from "@/types/api";
 export const questionsApi = {
   list: async (params?: {
     discipline?: string;
+    topic?: string;
     difficulty?: string;
     exam_board?: string;
     previously_wrong?: boolean;

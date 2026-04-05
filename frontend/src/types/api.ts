@@ -99,6 +99,7 @@ export interface Question {
     exam_year: number | null;
     exam_name: string | null;
     competency: string | null;
+    tip: string | null;                      // Dica/macete gerado pelo Gemini
     alternatives: Alternative[];
     correct_alternative_key?: string;
     correct_justification?: string | null;
@@ -110,19 +111,21 @@ export interface Question {
     };
 }
 
+export interface AnswerAlternative {
+    key: string;
+    text: string;
+    is_correct: boolean;
+    is_chosen: boolean;
+    justification?: string | null;
+}
+
 export interface AnswerResult {
-    result: {
-        is_correct: boolean;
-        chosen_key: string;
-        correct_key: string;
-        response_time_seconds: number | null;
-    };
-    feedback: {
-        correct_justification: string | null;
-        distractor_justification: string | null;
-        correct_alternative_text: string | null;
-    };
-    question_stats: QuestionStats;
+    is_correct: boolean;
+    chosen_key: string;
+    correct_key: string;
+    xp_gained: number;
+    attempt_id: string;
+    alternatives: AnswerAlternative[];
 }
 
 // ── Analytics ─────────────────────────────────────────────────────────────────

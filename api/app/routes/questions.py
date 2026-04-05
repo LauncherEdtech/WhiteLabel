@@ -22,6 +22,7 @@ from app.models.question import (
     QuestionAttempt,
     DifficultyLevel,
     QuestionSourceType,
+    ReviewStatus,
 )
 from app.models.course import Subject
 from app.models.user import UserRole
@@ -43,6 +44,28 @@ def _is_producer_or_above(claims: dict) -> bool:
         UserRole.PRODUCER_ADMIN.value,
         UserRole.PRODUCER_STAFF.value,
     )
+
+
+def _question_access_filter(tenant):
+    """
+    Filtro de acesso a questões levando em conta o banco global.
+    Retorna condição SQLAlchemy que inclui questões próprias do tenant
+    e, se a feature estiver ativa, as questões do banco global aprovadas.
+    """
+    own = and_(
+        Question.tenant_id == tenant.id,
+        Question.is_active == True,
+        Question.is_deleted == False,
+    )
+    if tenant.is_feature_enabled("question_bank_concursos"):
+        global_bank = and_(
+            Question.tenant_id.is_(None),
+            Question.source_type == QuestionSourceType.BANK,
+            Question.review_status == "approved",
+            Question.is_active == True,
+        )
+        return or_(own, global_bank)
+    return own
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -95,7 +118,7 @@ class AnswerSchema(Schema):
 
     chosen_alternative_key = fields.Str(
         required=True,
-        validate=validate.OneOf(["a", "b", "c", "d", "e"]),
+        validate=validate.OneOf(["a", "b", "c", "d", "e", "A", "B", "C", "D", "E"]),
     )
     # Tempo de resposta em segundos — medido no frontend
     response_time_seconds = fields.Int(
@@ -180,13 +203,27 @@ def list_questions():
     except ValidationError as e:
         return jsonify({"error": "validation_error", "details": e.messages}), 400
 
-    # ── Query base: tenant + apenas questões do banco ─────────────────────────
-    query = Question.query.filter_by(
-        tenant_id=tenant.id,
-        is_active=True,
-        is_deleted=False,
-        source_type=QuestionSourceType.BANK,  # ← NUNCA retorna questões de aula aqui
+    # ── Query base: questões do banco visíveis para este tenant ──────────────
+    # Sempre inclui questões próprias (tenant_id = tenant.id, source_type = bank)
+    # Se feature question_bank_concursos habilitada: inclui também o banco global
+    # (tenant_id IS NULL, source_type = bank, review_status = approved)
+    own_bank = and_(
+        Question.tenant_id == tenant.id,
+        Question.source_type == QuestionSourceType.BANK,
+        Question.is_active == True,
+        Question.is_deleted == False,
     )
+
+    if tenant.is_feature_enabled("question_bank_concursos"):
+        global_bank = and_(
+            Question.tenant_id.is_(None),
+            Question.source_type == QuestionSourceType.BANK,
+            Question.review_status == "approved",
+            Question.is_active == True,
+        )
+        query = Question.query.filter(or_(own_bank, global_bank))
+    else:
+        query = Question.query.filter(own_bank)
 
     # ── Filtros de metadados ──────────────────────────────────────────────────
     if filters.get("subject_id"):
@@ -408,11 +445,9 @@ def get_question(question_id: str):
     claims = get_jwt()
     user_id = get_jwt_identity()
 
-    question = Question.query.filter_by(
-        id=question_id,
-        tenant_id=tenant.id,
-        is_active=True,
-        is_deleted=False,
+    question = Question.query.filter(
+        Question.id == question_id,
+        _question_access_filter(tenant),
     ).first()
     if not question:
         return jsonify({"error": "not_found"}), 404
@@ -558,11 +593,9 @@ def answer_question(question_id: str):
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
-    question = Question.query.filter_by(
-        id=question_id,
-        tenant_id=tenant.id,
-        is_active=True,
-        is_deleted=False,
+    question = Question.query.filter(
+        Question.id == question_id,
+        _question_access_filter(tenant),
     ).first()
     if not question:
         return jsonify({"error": "not_found"}), 404
@@ -573,8 +606,9 @@ def answer_question(question_id: str):
     except ValidationError as e:
         return jsonify({"error": "validation_error", "details": e.messages}), 400
 
-    chosen_key = data["chosen_alternative_key"]
-    is_correct = chosen_key == question.correct_alternative_key
+    # Normaliza para maiúsculo — banco global usa A-E, questões antigas usam a-e
+    chosen_key = data["chosen_alternative_key"].upper()
+    is_correct = chosen_key == question.correct_alternative_key.upper()
 
     # Registra a tentativa
     attempt = QuestionAttempt(
@@ -761,6 +795,7 @@ def _serialize_question(
         "discipline": question.discipline,
         "topic": question.topic,
         "subtopic": question.subtopic,
+        "tip": question.tip,
         "difficulty": question.difficulty.value if question.difficulty else None,
         "exam_board": question.exam_board,
         "exam_year": question.exam_year,
@@ -790,6 +825,70 @@ def _serialize_question(
 
 
 # ── Pipeline Gemini — Importação de questões de concurso (source_type="bank") ──
+
+
+@questions_bp.route("/disciplines", methods=["GET"])
+@jwt_required()
+@require_tenant
+def get_disciplines():
+    """Retorna disciplinas disponíveis para este tenant (inclui banco global se feature ativa)."""
+    tenant = get_current_tenant()
+    condition = _question_access_filter(tenant)
+    rows = (
+        db.session.query(Question.discipline)
+        .filter(condition, Question.discipline.isnot(None))
+        .distinct()
+        .order_by(Question.discipline)
+        .all()
+    )
+    return jsonify(disciplines=[r[0] for r in rows])
+
+
+@questions_bp.route("/topics", methods=["GET"])
+@jwt_required()
+@require_tenant
+def get_topics():
+    """Retorna tópicos de uma disciplina específica."""
+    tenant = get_current_tenant()
+    discipline = request.args.get("discipline", "").strip()
+    if not discipline:
+        return jsonify(topics=[])
+    condition = _question_access_filter(tenant)
+    rows = (
+        db.session.query(Question.topic)
+        .filter(
+            condition,
+            Question.discipline.ilike(f"%{discipline}%"),
+            Question.topic.isnot(None),
+        )
+        .distinct()
+        .order_by(Question.topic)
+        .all()
+    )
+    return jsonify(topics=[r[0] for r in rows])
+
+
+@questions_bp.route("/count", methods=["GET"])
+@jwt_required()
+@require_tenant
+def get_count():
+    """Retorna total de questões disponíveis com os filtros aplicados."""
+    tenant = get_current_tenant()
+    schema = QuestionFilterSchema()
+    try:
+        filters = schema.load(request.args)
+    except ValidationError:
+        return jsonify(total=0)
+
+    condition = _question_access_filter(tenant)
+    query = Question.query.filter(condition)
+    if filters.get("discipline"):
+        query = query.filter(Question.discipline.ilike(f"%{filters['discipline']}%"))
+    if filters.get("topic"):
+        query = query.filter(Question.topic.ilike(f"%{filters['topic']}%"))
+    if filters.get("difficulty"):
+        query = query.filter(Question.difficulty == filters["difficulty"])
+    return jsonify(total=query.count())
 
 
 @questions_bp.route("/extract-text", methods=["POST"])

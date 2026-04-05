@@ -1,103 +1,148 @@
 // frontend/src/app/(student)/questions/page.tsx
 "use client";
 
-import { useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { questionsApi } from "@/lib/api/questions";
+import { apiClient } from "@/lib/api/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils/cn";
 import {
-    Filter, ChevronLeft, ChevronRight,
-    CheckCircle2, XCircle, Clock, BookOpen,
-    RotateCcw,
+    Filter, ChevronLeft, ChevronRight, CheckCircle2, XCircle,
+    BookOpen, RotateCcw, Lightbulb, ChevronDown,
+    Target, Layers, TrendingUp, LayoutList, LayoutGrid,
 } from "lucide-react";
 import type { Question, AnswerResult, DifficultyLevel } from "@/types/api";
 
-const DIFFICULTIES: { value: DifficultyLevel | ""; label: string }[] = [
-    { value: "", label: "Todas" },
-    { value: "easy", label: "Fácil" },
-    { value: "medium", label: "Médio" },
-    { value: "hard", label: "Difícil" },
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface QuestionWithTip extends Question {
+    review_status?: string;
+}
+
+interface Filters {
+    difficulty: DifficultyLevel | "";
+    discipline: string;
+    topic: string;
+    historyFilter: string;
+    page: number;
+}
+
+type ViewMode = "block" | "list";
+
+// ── Config ────────────────────────────────────────────────────────────────────
+
+const DIFFICULTIES = [
+    { value: "" as const, label: "Todas", color: "" },
+    { value: "easy" as const, label: "Fácil", color: "text-success border-success/40 bg-success/5" },
+    { value: "medium" as const, label: "Médio", color: "text-warning border-warning/40 bg-warning/5" },
+    { value: "hard" as const, label: "Difícil", color: "text-destructive border-destructive/40 bg-destructive/5" },
 ];
 
+const DIFFICULTY_CONFIG: Record<string, { label: string; className: string }> = {
+    easy: { label: "Fácil", className: "bg-success/10 text-success border-success/20" },
+    medium: { label: "Médio", className: "bg-warning/10 text-warning border-warning/20" },
+    hard: { label: "Difícil", className: "bg-destructive/10 text-destructive border-destructive/20" },
+};
+
 const HISTORY_FILTERS = [
+    { key: "", label: "Todas" },
     { key: "not_answered", label: "Não respondidas" },
     { key: "previously_wrong", label: "Erradas antes" },
     { key: "previously_correct", label: "Acertadas antes" },
 ];
 
-const DIFFICULTY_CONFIG: Record<string, { label: string; className: string }> = {
-    easy: { label: "Fácil", className: "bg-success/10 text-success" },
-    medium: { label: "Médio", className: "bg-warning/10 text-warning" },
-    hard: { label: "Difícil", className: "bg-destructive/10 text-destructive" },
-};
+const PER_PAGE = 20;
 
-const ITEM_TYPE_CONFIG: Record<string, { label: string; className: string }> = {
-    lesson: { label: "Aula", className: "bg-primary/10 text-primary" },
-    questions: { label: "Questões", className: "bg-secondary/10 text-secondary" },
-    review: { label: "Revisão", className: "bg-warning/10 text-warning" },
-    simulado: { label: "Simulado", className: "bg-destructive/10 text-destructive" },
-};
-
-interface Filters {
-    difficulty: DifficultyLevel | "";
-    discipline: string;
-    historyFilter: string;
-    page: number;
-}
+// ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function QuestionsPage() {
     const [filters, setFilters] = useState<Filters>({
-        difficulty: "",
-        discipline: "",
-        historyFilter: "",
-        page: 1,
+        difficulty: "", discipline: "", topic: "", historyFilter: "", page: 1,
     });
+    const [viewMode, setViewMode] = useState<ViewMode>("block");
     const [currentIndex, setCurrentIndex] = useState(0);
     const [answerResult, setAnswerResult] = useState<AnswerResult | null>(null);
-    const [startTime, setStartTime] = useState<number | null>(null);
+    const [startTime, setStartTime] = useState<number>(Date.now());
     const [showFilters, setShowFilters] = useState(false);
-    const timerStarted = useRef(false);
+    const [showTip, setShowTip] = useState(false);
+    // In list mode: map of questionId → AnswerResult
+    const [listAnswers, setListAnswers] = useState<Record<string, AnswerResult>>({});
+    const [listTips, setListTips] = useState<Record<string, boolean>>({});
 
-    const { data, isLoading } = useQuery({
-        queryKey: ["questions", filters],
-        queryFn: () =>
-            questionsApi.list({
-                difficulty: filters.difficulty || undefined,
-                discipline: filters.discipline || undefined,
-                not_answered: filters.historyFilter === "not_answered" ? true : undefined,
-                previously_wrong: filters.historyFilter === "previously_wrong" ? true : undefined,
-                previously_correct: filters.historyFilter === "previously_correct" ? true : undefined,
-                page: filters.page,
-                per_page: 10,
-            }),
+    const { data: disciplinesData } = useQuery({
+        queryKey: ["questions", "disciplines"],
+        queryFn: () => apiClient.get("/questions/disciplines").then(r => r.data.disciplines as string[]),
+        staleTime: 5 * 60 * 1000,
     });
 
+    const { data: topicsData } = useQuery({
+        queryKey: ["questions", "topics", filters.discipline],
+        queryFn: () =>
+            apiClient.get("/questions/topics", { params: { discipline: filters.discipline } })
+                .then(r => r.data.topics as string[]),
+        enabled: !!filters.discipline,
+        staleTime: 5 * 60 * 1000,
+    });
+
+    const { data, isLoading, isFetching } = useQuery({
+        queryKey: ["questions", filters],
+        queryFn: () => questionsApi.list({
+            difficulty: filters.difficulty || undefined,
+            discipline: filters.discipline || undefined,
+            topic: filters.topic || undefined,
+            not_answered: filters.historyFilter === "not_answered" ? true : undefined,
+            previously_wrong: filters.historyFilter === "previously_wrong" ? true : undefined,
+            previously_correct: filters.historyFilter === "previously_correct" ? true : undefined,
+            page: filters.page,
+            per_page: PER_PAGE,
+        }),
+        placeholderData: prev => prev,
+    });
+
+    const questions = (data?.questions ?? []) as QuestionWithTip[];
+    const pagination = data?.pagination;
+    const currentQuestion = questions[currentIndex] as QuestionWithTip | undefined;
+
+    useEffect(() => {
+        setCurrentIndex(0);
+        setAnswerResult(null);
+        setStartTime(Date.now());
+        setShowTip(false);
+        setListAnswers({});
+        setListTips({});
+    }, [filters]);
+
+    useEffect(() => {
+        setAnswerResult(null);
+        setShowTip(false);
+        setStartTime(Date.now());
+    }, [currentIndex]);
+
+    // Block mode answer mutation
     const answerMutation = useMutation({
-        mutationFn: ({ questionId, key }: { questionId: string; key: string }) => {
-            const elapsed = startTime
-                ? Math.round((Date.now() - startTime) / 1000)
-                : undefined;
-            return questionsApi.answer(questionId, {
+        mutationFn: ({ questionId, key }: { questionId: string; key: string }) =>
+            questionsApi.answer(questionId, {
                 chosen_alternative_key: key,
-                response_time_seconds: elapsed,
+                response_time_seconds: Math.round((Date.now() - startTime) / 1000),
                 context: "practice",
-            });
-        },
+            }),
         onSuccess: (result) => setAnswerResult(result),
     });
 
-    const questions: Question[] = data?.questions || [];
-    const pagination = data?.pagination;
-    const currentQuestion = questions[currentIndex];
-
-    // Inicia timer ao mostrar nova questão
-    if (currentQuestion && !answerResult && !timerStarted.current) {
-        timerStarted.current = true;
-        setStartTime(Date.now());
-    }
-    if (answerResult) timerStarted.current = false;
+    // List mode answer mutation
+    const listAnswerMutation = useMutation({
+        mutationFn: ({ questionId, key }: { questionId: string; key: string }) =>
+            questionsApi.answer(questionId, {
+                chosen_alternative_key: key,
+                response_time_seconds: undefined,
+                context: "practice",
+            }),
+        onSuccess: (result, { questionId }) => {
+            setListAnswers(prev => ({ ...prev, [questionId]: result }));
+        },
+    });
 
     const handleSelectAnswer = (key: string) => {
         if (answerResult || answerMutation.isPending || !currentQuestion) return;
@@ -105,235 +150,402 @@ export default function QuestionsPage() {
     };
 
     const handleNext = () => {
-        setAnswerResult(null);
-        setStartTime(Date.now());
         if (currentIndex < questions.length - 1) {
-            setCurrentIndex((i) => i + 1);
+            setCurrentIndex(i => i + 1);
         } else if (pagination?.has_next) {
-            setFilters((f) => ({ ...f, page: f.page + 1 }));
-            setCurrentIndex(0);
+            setFilters(f => ({ ...f, page: f.page + 1 }));
         }
     };
 
     const handlePrev = () => {
-        if (currentIndex > 0) {
-            setAnswerResult(null);
-            setCurrentIndex((i) => i - 1);
-        }
+        if (currentIndex > 0) setCurrentIndex(i => i - 1);
     };
 
-    const resetFilters = () => {
-        setFilters({ difficulty: "", discipline: "", historyFilter: "", page: 1 });
-    };
+    const totalPages = pagination?.pages ?? 1;
+    const globalPosition = (filters.page - 1) * PER_PAGE + currentIndex + 1;
+    const totalQuestions = pagination ? pagination.total : 0;
+
+    const activeFilterCount = [filters.difficulty, filters.discipline, filters.topic, filters.historyFilter]
+        .filter(Boolean).length;
 
     return (
-        <div className="space-y-5 animate-fade-in max-w-3xl mx-auto">
-            {/* Header */}
-            <div className="flex items-center justify-between">
-                <div>
-                    <h1 className="font-display text-2xl font-bold text-foreground">Questões</h1>
-                    <p className="text-sm text-muted-foreground mt-0.5">
-                        Pratique com filtros inteligentes
-                    </p>
-                </div>
-                <Button variant="outline" size="sm" onClick={() => setShowFilters(!showFilters)}>
-                    <Filter className="h-4 w-4" />
-                    Filtros
-                </Button>
-            </div>
+        <div className="flex gap-6 animate-fade-in">
 
-            {/* Painel de filtros */}
-            {showFilters && (
-                <Card className="animate-fade-in">
-                    <CardContent className="p-4 space-y-4">
-                        {/* Dificuldade */}
-                        <div>
-                            <p className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wider">
-                                Dificuldade
-                            </p>
-                            <div className="flex gap-2 flex-wrap">
-                                {DIFFICULTIES.map(({ value, label }) => (
-                                    <button
-                                        key={value}
-                                        onClick={() => setFilters((f) => ({ ...f, difficulty: value, page: 1 }))}
-                                        className={cn(
-                                            "px-3 py-1 rounded-lg text-xs font-medium border transition-all",
-                                            filters.difficulty === value
-                                                ? "bg-primary text-primary-foreground border-primary"
-                                                : "border-border text-muted-foreground hover:border-primary hover:text-primary"
-                                        )}
-                                    >
-                                        {label}
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
+            {/* ── Sidebar filtros ── */}
+            <aside className={cn(
+                "shrink-0 space-y-4 transition-all duration-200",
+                showFilters ? "w-56" : "w-0 overflow-hidden opacity-0 pointer-events-none"
+            )}>
+                <div className="space-y-4 pt-1">
 
-                        {/* Histórico */}
-                        <div>
-                            <p className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wider">
-                                Histórico
-                            </p>
-                            <div className="flex gap-2 flex-wrap">
-                                <button
-                                    onClick={() => setFilters((f) => ({ ...f, historyFilter: "", page: 1 }))}
-                                    className={cn(
-                                        "px-3 py-1 rounded-lg text-xs font-medium border transition-all",
-                                        !filters.historyFilter
-                                            ? "bg-primary text-primary-foreground border-primary"
-                                            : "border-border text-muted-foreground hover:border-primary"
-                                    )}
-                                >
-                                    Todas
-                                </button>
-                                {HISTORY_FILTERS.map(({ key, label }) => (
-                                    <button
-                                        key={key}
-                                        onClick={() => setFilters((f) => ({ ...f, historyFilter: key, page: 1 }))}
-                                        className={cn(
-                                            "px-3 py-1 rounded-lg text-xs font-medium border transition-all",
-                                            filters.historyFilter === key
-                                                ? "bg-primary text-primary-foreground border-primary"
-                                                : "border-border text-muted-foreground hover:border-primary"
-                                        )}
-                                    >
-                                        {label}
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
-
-                        {/* Disciplina */}
-                        <div>
-                            <p className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wider">
-                                Disciplina
-                            </p>
-                            <input
-                                type="text"
-                                placeholder="Ex: Direito Penal"
+                    <div>
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Disciplina</p>
+                        <div className="relative">
+                            <select
                                 value={filters.discipline}
-                                onChange={(e) => setFilters((f) => ({ ...f, discipline: e.target.value, page: 1 }))}
-                                className="w-full h-9 px-3 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                            />
+                                onChange={e => setFilters(f => ({ ...f, discipline: e.target.value, topic: "", page: 1 }))}
+                                className="w-full h-9 px-3 pr-8 rounded-lg border border-input bg-background text-sm appearance-none focus:outline-none focus:ring-2 focus:ring-ring"
+                            >
+                                <option value="">Todas</option>
+                                {(disciplinesData ?? []).map(d => <option key={d} value={d}>{d}</option>)}
+                            </select>
+                            <ChevronDown className="absolute right-2 top-2.5 h-4 w-4 text-muted-foreground pointer-events-none" />
                         </div>
-                    </CardContent>
-                </Card>
-            )}
-
-            {/* Conteúdo principal */}
-            {isLoading ? (
-                <QuestionSkeleton />
-            ) : !currentQuestion ? (
-                <EmptyQuestions onReset={resetFilters} />
-            ) : (
-                <>
-                    {/* Barra de progresso */}
-                    <div className="flex items-center gap-3">
-                        <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
-                            <div
-                                className="h-full rounded-full bg-primary transition-all duration-300"
-                                style={{ width: `${((currentIndex + 1) / questions.length) * 100}%` }}
-                            />
-                        </div>
-                        <span className="text-xs text-muted-foreground shrink-0">
-                            {currentIndex + 1}/{questions.length}
-                        </span>
                     </div>
 
-                    <QuestionCard
-                        question={currentQuestion}
-                        result={answerResult}
-                        onSelect={handleSelectAnswer}
-                        isLoading={answerMutation.isPending}
-                    />
-
-                    {answerResult && (
-                        <FeedbackCard result={answerResult} onNext={handleNext} />
-                    )}
-
-                    {!answerResult && (
-                        <div className="flex items-center justify-between">
-                            <Button
-                                variant="ghost" size="sm"
-                                onClick={handlePrev}
-                                disabled={currentIndex === 0}
-                            >
-                                <ChevronLeft className="h-4 w-4" /> Anterior
-                            </Button>
-                            <Button
-                                variant="ghost" size="sm"
-                                onClick={handleNext}
-                                disabled={currentIndex === questions.length - 1 && !pagination?.has_next}
-                            >
-                                Pular <ChevronRight className="h-4 w-4" />
-                            </Button>
+                    {filters.discipline && (
+                        <div>
+                            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Tópico</p>
+                            <div className="relative">
+                                <select
+                                    value={filters.topic}
+                                    onChange={e => setFilters(f => ({ ...f, topic: e.target.value, page: 1 }))}
+                                    className="w-full h-9 px-3 pr-8 rounded-lg border border-input bg-background text-sm appearance-none focus:outline-none focus:ring-2 focus:ring-ring"
+                                >
+                                    <option value="">Todos</option>
+                                    {(topicsData ?? []).map(t => <option key={t} value={t}>{t}</option>)}
+                                </select>
+                                <ChevronDown className="absolute right-2 top-2.5 h-4 w-4 text-muted-foreground pointer-events-none" />
+                            </div>
                         </div>
                     )}
-                </>
-            )}
+
+                    <div>
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Dificuldade</p>
+                        <div className="space-y-1">
+                            {DIFFICULTIES.map(({ value, label, color }) => (
+                                <button
+                                    key={value}
+                                    onClick={() => setFilters(f => ({ ...f, difficulty: value, page: 1 }))}
+                                    className={cn(
+                                        "w-full text-left px-3 py-1.5 rounded-lg text-sm border transition-all",
+                                        filters.difficulty === value
+                                            ? "bg-primary text-primary-foreground border-primary"
+                                            : cn("border-transparent text-muted-foreground hover:text-foreground hover:bg-muted", color)
+                                    )}
+                                >
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div>
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Histórico</p>
+                        <div className="space-y-1">
+                            {HISTORY_FILTERS.map(({ key, label }) => (
+                                <button
+                                    key={key}
+                                    onClick={() => setFilters(f => ({ ...f, historyFilter: key, page: 1 }))}
+                                    className={cn(
+                                        "w-full text-left px-3 py-1.5 rounded-lg text-sm border transition-all",
+                                        filters.historyFilter === key
+                                            ? "bg-primary text-primary-foreground border-primary"
+                                            : "border-transparent text-muted-foreground hover:text-foreground hover:bg-muted"
+                                    )}
+                                >
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    {activeFilterCount > 0 && (
+                        <button
+                            onClick={() => setFilters({ difficulty: "", discipline: "", topic: "", historyFilter: "", page: 1 })}
+                            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                            <RotateCcw className="h-3 w-3" /> Limpar filtros
+                        </button>
+                    )}
+                </div>
+            </aside>
+
+            {/* ── Conteúdo principal ── */}
+            <div className="flex-1 min-w-0 space-y-4">
+
+                {/* Header */}
+                <div className="flex items-center justify-between">
+                    <div>
+                        <h1 className="font-display text-2xl font-bold text-foreground">Questões</h1>
+                        <p className="text-sm text-muted-foreground mt-0.5">
+                            {isLoading ? "Carregando..." : totalQuestions > 0
+                                ? `${totalQuestions.toLocaleString("pt-BR")} questões disponíveis`
+                                : "Pratique com filtros inteligentes"}
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        {/* Toggle de visualização */}
+                        <div className="flex items-center border border-border rounded-lg p-0.5 gap-0.5">
+                            <button
+                                onClick={() => setViewMode("block")}
+                                title="Modo bloco"
+                                className={cn(
+                                    "flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all",
+                                    viewMode === "block"
+                                        ? "bg-primary text-primary-foreground"
+                                        : "text-muted-foreground hover:text-foreground"
+                                )}
+                            >
+                                <LayoutGrid className="h-3.5 w-3.5" />
+                                Bloco
+                            </button>
+                            <button
+                                onClick={() => setViewMode("list")}
+                                title="Modo lista"
+                                className={cn(
+                                    "flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all",
+                                    viewMode === "list"
+                                        ? "bg-primary text-primary-foreground"
+                                        : "text-muted-foreground hover:text-foreground"
+                                )}
+                            >
+                                <LayoutList className="h-3.5 w-3.5" />
+                                Lista
+                            </button>
+                        </div>
+
+                        <Button
+                            variant={showFilters ? "default" : "outline"}
+                            size="sm"
+                            onClick={() => setShowFilters(v => !v)}
+                        >
+                            <Filter className="h-4 w-4" />
+                            Filtros
+                            {activeFilterCount > 0 && (
+                                <span className="ml-1 h-4 w-4 rounded-full bg-primary-foreground text-primary text-[10px] flex items-center justify-center font-bold">
+                                    {activeFilterCount}
+                                </span>
+                            )}
+                        </Button>
+                    </div>
+                </div>
+
+                {/* Chips filtros ativos */}
+                {(filters.discipline || filters.topic || filters.difficulty) && (
+                    <div className="flex flex-wrap gap-2">
+                        {filters.discipline && (
+                            <span className="inline-flex items-center gap-1 text-xs bg-primary/10 text-primary px-2.5 py-1 rounded-full border border-primary/20">
+                                <Layers className="h-3 w-3" />{filters.discipline}
+                            </span>
+                        )}
+                        {filters.topic && (
+                            <span className="inline-flex items-center gap-1 text-xs bg-primary/10 text-primary px-2.5 py-1 rounded-full border border-primary/20">
+                                <Target className="h-3 w-3" />{filters.topic}
+                            </span>
+                        )}
+                        {filters.difficulty && (
+                            <span className={cn("inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border", DIFFICULTY_CONFIG[filters.difficulty]?.className)}>
+                                <TrendingUp className="h-3 w-3" />
+                                {DIFFICULTY_CONFIG[filters.difficulty]?.label}
+                            </span>
+                        )}
+                    </div>
+                )}
+
+                {/* Conteúdo */}
+                {isLoading ? (
+                    <QuestionSkeleton />
+                ) : questions.length === 0 ? (
+                    <EmptyQuestions onReset={() => setFilters({ difficulty: "", discipline: "", topic: "", historyFilter: "", page: 1 })} />
+                ) : viewMode === "block" ? (
+                    /* ── MODO BLOCO ── */
+                    <>
+                        <div className="flex items-center gap-3">
+                            <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                                <div
+                                    className={cn("h-full rounded-full transition-all duration-300", isFetching ? "bg-muted-foreground" : "bg-primary")}
+                                    style={{ width: totalQuestions > 0 ? `${(globalPosition / totalQuestions) * 100}%` : "0%" }}
+                                />
+                            </div>
+                            <span className="text-xs text-muted-foreground shrink-0 font-mono">
+                                {globalPosition.toLocaleString("pt-BR")}/{totalQuestions.toLocaleString("pt-BR")}
+                            </span>
+                        </div>
+
+                        {currentQuestion && (
+                            <QuestionCard
+                                question={currentQuestion}
+                                result={answerResult}
+                                onSelect={handleSelectAnswer}
+                                isLoading={answerMutation.isPending}
+                                onShowTip={() => setShowTip(v => !v)}
+                                tipVisible={showTip}
+                            />
+                        )}
+
+                        {answerResult && currentQuestion && (
+                            <FeedbackCard
+                                result={answerResult}
+                                question={currentQuestion}
+                                onNext={handleNext}
+                                hasNext={currentIndex < questions.length - 1 || !!pagination?.has_next}
+                            />
+                        )}
+
+                        {!answerResult && (
+                            <div className="flex items-center justify-between">
+                                <Button variant="ghost" size="sm" onClick={handlePrev} disabled={currentIndex === 0 && filters.page === 1}>
+                                    <ChevronLeft className="h-4 w-4" /> Anterior
+                                </Button>
+                                {totalPages > 1 && (
+                                    <div className="flex items-center gap-1">
+                                        {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => {
+                                            const p = i + 1;
+                                            return (
+                                                <button key={p} onClick={() => setFilters(f => ({ ...f, page: p }))}
+                                                    className={cn("h-7 w-7 rounded text-xs font-mono transition-all",
+                                                        filters.page === p ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
+                                                    )}>
+                                                    {p}
+                                                </button>
+                                            );
+                                        })}
+                                        {totalPages > 5 && <span className="text-xs text-muted-foreground px-1">... {totalPages}</span>}
+                                    </div>
+                                )}
+                                <Button variant="ghost" size="sm" onClick={handleNext} disabled={currentIndex === questions.length - 1 && !pagination?.has_next}>
+                                    Pular <ChevronRight className="h-4 w-4" />
+                                </Button>
+                            </div>
+                        )}
+                    </>
+                ) : (
+                    /* ── MODO LISTA ── */
+                    <>
+                        <div className="space-y-4">
+                            {questions.map((q, idx) => (
+                                <ListQuestionCard
+                                    key={q.id}
+                                    question={q}
+                                    index={(filters.page - 1) * PER_PAGE + idx + 1}
+                                    result={listAnswers[q.id] ?? null}
+                                    isLoading={listAnswerMutation.isPending && listAnswerMutation.variables?.questionId === q.id}
+                                    onSelect={(key) => {
+                                        if (listAnswers[q.id] || listAnswerMutation.isPending) return;
+                                        listAnswerMutation.mutate({ questionId: q.id, key });
+                                    }}
+                                    tipVisible={listTips[q.id] ?? false}
+                                    onShowTip={() => setListTips(prev => ({ ...prev, [q.id]: !prev[q.id] }))}
+                                />
+                            ))}
+                        </div>
+
+                        {/* Paginação lista */}
+                        {totalPages > 1 && (
+                            <div className="flex items-center justify-between pt-2">
+                                <Button variant="outline" size="sm" onClick={() => setFilters(f => ({ ...f, page: Math.max(1, f.page - 1) }))} disabled={filters.page === 1}>
+                                    <ChevronLeft className="h-4 w-4" /> Anterior
+                                </Button>
+                                <div className="flex items-center gap-1">
+                                    {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
+                                        const p = i + 1;
+                                        return (
+                                            <button key={p} onClick={() => setFilters(f => ({ ...f, page: p }))}
+                                                className={cn("h-8 w-8 rounded-lg text-xs font-mono transition-all",
+                                                    filters.page === p ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
+                                                )}>
+                                                {p}
+                                            </button>
+                                        );
+                                    })}
+                                    {totalPages > 7 && <span className="text-xs text-muted-foreground px-1">... {totalPages}</span>}
+                                </div>
+                                <Button variant="outline" size="sm" onClick={() => setFilters(f => ({ ...f, page: Math.min(totalPages, f.page + 1) }))} disabled={filters.page === totalPages}>
+                                    Próxima <ChevronRight className="h-4 w-4" />
+                                </Button>
+                            </div>
+                        )}
+                    </>
+                )}
+            </div>
         </div>
     );
 }
 
-// ── Componentes ────────────────────────────────────────────────────────────────
+// ── QuestionCard (bloco) ──────────────────────────────────────────────────────
 
-function QuestionCard({
-    question, result, onSelect, isLoading,
-}: {
-    question: Question;
+function QuestionCard({ question, result, onSelect, isLoading, onShowTip, tipVisible }: {
+    question: QuestionWithTip;
     result: AnswerResult | null;
     onSelect: (key: string) => void;
     isLoading: boolean;
+    onShowTip: () => void;
+    tipVisible: boolean;
 }) {
     const diff = question.difficulty ? DIFFICULTY_CONFIG[question.difficulty] : null;
 
     return (
         <Card className="animate-fade-in">
             <CardContent className="p-6 space-y-5">
-                {/* Metadados */}
-                <div className="flex items-center gap-2 flex-wrap">
-                    {diff && (
-                        <span className={cn("text-xs font-medium px-2 py-0.5 rounded-md", diff.className)}>
-                            {diff.label}
-                        </span>
-                    )}
-                    {question.discipline && (
-                        <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-md">
-                            {question.discipline}
-                        </span>
-                    )}
-                    {question.exam_board && (
-                        <span className="text-xs text-muted-foreground">
-                            {question.exam_board}
-                            {question.exam_year ? ` • ${question.exam_year}` : ""}
-                        </span>
-                    )}
+                <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                        {diff && (
+                            <span className={cn("text-xs font-medium px-2 py-0.5 rounded-md border", diff.className)}>
+                                {diff.label}
+                            </span>
+                        )}
+                        {question.discipline && (
+                            <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-md font-medium">
+                                {question.discipline}
+                            </span>
+                        )}
+                        {question.topic && (
+                            <span className="text-xs text-muted-foreground">{question.topic}</span>
+                        )}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                        {(question.exam_board || question.exam_year) && (
+                            <span className="text-xs text-muted-foreground">
+                                {[question.exam_board, question.exam_year].filter(Boolean).join(" · ")}
+                            </span>
+                        )}
+                        {question.tip && !result && (
+                            <button
+                                onClick={onShowTip}
+                                className={cn(
+                                    "flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border transition-all",
+                                    tipVisible
+                                        ? "bg-amber-500/10 text-amber-600 border-amber-500/30 dark:text-amber-400"
+                                        : "border-border text-muted-foreground hover:border-amber-500/40 hover:text-amber-600 dark:hover:text-amber-400"
+                                )}
+                            >
+                                <Lightbulb className="h-3 w-3" /> Dica
+                            </button>
+                        )}
+                    </div>
                 </div>
 
-                {/* Contexto */}
+                {tipVisible && question.tip && !result && (
+                    <div className="p-3 rounded-lg bg-amber-500/8 border border-amber-500/20 animate-fade-in">
+                        <div className="flex items-start gap-2">
+                            <Lightbulb className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+                            <p className="text-xs text-foreground leading-relaxed">{question.tip}</p>
+                        </div>
+                    </div>
+                )}
+
                 {question.context && (
-                    <div className="p-3 rounded-lg bg-muted text-sm text-muted-foreground leading-relaxed border-l-4 border-primary/30">
+                    <div className="p-3 rounded-lg bg-muted text-sm text-muted-foreground leading-relaxed border-l-4 border-primary/30 whitespace-pre-wrap">
                         {question.context}
                     </div>
                 )}
 
-                {/* Enunciado */}
-                <p className="text-sm text-foreground leading-relaxed font-medium">
+                <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">
                     {question.statement}
                 </p>
 
-                {/* Alternativas */}
                 <div className="space-y-2">
                     {question.alternatives.map((alt) => {
-                        const isChosen = result?.result.chosen_key === alt.key;
-                        const isCorrect = result?.result.correct_key === alt.key;
+                        const altKey = alt.key.toUpperCase();
+                        const chosenKey = result?.chosen_key?.toUpperCase();
+                        const correctKey = result?.correct_key?.toUpperCase();
+                        const isChosen = chosenKey === altKey;
+                        const isCorrect = correctKey === altKey;
                         const showResult = !!result;
 
                         return (
-                            <button
-                                key={alt.key}
-                                onClick={() => onSelect(alt.key)}
-                                disabled={showResult || isLoading}
+                            <button key={alt.key} onClick={() => onSelect(alt.key)} disabled={showResult || isLoading}
                                 className={cn(
                                     "w-full flex items-start gap-3 p-3.5 rounded-xl border text-left transition-all duration-200",
                                     !showResult && "hover:border-primary hover:bg-primary/5 active:scale-[0.99]",
@@ -344,7 +556,7 @@ function QuestionCard({
                                 )}
                             >
                                 <span className={cn(
-                                    "h-6 w-6 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 transition-colors",
+                                    "h-6 w-6 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 mt-0.5",
                                     !showResult && "bg-muted text-muted-foreground",
                                     showResult && isCorrect && "bg-success text-success-foreground",
                                     showResult && isChosen && !isCorrect && "bg-destructive text-destructive-foreground",
@@ -352,22 +564,16 @@ function QuestionCard({
                                 )}>
                                     {alt.key.toUpperCase()}
                                 </span>
-
                                 <span className={cn(
-                                    "text-sm leading-relaxed",
+                                    "text-sm leading-relaxed flex-1",
                                     showResult && isCorrect && "text-success font-medium",
                                     showResult && isChosen && !isCorrect && "text-destructive",
                                     showResult && !isChosen && !isCorrect && "text-muted-foreground"
                                 )}>
                                     {alt.text}
                                 </span>
-
-                                {showResult && isCorrect && (
-                                    <CheckCircle2 className="h-4 w-4 text-success shrink-0 ml-auto mt-0.5" />
-                                )}
-                                {showResult && isChosen && !isCorrect && (
-                                    <XCircle className="h-4 w-4 text-destructive shrink-0 ml-auto mt-0.5" />
-                                )}
+                                {showResult && isCorrect && <CheckCircle2 className="h-4 w-4 text-success shrink-0 ml-auto mt-0.5" />}
+                                {showResult && isChosen && !isCorrect && <XCircle className="h-4 w-4 text-destructive shrink-0 ml-auto mt-0.5" />}
                             </button>
                         );
                     })}
@@ -377,85 +583,259 @@ function QuestionCard({
     );
 }
 
-function FeedbackCard({ result, onNext }: { result: AnswerResult; onNext: () => void }) {
+// ── ListQuestionCard (lista) ──────────────────────────────────────────────────
+
+function ListQuestionCard({ question, index, result, onSelect, isLoading, tipVisible, onShowTip }: {
+    question: QuestionWithTip;
+    index: number;
+    result: AnswerResult | null;
+    onSelect: (key: string) => void;
+    isLoading: boolean;
+    tipVisible: boolean;
+    onShowTip: () => void;
+}) {
+    const diff = question.difficulty ? DIFFICULTY_CONFIG[question.difficulty] : null;
+
+    // Justificativas do resultado
+    const chosenAlt = result?.alternatives.find(a => a.key.toUpperCase() === result.chosen_key?.toUpperCase());
+    const correctAlt = result?.alternatives.find(a => a.is_correct);
+    const distractorJ = result && !result.is_correct ? chosenAlt?.justification : null;
+    const correctJ = correctAlt?.justification ?? question.correct_justification;
+
     return (
         <Card className={cn(
-            "border-l-4 animate-fade-in",
-            result.result.is_correct ? "border-l-success" : "border-l-destructive"
+            "transition-all",
+            result && (result.is_correct ? "border-l-4 border-l-success" : "border-l-4 border-l-destructive")
         )}>
             <CardContent className="p-5 space-y-4">
-                <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                        {result.result.is_correct ? (
-                            <>
-                                <CheckCircle2 className="h-5 w-5 text-success" />
-                                <span className="font-semibold text-success">Correto!</span>
-                            </>
-                        ) : (
-                            <>
-                                <XCircle className="h-5 w-5 text-destructive" />
-                                <span className="font-semibold text-destructive">Incorreto</span>
-                            </>
+                {/* Header da questão */}
+                <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-mono text-muted-foreground font-semibold">#{index}</span>
+                        {diff && (
+                            <span className={cn("text-xs font-medium px-2 py-0.5 rounded-md border", diff.className)}>
+                                {diff.label}
+                            </span>
+                        )}
+                        {question.discipline && (
+                            <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-md font-medium">
+                                {question.discipline}
+                            </span>
+                        )}
+                        {question.topic && (
+                            <span className="text-xs text-muted-foreground">{question.topic}</span>
                         )}
                     </div>
-                    {result.result.response_time_seconds && (
-                        <span className="text-xs text-muted-foreground flex items-center gap-1">
-                            <Clock className="h-3 w-3" />
-                            {result.result.response_time_seconds}s
-                        </span>
-                    )}
+                    <div className="flex items-center gap-2 shrink-0">
+                        {result && (
+                            result.is_correct
+                                ? <span className="flex items-center gap-1 text-xs text-success font-medium"><CheckCircle2 className="h-3.5 w-3.5" />Correto</span>
+                                : <span className="flex items-center gap-1 text-xs text-destructive font-medium"><XCircle className="h-3.5 w-3.5" />Incorreto</span>
+                        )}
+                        {question.tip && !result && (
+                            <button
+                                onClick={onShowTip}
+                                className={cn(
+                                    "flex items-center gap-1 text-xs px-2 py-1 rounded-lg border transition-all",
+                                    tipVisible
+                                        ? "bg-amber-500/10 text-amber-600 border-amber-500/30 dark:text-amber-400"
+                                        : "border-border text-muted-foreground hover:border-amber-500/40 hover:text-amber-600"
+                                )}
+                            >
+                                <Lightbulb className="h-3 w-3" /> Dica
+                            </button>
+                        )}
+                    </div>
                 </div>
 
-                {!result.result.is_correct && result.feedback.distractor_justification && (
-                    <div className="p-3 rounded-lg bg-destructive/5 border border-destructive/20">
-                        <p className="text-xs font-semibold text-destructive mb-1">Por que sua resposta está errada:</p>
-                        <p className="text-xs text-foreground leading-relaxed">
-                            {result.feedback.distractor_justification}
-                        </p>
+                {/* Dica */}
+                {tipVisible && question.tip && !result && (
+                    <div className="p-3 rounded-lg bg-amber-500/8 border border-amber-500/20">
+                        <div className="flex items-start gap-2">
+                            <Lightbulb className="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" />
+                            <p className="text-xs text-foreground leading-relaxed">{question.tip}</p>
+                        </div>
                     </div>
                 )}
 
-                {result.feedback.correct_justification && (
-                    <div className="p-3 rounded-lg bg-success/5 border border-success/20">
-                        <p className="text-xs font-semibold text-success mb-1">
-                            Por que ({result.result.correct_key.toUpperCase()}) está correta:
-                        </p>
-                        <p className="text-xs text-foreground leading-relaxed">
-                            {result.feedback.correct_justification}
-                        </p>
+                {/* Contexto */}
+                {question.context && (
+                    <div className="p-3 rounded-lg bg-muted text-xs text-muted-foreground leading-relaxed border-l-2 border-primary/30 whitespace-pre-wrap">
+                        {question.context}
                     </div>
                 )}
 
-                <div className="flex items-center gap-4 pt-1 border-t border-border text-xs text-muted-foreground">
-                    <span>
-                        Taxa de acerto: <span className="font-medium text-foreground">
-                            {result.question_stats.accuracy_rate}%
-                        </span>
-                    </span>
-                    <span>{result.question_stats.total_attempts} tentativas</span>
+                {/* Enunciado */}
+                <p className="text-sm text-foreground leading-relaxed">{question.statement}</p>
+
+                {/* Alternativas — compactas */}
+                <div className="space-y-1.5">
+                    {question.alternatives.map((alt) => {
+                        const altKey = alt.key.toUpperCase();
+                        const chosenKey = result?.chosen_key?.toUpperCase();
+                        const correctKey = result?.correct_key?.toUpperCase();
+                        const isChosen = chosenKey === altKey;
+                        const isCorrect = correctKey === altKey;
+                        const showResult = !!result;
+
+                        return (
+                            <button key={alt.key} onClick={() => onSelect(alt.key)} disabled={showResult || isLoading}
+                                className={cn(
+                                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border text-left transition-all",
+                                    !showResult && "hover:border-primary hover:bg-primary/5",
+                                    showResult && isCorrect && "border-success/40 bg-success/5",
+                                    showResult && isChosen && !isCorrect && "border-destructive/40 bg-destructive/5",
+                                    !showResult && "border-border bg-background",
+                                    isLoading && "opacity-60 cursor-wait"
+                                )}
+                            >
+                                <span className={cn(
+                                    "h-5 w-5 rounded flex items-center justify-center text-[11px] font-bold shrink-0",
+                                    !showResult && "bg-muted text-muted-foreground",
+                                    showResult && isCorrect && "bg-success text-success-foreground",
+                                    showResult && isChosen && !isCorrect && "bg-destructive text-destructive-foreground",
+                                    showResult && !isChosen && !isCorrect && "bg-muted text-muted-foreground opacity-40"
+                                )}>
+                                    {alt.key.toUpperCase()}
+                                </span>
+                                <span className={cn(
+                                    "text-sm flex-1",
+                                    showResult && isCorrect && "text-success font-medium",
+                                    showResult && isChosen && !isCorrect && "text-destructive",
+                                    showResult && !isChosen && !isCorrect && "text-muted-foreground"
+                                )}>
+                                    {alt.text}
+                                </span>
+                                {showResult && isCorrect && <CheckCircle2 className="h-3.5 w-3.5 text-success shrink-0" />}
+                                {showResult && isChosen && !isCorrect && <XCircle className="h-3.5 w-3.5 text-destructive shrink-0" />}
+                            </button>
+                        );
+                    })}
                 </div>
 
-                <Button className="w-full" onClick={onNext}>
-                    Próxima questão <ChevronRight className="h-4 w-4" />
-                </Button>
+                {/* Feedback inline no modo lista */}
+                {result && (
+                    <div className="space-y-2 pt-1 border-t border-border">
+                        {!result.is_correct && distractorJ && (
+                            <div className="p-2.5 rounded-lg bg-destructive/5 border border-destructive/20">
+                                <p className="text-xs font-semibold text-destructive mb-1">
+                                    Por que ({result.chosen_key?.toUpperCase()}) está errada:
+                                </p>
+                                <p className="text-xs text-foreground leading-relaxed">{distractorJ}</p>
+                            </div>
+                        )}
+                        {correctJ && (
+                            <div className="p-2.5 rounded-lg bg-success/5 border border-success/20">
+                                <p className="text-xs font-semibold text-success mb-1">
+                                    Por que ({result.correct_key?.toUpperCase()}) está correta:
+                                </p>
+                                <p className="text-xs text-foreground leading-relaxed">{correctJ}</p>
+                            </div>
+                        )}
+                        {question.tip && (
+                            <div className="p-2.5 rounded-lg bg-amber-500/8 border border-amber-500/20">
+                                <div className="flex items-start gap-1.5">
+                                    <Lightbulb className="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" />
+                                    <p className="text-xs text-foreground leading-relaxed">{question.tip}</p>
+                                </div>
+                            </div>
+                        )}
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                            <span className="font-mono bg-muted px-1.5 py-0.5 rounded">+{result.xp_gained} XP</span>
+                        </div>
+                    </div>
+                )}
             </CardContent>
         </Card>
     );
 }
 
+// ── FeedbackCard (bloco) ──────────────────────────────────────────────────────
+
+function FeedbackCard({ result, question, onNext, hasNext }: {
+    result: AnswerResult;
+    question: QuestionWithTip;
+    onNext: () => void;
+    hasNext: boolean;
+}) {
+    const isCorrect = result.is_correct;
+    const chosenAlt = result.alternatives.find(a => a.key.toUpperCase() === result.chosen_key?.toUpperCase());
+    const correctAlt = result.alternatives.find(a => a.is_correct);
+    const distractorJ = !isCorrect ? chosenAlt?.justification : null;
+    const correctJ = correctAlt?.justification ?? question.correct_justification;
+
+    return (
+        <Card className={cn("border-l-4 animate-fade-in", isCorrect ? "border-l-success" : "border-l-destructive")}>
+            <CardContent className="p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                        {isCorrect
+                            ? <><CheckCircle2 className="h-5 w-5 text-success" /><span className="font-semibold text-success">Correto!</span></>
+                            : <><XCircle className="h-5 w-5 text-destructive" /><span className="font-semibold text-destructive">Incorreto</span></>
+                        }
+                    </div>
+                    <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-md font-mono">
+                        +{result.xp_gained} XP
+                    </span>
+                </div>
+
+                {!isCorrect && distractorJ && (
+                    <div className="p-3 rounded-lg bg-destructive/5 border border-destructive/20">
+                        <p className="text-xs font-semibold text-destructive mb-1">
+                            Por que ({result.chosen_key?.toUpperCase()}) está errada:
+                        </p>
+                        <p className="text-xs text-foreground leading-relaxed">{distractorJ}</p>
+                    </div>
+                )}
+
+                {correctJ && (
+                    <div className="p-3 rounded-lg bg-success/5 border border-success/20">
+                        <p className="text-xs font-semibold text-success mb-1">
+                            Por que ({result.correct_key?.toUpperCase()}) está correta:
+                        </p>
+                        <p className="text-xs text-foreground leading-relaxed">{correctJ}</p>
+                    </div>
+                )}
+
+                {question.tip && (
+                    <div className="p-3 rounded-lg bg-amber-500/8 border border-amber-500/20">
+                        <div className="flex items-start gap-2">
+                            <Lightbulb className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+                            <div>
+                                <p className="text-xs font-semibold text-amber-600 dark:text-amber-400 mb-1">Dica para fixar</p>
+                                <p className="text-xs text-foreground leading-relaxed">{question.tip}</p>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {hasNext && (
+                    <Button className="w-full" onClick={onNext}>
+                        Próxima questão <ChevronRight className="h-4 w-4" />
+                    </Button>
+                )}
+            </CardContent>
+        </Card>
+    );
+}
+
+// ── Skeleton & Empty ──────────────────────────────────────────────────────────
+
 function QuestionSkeleton() {
     return (
         <Card className="animate-pulse">
             <CardContent className="p-6 space-y-4">
-                <div className="h-4 w-24 bg-muted rounded" />
+                <div className="flex gap-2">
+                    <div className="h-5 w-16 bg-muted rounded-md" />
+                    <div className="h-5 w-32 bg-muted rounded-md" />
+                </div>
                 <div className="space-y-2">
                     <div className="h-4 bg-muted rounded w-full" />
                     <div className="h-4 bg-muted rounded w-5/6" />
+                    <div className="h-4 bg-muted rounded w-4/6" />
                 </div>
                 <div className="space-y-2 pt-2">
-                    {[...Array(4)].map((_, i) => (
-                        <div key={i} className="h-12 bg-muted rounded-xl" />
-                    ))}
+                    {[...Array(5)].map((_, i) => <div key={i} className="h-12 bg-muted rounded-xl" />)}
                 </div>
             </CardContent>
         </Card>
@@ -465,15 +845,13 @@ function QuestionSkeleton() {
 function EmptyQuestions({ onReset }: { onReset: () => void }) {
     return (
         <Card>
-            <CardContent className="py-16 flex flex-col items-center gap-4">
+            <CardContent className="py-16 flex flex-col items-center gap-4 text-center">
                 <div className="h-16 w-16 rounded-2xl bg-muted flex items-center justify-center">
                     <BookOpen className="h-8 w-8 text-muted-foreground" />
                 </div>
-                <div className="text-center">
+                <div>
                     <p className="font-semibold text-foreground">Nenhuma questão encontrada</p>
-                    <p className="text-sm text-muted-foreground mt-1">
-                        Tente ajustar os filtros ou explore outras disciplinas.
-                    </p>
+                    <p className="text-sm text-muted-foreground mt-1">Tente ajustar os filtros ou explore outras disciplinas.</p>
                 </div>
                 <Button variant="outline" onClick={onReset}>
                     <RotateCcw className="h-4 w-4" /> Limpar filtros

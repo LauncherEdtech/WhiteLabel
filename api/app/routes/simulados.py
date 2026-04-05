@@ -23,14 +23,23 @@ from app.extensions import db, limiter
 from app.models.user import User, UserRole
 from app.models.question import Question, Alternative, QuestionAttempt, DifficultyLevel
 from app.models.simulado import (
-    Simulado, SimuladoQuestion, SimuladoAttempt, SimuladoAnswer
+    Simulado,
+    SimuladoQuestion,
+    SimuladoAttempt,
+    SimuladoAnswer,
 )
 from app.models.course import Subject, CourseEnrollment
-from app.middleware.tenant import resolve_tenant, require_tenant, require_feature, get_current_tenant
+from app.middleware.tenant import (
+    resolve_tenant,
+    require_tenant,
+    require_feature,
+    get_current_tenant,
+)
 
 simulados_bp = Blueprint("simulados", __name__)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _is_producer_or_above(claims: dict) -> bool:
     return claims.get("role") in (
@@ -39,6 +48,7 @@ def _is_producer_or_above(claims: dict) -> bool:
         UserRole.PRODUCER_STAFF.value,
     )
 
+
 def _get_simulado_or_404(simulado_id: str, tenant_id: str):
     return Simulado.query.filter_by(
         id=simulado_id,
@@ -46,7 +56,9 @@ def _get_simulado_or_404(simulado_id: str, tenant_id: str):
         is_deleted=False,
     ).first()
 
+
 # ── Schemas ───────────────────────────────────────────────────────────────────
+
 
 class CreateSimuladoSchema(Schema):
     course_id = fields.Str(required=True)
@@ -54,7 +66,7 @@ class CreateSimuladoSchema(Schema):
     description = fields.Str(allow_none=True, load_default=None)
     time_limit_minutes = fields.Int(
         required=True,
-        validate=validate.Range(min=10, max=480),   # 10min a 8h
+        validate=validate.Range(min=10, max=480),  # 10min a 8h
     )
     question_ids = fields.List(
         fields.Str(),
@@ -67,34 +79,42 @@ class CreateSimuladoSchema(Schema):
     # Ex: {"discipline": "Direito Penal", "difficulty": "medium", "count": 20}
 
     settings = fields.Dict(load_default=None, allow_none=True)
+
     class Meta:
         unknown = EXCLUDE
 
+
 class AnswerQuestionSchema(Schema):
     """Resposta do aluno a uma questão durante o simulado."""
+
     question_id = fields.Str(required=True)
     chosen_alternative_key = fields.Str(
-        allow_none=True,   # None = pulou a questão
+        allow_none=True,  # None = pulou a questão
         load_default=None,
-        validate=validate.OneOf(["a", "b", "c", "d", "e"]),
+        validate=validate.OneOf(["a", "b", "c", "d", "e", "A", "B", "C", "D", "E"]),
     )
     response_time_seconds = fields.Int(
         allow_none=True,
         load_default=None,
         validate=validate.Range(min=1, max=7200),
     )
+
     class Meta:
         unknown = EXCLUDE
 
+
 # ── Before request ────────────────────────────────────────────────────────────
+
 
 @simulados_bp.before_request
 def before_request():
     resolve_tenant()
 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CRUD DE SIMULADOS (produtor)
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 @simulados_bp.route("/", methods=["POST"])
 @jwt_required()
@@ -145,25 +165,39 @@ def create_simulado():
     elif data.get("question_ids"):
         question_ids = data["question_ids"]
     else:
-        return jsonify({
-            "error": "questions_required",
-            "message": "Informe question_ids ou use auto_generate com auto_filters.",
-        }), 400
+        return (
+            jsonify(
+                {
+                    "error": "questions_required",
+                    "message": "Informe question_ids ou use auto_generate com auto_filters.",
+                }
+            ),
+            400,
+        )
 
     if not question_ids:
-        return jsonify({
-            "error": "no_questions",
-            "message": "Nenhuma questão encontrada com os filtros informados.",
-        }), 400
+        return (
+            jsonify(
+                {
+                    "error": "no_questions",
+                    "message": "Nenhuma questão encontrada com os filtros informados.",
+                }
+            ),
+            400,
+        )
 
     # Valida que questões pertencem ao tenant e adiciona ao simulado
     added = 0
     for order, qid in enumerate(question_ids):
-        question = Question.query.filter_by(
-            id=qid,
-            tenant_id=tenant.id,
-            is_active=True,
-            is_deleted=False,
+        from sqlalchemy import or_
+
+        question = Question.query.filter(
+            Question.id == qid,
+            Question.is_active == True,
+            or_(
+                Question.tenant_id == tenant.id,
+                Question.tenant_id.is_(None),
+            ),
         ).first()
         if question:
             sq = SimuladoQuestion(
@@ -181,10 +215,16 @@ def create_simulado():
 
     db.session.commit()
 
-    return jsonify({
-        "message": "Simulado criado com sucesso.",
-        "simulado": _serialize_simulado(simulado, total_questions=added),
-    }), 201
+    return (
+        jsonify(
+            {
+                "message": "Simulado criado com sucesso.",
+                "simulado": _serialize_simulado(simulado, total_questions=added),
+            }
+        ),
+        201,
+    )
+
 
 @simulados_bp.route("/auto-generate", methods=["POST"])
 @jwt_required()
@@ -204,7 +244,9 @@ def auto_generate_simulado():
     body = request.get_json(force=True) or {}
 
     course_id = body.get("course_id")
-    title = body.get("title", f"Simulado Automático — {datetime.now().strftime('%d/%m/%Y')}")
+    title = body.get(
+        "title", f"Simulado Automático — {datetime.now().strftime('%d/%m/%Y')}"
+    )
     time_limit = body.get("time_limit_minutes", 60)
     total_questions = min(int(body.get("total_questions", 20)), 100)
 
@@ -219,10 +261,15 @@ def auto_generate_simulado():
     question_ids = _auto_select_questions(tenant.id, filters)
 
     if not question_ids:
-        return jsonify({
-            "error": "no_questions",
-            "message": "Não há questões suficientes com os critérios informados.",
-        }), 400
+        return (
+            jsonify(
+                {
+                    "error": "no_questions",
+                    "message": "Não há questões suficientes com os critérios informados.",
+                }
+            ),
+            400,
+        )
 
     simulado = Simulado(
         tenant_id=tenant.id,
@@ -242,19 +289,29 @@ def auto_generate_simulado():
     db.session.flush()
 
     for order, qid in enumerate(question_ids):
-        db.session.add(SimuladoQuestion(
-            tenant_id=tenant.id,
-            simulado_id=simulado.id,
-            question_id=qid,
-            order=order,
-        ))
+        db.session.add(
+            SimuladoQuestion(
+                tenant_id=tenant.id,
+                simulado_id=simulado.id,
+                question_id=qid,
+                order=order,
+            )
+        )
 
     db.session.commit()
 
-    return jsonify({
-        "message": f"Simulado gerado com {len(question_ids)} questões.",
-        "simulado": _serialize_simulado(simulado, total_questions=len(question_ids)),
-    }), 201
+    return (
+        jsonify(
+            {
+                "message": f"Simulado gerado com {len(question_ids)} questões.",
+                "simulado": _serialize_simulado(
+                    simulado, total_questions=len(question_ids)
+                ),
+            }
+        ),
+        201,
+    )
+
 
 @simulados_bp.route("/", methods=["GET"])
 @jwt_required()
@@ -294,18 +351,27 @@ def list_simulados():
         # Status da tentativa do aluno neste simulado
         last_attempt = None
         if not _is_producer_or_above(claims):
-            last_attempt = SimuladoAttempt.query.filter_by(
-                simulado_id=sim.id,
-                user_id=user_id,
-                is_deleted=False,
-            ).order_by(SimuladoAttempt.created_at.desc()).first()
+            last_attempt = (
+                SimuladoAttempt.query.filter_by(
+                    simulado_id=sim.id,
+                    user_id=user_id,
+                    is_deleted=False,
+                )
+                .order_by(SimuladoAttempt.created_at.desc())
+                .first()
+            )
 
-        result.append({
-            **_serialize_simulado(sim, total_questions=total_q),
-            "my_attempt": _serialize_attempt_summary(last_attempt) if last_attempt else None,
-        })
+        result.append(
+            {
+                **_serialize_simulado(sim, total_questions=total_q),
+                "my_attempt": (
+                    _serialize_attempt_summary(last_attempt) if last_attempt else None
+                ),
+            }
+        )
 
     return jsonify({"simulados": result}), 200
+
 
 @simulados_bp.route("/<string:simulado_id>", methods=["GET"])
 @jwt_required()
@@ -322,10 +388,14 @@ def get_simulado(simulado_id: str):
 
     is_producer = _is_producer_or_above(claims)
 
-    sim_questions = SimuladoQuestion.query.filter_by(
-        simulado_id=simulado.id,
-        is_deleted=False,
-    ).order_by(SimuladoQuestion.order).all()
+    sim_questions = (
+        SimuladoQuestion.query.filter_by(
+            simulado_id=simulado.id,
+            is_deleted=False,
+        )
+        .order_by(SimuladoQuestion.order)
+        .all()
+    )
 
     questions_data = []
     for sq in sim_questions:
@@ -348,16 +418,25 @@ def get_simulado(simulado_id: str):
             q_data["correct_alternative_key"] = q.correct_alternative_key
         questions_data.append(q_data)
 
-    return jsonify({
-        "simulado": {
-            **_serialize_simulado(simulado, total_questions=len(questions_data)),
-            "questions": questions_data,
-        }
-    }), 200
+    return (
+        jsonify(
+            {
+                "simulado": {
+                    **_serialize_simulado(
+                        simulado, total_questions=len(questions_data)
+                    ),
+                    "questions": questions_data,
+                }
+            }
+        ),
+        200,
+    )
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TENTATIVAS (aluno)
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 @simulados_bp.route("/<string:simulado_id>/start", methods=["POST"])
 @jwt_required()
@@ -394,11 +473,18 @@ def start_attempt(simulado_id: str):
             db.session.commit()
         else:
             # Retorna a tentativa em andamento com questões e tempo restante
-            return jsonify({
-                "message": "Tentativa em andamento retomada.",
-                "attempt": _serialize_attempt_detail(in_progress, simulado),
-                "time_remaining_seconds": _get_time_remaining(in_progress, simulado),
-            }), 200
+            return (
+                jsonify(
+                    {
+                        "message": "Tentativa em andamento retomada.",
+                        "attempt": _serialize_attempt_detail(in_progress, simulado),
+                        "time_remaining_seconds": _get_time_remaining(
+                            in_progress, simulado
+                        ),
+                    }
+                ),
+                200,
+            )
 
     now = datetime.now(timezone.utc)
 
@@ -416,11 +502,17 @@ def start_attempt(simulado_id: str):
     db.session.add(attempt)
     db.session.commit()
 
-    return jsonify({
-        "message": "Simulado iniciado! O tempo está correndo.",
-        "attempt": _serialize_attempt_detail(attempt, simulado),
-        "time_remaining_seconds": simulado.time_limit_minutes * 60,
-    }), 201
+    return (
+        jsonify(
+            {
+                "message": "Simulado iniciado! O tempo está correndo.",
+                "attempt": _serialize_attempt_detail(attempt, simulado),
+                "time_remaining_seconds": simulado.time_limit_minutes * 60,
+            }
+        ),
+        201,
+    )
+
 
 @simulados_bp.route("/attempts/<string:attempt_id>/answer", methods=["POST"])
 @jwt_required()
@@ -450,10 +542,15 @@ def answer_question(attempt_id: str):
         return jsonify({"error": "not_found"}), 404
 
     if attempt.status != "in_progress":
-        return jsonify({
-            "error": "attempt_not_active",
-            "message": "Esta tentativa já foi finalizada.",
-        }), 400
+        return (
+            jsonify(
+                {
+                    "error": "attempt_not_active",
+                    "message": "Esta tentativa já foi finalizada.",
+                }
+            ),
+            400,
+        )
 
     simulado = _get_simulado_or_404(attempt.simulado_id, tenant.id)
 
@@ -461,10 +558,15 @@ def answer_question(attempt_id: str):
     if _is_attempt_expired(attempt, simulado):
         _finalize_attempt(attempt, simulado, timed_out=True)
         db.session.commit()
-        return jsonify({
-            "error": "time_expired",
-            "message": "O tempo do simulado expirou. Sua tentativa foi finalizada automaticamente.",
-        }), 400
+        return (
+            jsonify(
+                {
+                    "error": "time_expired",
+                    "message": "O tempo do simulado expirou. Sua tentativa foi finalizada automaticamente.",
+                }
+            ),
+            400,
+        )
 
     schema = AnswerQuestionSchema()
     try:
@@ -472,6 +574,11 @@ def answer_question(attempt_id: str):
     except ValidationError as e:
         return jsonify({"error": "validation_error", "details": e.messages}), 400
 
+    # Normaliza para maiúsculo — banco global usa A-E, questões antigas usam a-e
+    chosen_key = data.get("chosen_alternative_key")
+    if chosen_key:
+        data["chosen_alternative_key"] = chosen_key.upper()
+        
     # Valida que a questão pertence ao simulado
     sim_question = SimuladoQuestion.query.filter_by(
         simulado_id=simulado.id,
@@ -503,19 +610,27 @@ def answer_question(attempt_id: str):
 
     db.session.commit()
 
-    answered_count = SimuladoAnswer.query.filter_by(
-        attempt_id=attempt.id,
-        is_deleted=False,
-    ).filter(
-        SimuladoAnswer.chosen_alternative_key.isnot(None)
-    ).count()
+    answered_count = (
+        SimuladoAnswer.query.filter_by(
+            attempt_id=attempt.id,
+            is_deleted=False,
+        )
+        .filter(SimuladoAnswer.chosen_alternative_key.isnot(None))
+        .count()
+    )
 
-    return jsonify({
-        "message": "Resposta salva.",
-        "answered": answered_count,
-        "total": attempt.total_questions,
-        "time_remaining_seconds": _get_time_remaining(attempt, simulado),
-    }), 200
+    return (
+        jsonify(
+            {
+                "message": "Resposta salva.",
+                "answered": answered_count,
+                "total": attempt.total_questions,
+                "time_remaining_seconds": _get_time_remaining(attempt, simulado),
+            }
+        ),
+        200,
+    )
+
 
 @simulados_bp.route("/attempts/<string:attempt_id>/finish", methods=["POST"])
 @jwt_required()
@@ -545,11 +660,16 @@ def finish_attempt(attempt_id: str):
         return jsonify({"error": "not_found"}), 404
 
     if attempt.status != "in_progress":
-        return jsonify({
-            "error": "already_finished",
-            "message": "Esta tentativa já foi finalizada.",
-            "attempt_id": attempt.id,
-        }), 400
+        return (
+            jsonify(
+                {
+                    "error": "already_finished",
+                    "message": "Esta tentativa já foi finalizada.",
+                    "attempt_id": attempt.id,
+                }
+            ),
+            400,
+        )
 
     simulado = _get_simulado_or_404(attempt.simulado_id, tenant.id)
 
@@ -559,11 +679,21 @@ def finish_attempt(attempt_id: str):
     result = _finalize_attempt(attempt, simulado, timed_out=timed_out)
     db.session.commit()
 
-    return jsonify({
-        "message": "Simulado finalizado!" if not timed_out else "Tempo esgotado — simulado finalizado automaticamente.",
-        "timed_out": timed_out,
-        "result": result,
-    }), 200
+    return (
+        jsonify(
+            {
+                "message": (
+                    "Simulado finalizado!"
+                    if not timed_out
+                    else "Tempo esgotado — simulado finalizado automaticamente."
+                ),
+                "timed_out": timed_out,
+                "result": result,
+            }
+        ),
+        200,
+    )
+
 
 @simulados_bp.route("/attempts/<string:attempt_id>", methods=["GET"])
 @jwt_required()
@@ -590,10 +720,15 @@ def get_attempt_result(attempt_id: str):
         return jsonify({"error": "forbidden"}), 403
 
     if attempt.status == "in_progress":
-        return jsonify({
-            "error": "not_finished",
-            "message": "O simulado ainda está em andamento.",
-        }), 400
+        return (
+            jsonify(
+                {
+                    "error": "not_finished",
+                    "message": "O simulado ainda está em andamento.",
+                }
+            ),
+            400,
+        )
 
     simulado = _get_simulado_or_404(attempt.simulado_id, tenant.id)
     answers = SimuladoAnswer.query.filter_by(
@@ -603,10 +738,14 @@ def get_attempt_result(attempt_id: str):
 
     # Monta gabarito detalhado
     answers_map = {a.question_id: a for a in answers}
-    sim_questions = SimuladoQuestion.query.filter_by(
-        simulado_id=simulado.id,
-        is_deleted=False,
-    ).order_by(SimuladoQuestion.order).all()
+    sim_questions = (
+        SimuladoQuestion.query.filter_by(
+            simulado_id=simulado.id,
+            is_deleted=False,
+        )
+        .order_by(SimuladoQuestion.order)
+        .all()
+    )
 
     detailed_answers = []
     for sq in sim_questions:
@@ -616,37 +755,50 @@ def get_attempt_result(attempt_id: str):
 
         answer = answers_map.get(q.id)
         chosen_key = answer.chosen_alternative_key if answer else None
-        is_correct = chosen_key == q.correct_alternative_key if chosen_key else False
+        is_correct = (
+            chosen_key.upper() == q.correct_alternative_key.upper()
+            if chosen_key
+            else False
+        )
 
         # Justificativa do distrator (erro cometido)
         distractor_just = None
         if not is_correct and chosen_key:
-            chosen_alt = Alternative.query.filter_by(
-                question_id=q.id,
-                key=chosen_key,
-                tenant_id=tenant.id,
+            from sqlalchemy import or_
+
+            chosen_alt = Alternative.query.filter(
+                Alternative.question_id == q.id,
+                Alternative.key == chosen_key,
+                or_(
+                    Alternative.tenant_id == tenant.id,
+                    Alternative.tenant_id.is_(None),
+                ),
             ).first()
             if chosen_alt:
                 distractor_just = chosen_alt.distractor_justification
 
-        detailed_answers.append({
-            "question_id": q.id,
-            "statement": q.statement,
-            "discipline": q.discipline,
-            "difficulty": q.difficulty.value if q.difficulty else None,
-            "chosen_key": chosen_key,
-            "correct_key": q.correct_alternative_key,
-            "is_correct": is_correct,
-            "skipped": chosen_key is None,
-            "response_time_seconds": answer.response_time_seconds if answer else None,
-            "alternatives": [
-                {"key": a.key, "text": a.text}
-                for a in sorted(q.alternatives, key=lambda x: x.key)
-            ],
-            # Feedback pedagógico
-            "correct_justification": q.correct_justification,
-            "distractor_justification": distractor_just,
-        })
+        detailed_answers.append(
+            {
+                "question_id": q.id,
+                "statement": q.statement,
+                "discipline": q.discipline,
+                "difficulty": q.difficulty.value if q.difficulty else None,
+                "chosen_key": chosen_key,
+                "correct_key": q.correct_alternative_key,
+                "is_correct": is_correct,
+                "skipped": chosen_key is None,
+                "response_time_seconds": (
+                    answer.response_time_seconds if answer else None
+                ),
+                "alternatives": [
+                    {"key": a.key, "text": a.text}
+                    for a in sorted(q.alternatives, key=lambda x: x.key)
+                ],
+                # Feedback pedagógico
+                "correct_justification": q.correct_justification,
+                "distractor_justification": distractor_just,
+            }
+        )
 
     # Percentual por disciplina
     by_discipline = {}
@@ -664,43 +816,51 @@ def get_attempt_result(attempt_id: str):
     for disc, stats in by_discipline.items():
         total = stats["total"]
         correct = stats["correct"]
-        discipline_results.append({
-            "discipline": disc,
-            "total": total,
-            "correct": correct,
-            "skipped": stats["skipped"],
-            "accuracy_rate": round((correct / total) * 100, 1) if total else 0,
-        })
+        discipline_results.append(
+            {
+                "discipline": disc,
+                "total": total,
+                "correct": correct,
+                "skipped": stats["skipped"],
+                "accuracy_rate": round((correct / total) * 100, 1) if total else 0,
+            }
+        )
 
     passing_score = simulado.settings.get("passing_score", 0.6)
     passed = (attempt.score or 0) >= passing_score
 
-    return jsonify({
-        "attempt": {
-            "id": attempt.id,
-            "status": attempt.status,
-            "started_at": attempt.started_at,
-            "finished_at": attempt.finished_at,
-            "total_time_seconds": attempt.total_time_seconds,
-        },
-        "score": {
-            "total_questions": attempt.total_questions,
-            "correct_answers": attempt.correct_answers,
-            "wrong_answers": attempt.total_questions - attempt.correct_answers - sum(
-                1 for a in detailed_answers if a["skipped"]
-            ),
-            "skipped": sum(1 for a in detailed_answers if a["skipped"]),
-            "score_percent": round((attempt.score or 0) * 100, 1),
-            "passing_score_percent": round(passing_score * 100, 1),
-            "passed": passed,
-            "time_limit_minutes": simulado.time_limit_minutes,
-        },
-        "by_discipline": sorted(
-            discipline_results,
-            key=lambda x: x["accuracy_rate"],
+    return (
+        jsonify(
+            {
+                "attempt": {
+                    "id": attempt.id,
+                    "status": attempt.status,
+                    "started_at": attempt.started_at,
+                    "finished_at": attempt.finished_at,
+                    "total_time_seconds": attempt.total_time_seconds,
+                },
+                "score": {
+                    "total_questions": attempt.total_questions,
+                    "correct_answers": attempt.correct_answers,
+                    "wrong_answers": attempt.total_questions
+                    - attempt.correct_answers
+                    - sum(1 for a in detailed_answers if a["skipped"]),
+                    "skipped": sum(1 for a in detailed_answers if a["skipped"]),
+                    "score_percent": round((attempt.score or 0) * 100, 1),
+                    "passing_score_percent": round(passing_score * 100, 1),
+                    "passed": passed,
+                    "time_limit_minutes": simulado.time_limit_minutes,
+                },
+                "by_discipline": sorted(
+                    discipline_results,
+                    key=lambda x: x["accuracy_rate"],
+                ),
+                "answers": detailed_answers,
+            }
         ),
-        "answers": detailed_answers,
-    }), 200
+        200,
+    )
+
 
 @simulados_bp.route("/my-attempts", methods=["GET"])
 @jwt_required()
@@ -710,21 +870,32 @@ def my_attempts():
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
-    attempts = SimuladoAttempt.query.filter_by(
-        user_id=user_id,
-        tenant_id=tenant.id,
-        is_deleted=False,
-    ).order_by(SimuladoAttempt.created_at.desc()).all()
+    attempts = (
+        SimuladoAttempt.query.filter_by(
+            user_id=user_id,
+            tenant_id=tenant.id,
+            is_deleted=False,
+        )
+        .order_by(SimuladoAttempt.created_at.desc())
+        .all()
+    )
 
-    return jsonify({
-        "attempts": [_serialize_attempt_summary(a) for a in attempts],
-        "total": len(attempts),
-        "completed": sum(1 for a in attempts if a.status == "completed"),
-    }), 200
+    return (
+        jsonify(
+            {
+                "attempts": [_serialize_attempt_summary(a) for a in attempts],
+                "total": len(attempts),
+                "completed": sum(1 for a in attempts if a.status == "completed"),
+            }
+        ),
+        200,
+    )
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPERS INTERNOS
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 def _is_attempt_expired(attempt: SimuladoAttempt, simulado: Simulado) -> bool:
     """
@@ -741,6 +912,7 @@ def _is_attempt_expired(attempt: SimuladoAttempt, simulado: Simulado) -> bool:
     except (ValueError, TypeError):
         return False
 
+
 def _get_time_remaining(attempt: SimuladoAttempt, simulado: Simulado) -> int:
     """Retorna segundos restantes do simulado (mínimo 0)."""
     if not attempt.started_at:
@@ -753,8 +925,10 @@ def _get_time_remaining(attempt: SimuladoAttempt, simulado: Simulado) -> int:
     except (ValueError, TypeError):
         return 0
 
-def _finalize_attempt(attempt: SimuladoAttempt, simulado: Simulado,
-                       timed_out: bool = False) -> dict:
+
+def _finalize_attempt(
+    attempt: SimuladoAttempt, simulado: Simulado, timed_out: bool = False
+) -> dict:
     """
     Finaliza a tentativa:
     - Corrige respostas
@@ -784,7 +958,8 @@ def _finalize_attempt(attempt: SimuladoAttempt, simulado: Simulado,
 
         answer = answers_map.get(q.id)
         chosen_key = answer.chosen_alternative_key if answer else None
-        is_correct = chosen_key == q.correct_alternative_key if chosen_key else False
+        is_correct = chosen_key.upper() == q.correct_alternative_key.upper() if chosen_key else False
+
 
         if is_correct:
             correct_count += 1
@@ -844,7 +1019,9 @@ def _finalize_attempt(attempt: SimuladoAttempt, simulado: Simulado,
         disc: {
             "correct": stats["correct"],
             "total": stats["total"],
-            "score": round(stats["correct"] / stats["total"], 3) if stats["total"] else 0,
+            "score": (
+                round(stats["correct"] / stats["total"], 3) if stats["total"] else 0
+            ),
         }
         for disc, stats in by_discipline.items()
     }
@@ -872,48 +1049,71 @@ def _finalize_attempt(attempt: SimuladoAttempt, simulado: Simulado,
                 "discipline": disc,
                 "correct": stats["correct"],
                 "total": stats["total"],
-                "accuracy_rate": round(stats["correct"] / stats["total"] * 100, 1)
-                if stats["total"] else 0,
+                "accuracy_rate": (
+                    round(stats["correct"] / stats["total"] * 100, 1)
+                    if stats["total"]
+                    else 0
+                ),
             }
             for disc, stats in by_discipline.items()
         ],
     }
 
+
 def _auto_select_questions(tenant_id: str, filters: dict) -> list:
-    """
-    Seleciona questões automaticamente por filtros.
-    Prioriza questões com menor taxa de acerto (mais difíceis para a turma).
-    """
+    from app.middleware.tenant import get_current_tenant
+    from app.models.question import QuestionSourceType, ReviewStatus
+    from sqlalchemy import and_, or_
+
     count = min(int(filters.get("count", 20)), 100)
 
-    query = Question.query.filter_by(
-        tenant_id=tenant_id,
-        is_active=True,
-        is_deleted=False,
+    # Tenta pegar o tenant do contexto para checar a feature
+    try:
+        tenant = get_current_tenant()
+        has_bank = tenant.is_feature_enabled("question_bank_concursos")
+    except Exception:
+        has_bank = False
+
+    own = and_(
+        Question.tenant_id == tenant_id,
+        Question.is_active == True,
+        Question.is_deleted == False,
     )
 
-    if filters.get("discipline"):
-        query = query.filter(
-            Question.discipline.ilike(f"%{filters['discipline']}%")
+    if has_bank:
+        global_bank = and_(
+            Question.tenant_id.is_(None),
+            Question.source_type == QuestionSourceType.BANK,
+            Question.review_status == "approved",
+            Question.is_active == True,
         )
+        base_filter = or_(own, global_bank)
+    else:
+        base_filter = own
+
+    query = Question.query.filter(base_filter)
+
+    if filters.get("discipline"):
+        query = query.filter(Question.discipline.ilike(f"%{filters['discipline']}%"))
     if filters.get("difficulty"):
         query = query.filter_by(difficulty=DifficultyLevel(filters["difficulty"]))
     if filters.get("exam_board"):
-        query = query.filter(
-            Question.exam_board.ilike(f"%{filters['exam_board']}%")
-        )
+        query = query.filter(Question.exam_board.ilike(f"%{filters['exam_board']}%"))
 
-    # Ordena por taxa de acerto (menor primeiro = mais desafiadoras)
-    questions = query.order_by(
-        Question.correct_attempts / (Question.total_attempts + 1)
-    ).limit(count * 2).all()
+    questions = (
+        query.order_by(Question.correct_attempts / (Question.total_attempts + 1))
+        .limit(count * 2)
+        .all()
+    )
 
-    # Embaralha e limita ao count desejado
     import random
+
     random.shuffle(questions)
     return [q.id for q in questions[:count]]
 
+
 # ── Serializers ───────────────────────────────────────────────────────────────
+
 
 def _serialize_simulado(simulado: Simulado, total_questions: int = 0) -> dict:
     return {
@@ -929,6 +1129,7 @@ def _serialize_simulado(simulado: Simulado, total_questions: int = 0) -> dict:
         "created_at": simulado.created_at.isoformat() if simulado.created_at else None,
     }
 
+
 def _serialize_attempt_summary(attempt: SimuladoAttempt) -> dict:
     return {
         "id": attempt.id,
@@ -942,13 +1143,17 @@ def _serialize_attempt_summary(attempt: SimuladoAttempt) -> dict:
         "finished_at": attempt.finished_at,
     }
 
-def _serialize_attempt_detail(attempt: SimuladoAttempt,
-                               simulado: Simulado) -> dict:
+
+def _serialize_attempt_detail(attempt: SimuladoAttempt, simulado: Simulado) -> dict:
     """Retorna tentativa com questões (sem gabarito) para o aluno durante o simulado."""
-    sim_questions = SimuladoQuestion.query.filter_by(
-        simulado_id=simulado.id,
-        is_deleted=False,
-    ).order_by(SimuladoQuestion.order).all()
+    sim_questions = (
+        SimuladoQuestion.query.filter_by(
+            simulado_id=simulado.id,
+            is_deleted=False,
+        )
+        .order_by(SimuladoQuestion.order)
+        .all()
+    )
 
     # Quais questões o aluno já respondeu
     answers = SimuladoAnswer.query.filter_by(
@@ -962,19 +1167,21 @@ def _serialize_attempt_detail(attempt: SimuladoAttempt,
         q = sq.question
         if not q:
             continue
-        questions_data.append({
-            "id": q.id,
-            "statement": q.statement,
-            "context": q.context,
-            "discipline": q.discipline,
-            "difficulty": q.difficulty.value if q.difficulty else None,
-            "alternatives": [
-                {"key": a.key, "text": a.text}
-                for a in sorted(q.alternatives, key=lambda x: x.key)
-            ],
-            # Resposta já dada pelo aluno (para retomar)
-            "chosen_key": answered_map.get(q.id),
-        })
+        questions_data.append(
+            {
+                "id": q.id,
+                "statement": q.statement,
+                "context": q.context,
+                "discipline": q.discipline,
+                "difficulty": q.difficulty.value if q.difficulty else None,
+                "alternatives": [
+                    {"key": a.key, "text": a.text}
+                    for a in sorted(q.alternatives, key=lambda x: x.key)
+                ],
+                # Resposta já dada pelo aluno (para retomar)
+                "chosen_key": answered_map.get(q.id),
+            }
+        )
 
     return {
         "id": attempt.id,
