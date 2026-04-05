@@ -127,7 +127,7 @@ class Lesson(BaseModel, TenantMixin):
     # Conteúdo
     video_url = Column(String(500), nullable=True)  # URL S3 ou embed YouTube/Vimeo
     duration_minutes = Column(Integer, default=0, nullable=False)
-    material_url = Column(String(500), nullable=True)  # PDF de apoio
+    materials = Column(JSON, default=list, nullable=False)
     video_s3_key = Column(String(500), nullable=True)  # Key S3 — hospedagem nativa
 
     # Link externo para aulas hospedadas fora da plataforma (ex: Hotmart, Kiwify).

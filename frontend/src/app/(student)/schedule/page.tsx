@@ -101,7 +101,7 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
         </div>
         <h1 className="font-display text-2xl font-bold text-foreground">Cronograma Inteligente</h1>
         <p className="text-muted-foreground text-sm">
-          Configure seu plano adaptativo — ele aprende com seu desempenho
+          Configure seu plano adaptativo, ele aprende com seu desempenho
         </p>
       </div>
 
@@ -143,7 +143,7 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
             </p>
           </div>
           <div className="grid grid-cols-4 gap-2">
-            {[0.5, 1, 1.5, 2, 3, 4, 5, 6].map(h => (
+            {[2, 3, 4, 5, 6, 7, 8].map(h => (
               <button key={h} onClick={() => setHours(h)}
                 className={cn(
                   "py-2 rounded-xl text-sm font-medium border-2 transition-all",
@@ -152,10 +152,30 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
                 {h}h
               </button>
             ))}
+            {/* Outro valor personalizado */}
+            <div className={cn(
+              "col-span-1 flex items-center rounded-xl border-2 px-2 transition-all",
+              ![2,3,4,5,6,7,8].includes(hours) ? "border-primary" : "border-border"
+            )}>
+              <input
+                type="number"
+                min={2}
+                max={24}
+                placeholder="+"
+                value={![2,3,4,5,6,7,8].includes(hours) ? hours : ""}
+                onChange={e => {
+                  const v = Number(e.target.value);
+                  if (v >= 2) setHours(v);
+                }}
+                className="w-full bg-transparent text-sm text-center focus:outline-none"
+              />
+            </div>
           </div>
           <div className="flex gap-2">
             <Button variant="outline" className="flex-1" onClick={() => setStep(1)}>Voltar</Button>
-            <Button className="flex-1" onClick={() => setStep(3)}>Continuar <ChevronRight className="h-4 w-4" /></Button>
+            <Button className="flex-1" disabled={hours < 2} onClick={() => setStep(3)}>
+              Continuar <ChevronRight className="h-4 w-4" />
+            </Button>
           </div>
         </CardContent></Card>
       )}
@@ -168,24 +188,27 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
           </div>
           <div className="grid grid-cols-2 gap-2">
             {[
-              { label: "Manhã", time: "08:00" },
-              { label: "Tarde", time: "14:00" },
-              { label: "Noite", time: "19:00" },
+              { label: "Manhã",     time: "08:00" },
+              { label: "Tarde",     time: "14:00" },
+              { label: "Noite",     time: "19:00" },
               { label: "Madrugada", time: "22:00" },
             ].map(({ label, time }) => (
               <button key={time} onClick={() => setStartTime(time)}
                 className={cn(
-                  "py-3 rounded-xl text-sm font-medium border-2 transition-all",
-                  startTime === time ? "bg-primary text-primary-foreground border-primary" : "bg-background border-border hover:border-primary/50"
+                  "py-4 rounded-xl text-sm font-medium border-2 transition-all",
+                  startTime === time
+                    ? "bg-primary text-primary-foreground border-primary"
+                    : "bg-background border-border hover:border-primary/50"
                 )}>
                 {label}
-                <span className="block text-xs opacity-70">{time}</span>
               </button>
             ))}
           </div>
           <div className="flex gap-2">
             <Button variant="outline" className="flex-1" onClick={() => setStep(2)}>Voltar</Button>
-            <Button className="flex-1" onClick={() => setStep(4)}>Continuar <ChevronRight className="h-4 w-4" /></Button>
+            <Button className="flex-1" onClick={() => setStep(4)}>
+              Continuar <ChevronRight className="h-4 w-4" />
+            </Button>
           </div>
         </CardContent></Card>
       )}

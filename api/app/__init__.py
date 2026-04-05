@@ -60,6 +60,7 @@ def _configure_logging(app: Flask) -> None:
 
 
 def _init_extensions(app: Flask) -> None:
+    app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
     db.init_app(app)
     migrate.init_app(app, db)
     jwt.init_app(app)
@@ -129,6 +130,8 @@ def _register_blueprints(app: Flask) -> None:
     from app.routes.gamification import gamification_bp
     from .routes.appearance import appearance_bp
     from .routes.producer_schedule import producer_schedule_bp
+    from .routes.producer.questions import producer_questions_bp
+    from .routes.admin.questions import admin_questions_bp
 
     app.register_blueprint(health_bp)  # /health (sem prefixo)
     app.register_blueprint(auth_bp, url_prefix="/api/v1/auth")
@@ -144,6 +147,8 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(gamification_bp, url_prefix="/api/v1/gamification")
     app.register_blueprint(appearance_bp, url_prefix="/api/v1/appearance")
     app.register_blueprint(producer_schedule_bp, url_prefix="/api/v1/producer-schedule")
+    app.register_blueprint(producer_questions_bp, url_prefix="/api/v1/producer")
+    app.register_blueprint(admin_questions_bp, url_prefix="/api/v1/admin")
 
 
 def _register_error_handlers(app: Flask) -> None:

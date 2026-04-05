@@ -3,15 +3,16 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Building2, Settings, LogOut, Shield, Server } from "lucide-react";
+import { Building2, Settings, LogOut, Shield, Server, BookOpen } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import { useLogout } from "@/lib/hooks/useAuth";
 import { useAuthStore } from "@/lib/stores/authStore";
 
 const navItems = [
-    { href: "/admin/tenants", label: "Tenants", icon: Building2 },
-    { href: "/admin/infrastructure", label: "Infraestrutura", icon: Server },
-    { href: "/admin/settings", label: "Configurações", icon: Settings },
+    { href: "/admin/tenants",       label: "Tenants",          icon: Building2 },
+    { href: "/admin/questions",     label: "Banco de Questões", icon: BookOpen  },
+    { href: "/admin/infrastructure",label: "Infraestrutura",    icon: Server    },
+    { href: "/admin/settings",      label: "Configurações",     icon: Settings  },
 ];
 
 export function AdminSidebar() {
@@ -62,7 +63,10 @@ export function AdminSidebar() {
                         <p className="text-sm font-medium text-foreground truncate">{user?.name}</p>
                         <p className="text-xs text-muted-foreground">super_admin</p>
                     </div>
-                    <button onClick={logout} className="text-muted-foreground hover:text-destructive transition-colors">
+                    <button
+                        onClick={logout}
+                        className="text-muted-foreground hover:text-destructive transition-colors"
+                    >
                         <LogOut className="h-4 w-4" />
                     </button>
                 </div>

@@ -26,7 +26,7 @@ flower==2.0.1                 # Monitor Celery
 # ── IA ──────────────────────────────────────────────────────────────────────
 google-genai>=1.0.0   # Gemini API (novo SDK - tasks)
 google-generativeai>=0.8.0  # Gemini API (analytics)
-
+youtube-transcript-api>=0.6.2    # Transcrição de aulas YouTube (via proxy no ECS)
 # ── Storage ─────────────────────────────────────────────────────────────────
 boto3==1.35.86                # AWS S3
 

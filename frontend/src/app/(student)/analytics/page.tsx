@@ -103,7 +103,7 @@ export default function AnalyticsPage() {
             {/* Meta semanal */}
             <Card>
                 <CardHeader>
-                    <CardTitle className="text-base">Meta semanal</CardTitle>
+                    <CardTitle className="text-base">Missão semanal</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
                     <div className="flex items-center justify-between text-sm">
@@ -111,7 +111,7 @@ export default function AnalyticsPage() {
                             {Math.round(time_studied.week_minutes)}min estudados
                         </span>
                         <span className="font-medium text-foreground">
-                            Meta: {time_studied.weekly_goal_minutes}min
+                            Missão: {time_studied.weekly_goal_minutes}min
                         </span>
                     </div>
                     <ProgressBar
@@ -131,7 +131,7 @@ export default function AnalyticsPage() {
                             <p className="text-lg font-display font-bold text-foreground">
                                 {time_studied.weekly_goal_hours}h
                             </p>
-                            <p className="text-xs text-muted-foreground">Meta/semana</p>
+                            <p className="text-xs text-muted-foreground">Missão/semana</p>
                         </div>
                     </div>
                 </CardContent>

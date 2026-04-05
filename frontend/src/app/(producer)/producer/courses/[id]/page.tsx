@@ -162,6 +162,15 @@ export default function ProducerCourseDetailPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) }),
   });
 
+  const reorderLessons = useMutation({
+    mutationFn: ({ moduleId, orderedIds }: { moduleId: string; orderedIds: string[] }) =>
+      apiClient
+        .put(`/courses/modules/${moduleId}/lessons/reorder`, { ordered_ids: orderedIds })
+        .then(r => r.data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) }),
+    onError: () => toast.error("Erro ao reordenar aulas"),
+  });
+
   // ── Mutations: IA + excluir ─────────────────────────────────────────────────
 
   const generateLessonQuestions = useMutation({
@@ -234,6 +243,22 @@ export default function ProducerCourseDetailPage() {
     if (confirmDelete.type === "subject") deleteSubject.mutate(confirmDelete.id);
     else if (confirmDelete.type === "module") deleteModule.mutate(confirmDelete.id);
     else deleteLesson.mutate(confirmDelete.id);
+  };
+
+  const moveLessonInModule = (module: any, lessonId: string, direction: "up" | "down") => {
+    const lessons: any[] = [...(module.lessons || [])].sort((a, b) => a.order - b.order);
+    const idx = lessons.findIndex(l => l.id === lessonId);
+    if (idx === -1) return;
+    if (direction === "up" && idx === 0) return;
+    if (direction === "down" && idx === lessons.length - 1) return;
+
+    const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+    [lessons[idx], lessons[swapIdx]] = [lessons[swapIdx], lessons[idx]];
+
+    reorderLessons.mutate({
+      moduleId: module.id,
+      orderedIds: lessons.map(l => l.id),
+    });
   };
 
   if (isLoading) return <Skeleton className="h-64 rounded-xl animate-pulse" />;
@@ -390,50 +415,116 @@ export default function ProducerCourseDetailPage() {
                           {(module.lessons || []).length === 0 && (
                             <p className="px-8 py-2 text-xs text-muted-foreground italic">Nenhuma aula. Clique em + para adicionar.</p>
                           )}
-                          {(module.lessons || []).map((lesson: any, li: number) => (
-                            <div key={lesson.id} className="flex items-center gap-3 px-8 py-2 hover:bg-accent/20 transition-colors group">
-                              <Video className="h-3 w-3 text-muted-foreground shrink-0" />
-                              <span className="flex-1 text-xs text-foreground truncate">{li + 1}. {lesson.title}</span>
-                              {lesson.material_url && (
-                                <span title="Tem PDF"><FileText className="h-3 w-3 text-destructive shrink-0" /></span>
-                              )}
-                              {lesson.external_url && (
-                                <span title="Aula externa (Hotmart/Kiwify)">
-                                  <ExternalLink className="h-3 w-3 text-orange-500 shrink-0" />
-                                </span>
-                              )}
-                              {lesson.duration_minutes > 0 && (
-                                <span className="text-xs text-muted-foreground flex items-center gap-0.5">
-                                  <Clock className="h-3 w-3" />{lesson.duration_minutes}min
-                                </span>
-                              )}
-                              <button onClick={() => setEditLesson({ open: true, lesson })} title="Editar aula"
-                                className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                                <Pencil className="h-3 w-3 text-muted-foreground hover:text-foreground" />
-                              </button>
-                              <button onClick={() => setConfirmDelete({ open: true, type: "lesson", id: lesson.id, name: lesson.title })}
-                                title="Excluir aula" className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                                <Trash2 className="h-3 w-3 text-muted-foreground hover:text-destructive" />
-                              </button>
-                              <button onClick={() => toggleLesson.mutate({
-                                lessonId: lesson.id, title: lesson.title, is_published: !lesson.is_published,
-                                video_url: lesson.video_url, duration_minutes: lesson.duration_minutes,
-                                order: lesson.order ?? 0, is_free_preview: lesson.is_free_preview ?? false,
-                              })} title={lesson.is_published ? "Despublicar" : "Publicar"} className="shrink-0">
-                                {lesson.is_published
-                                  ? <Eye className="h-3.5 w-3.5 text-success" />
-                                  : <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />
-                                }
-                              </button>
-                              <button
-                                onClick={() => setLessonQuestionsModal({ open: true, lessonId: lesson.id, lessonTitle: lesson.title })}
-                                title="Questões da aula com IA"
-                                className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                          {(module.lessons || [])
+                            .slice()
+                            .sort((a: any, b: any) => a.order - b.order)
+                            .map((lesson: any, li: number, arr: any[]) => (
+                              <div
+                                key={lesson.id}
+                                draggable
+                                onDragStart={e => {
+                                  e.dataTransfer.setData("lessonId", lesson.id);
+                                  e.dataTransfer.setData("moduleId", module.id);
+                                  (e.currentTarget as HTMLElement).style.opacity = "0.4";
+                                }}
+                                onDragEnd={e => {
+                                  (e.currentTarget as HTMLElement).style.opacity = "1";
+                                }}
+                                onDragOver={e => {
+                                  e.preventDefault();
+                                  (e.currentTarget as HTMLElement).style.borderTop = "2px solid var(--primary)";
+                                }}
+                                onDragLeave={e => {
+                                  (e.currentTarget as HTMLElement).style.borderTop = "";
+                                }}
+                                onDrop={e => {
+                                  e.preventDefault();
+                                  (e.currentTarget as HTMLElement).style.borderTop = "";
+                                  const draggedId = e.dataTransfer.getData("lessonId");
+                                  const draggedModuleId = e.dataTransfer.getData("moduleId");
+                                  if (draggedId === lesson.id || draggedModuleId !== module.id) return;
+
+                                  const sorted = [...arr];
+                                  const fromIdx = sorted.findIndex(l => l.id === draggedId);
+                                  const toIdx = sorted.findIndex(l => l.id === lesson.id);
+                                  sorted.splice(toIdx, 0, sorted.splice(fromIdx, 1)[0]);
+
+                                  reorderLessons.mutate({
+                                    moduleId: module.id,
+                                    orderedIds: sorted.map(l => l.id),
+                                  });
+                                }}
+                                className="flex items-center gap-3 px-8 py-2 hover:bg-accent/20 transition-colors group cursor-grab active:cursor-grabbing"
                               >
-                                <Sparkles className="h-3.5 w-3.5 text-purple-500 hover:text-purple-700" />
-                              </button>
-                            </div>
-                          ))}
+                                {/* ícone de drag — sempre visível */}
+                                <GripVertical className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+
+                                <Video className="h-3 w-3 text-muted-foreground shrink-0" />
+                                <span className="flex-1 text-xs text-foreground truncate">{li + 1}. {lesson.title}</span>
+
+                                {/* ↑↓ ainda disponíveis para quem preferir */}
+                                <div className="flex flex-col opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                                  <button
+                                    onClick={() => moveLessonInModule(module, lesson.id, "up")}
+                                    disabled={li === 0 || reorderLessons.isPending}
+                                    title="Mover para cima"
+                                    className="disabled:opacity-20 hover:text-foreground text-muted-foreground"
+                                  >
+                                    <ChevronUp className="h-3 w-3" />
+                                  </button>
+                                  <button
+                                    onClick={() => moveLessonInModule(module, lesson.id, "down")}
+                                    disabled={li === arr.length - 1 || reorderLessons.isPending}
+                                    title="Mover para baixo"
+                                    className="disabled:opacity-20 hover:text-foreground text-muted-foreground"
+                                  >
+                                    <ChevronDown className="h-3 w-3" />
+                                  </button>
+                                </div>
+
+                                {lesson.materials?.length > 0 && (
+                                  <span title={`${lesson.materials.length} PDF(s)`}>
+                                    <FileText className="h-3 w-3 text-destructive shrink-0" />
+                                  </span>
+                                )}
+                                {lesson.external_url && (
+                                  <span title="Aula externa">
+                                    <ExternalLink className="h-3 w-3 text-orange-500 shrink-0" />
+                                  </span>
+                                )}
+                                {lesson.duration_minutes > 0 && (
+                                  <span className="text-xs text-muted-foreground flex items-center gap-0.5">
+                                    <Clock className="h-3 w-3" />{lesson.duration_minutes}min
+                                  </span>
+                                )}
+                                <button onClick={() => setEditLesson({ open: true, lesson })} title="Editar aula"
+                                  className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                                  <Pencil className="h-3 w-3 text-muted-foreground hover:text-foreground" />
+                                </button>
+                                <button onClick={() => setConfirmDelete({ open: true, type: "lesson", id: lesson.id, name: lesson.title })}
+                                  title="Excluir aula" className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                                  <Trash2 className="h-3 w-3 text-muted-foreground hover:text-destructive" />
+                                </button>
+                                <button onClick={() => toggleLesson.mutate({
+                                  lessonId: lesson.id, title: lesson.title, is_published: !lesson.is_published,
+                                  video_url: lesson.video_url, duration_minutes: lesson.duration_minutes,
+                                  order: lesson.order ?? 0, is_free_preview: lesson.is_free_preview ?? false,
+                                })} title={lesson.is_published ? "Despublicar" : "Publicar"} className="shrink-0">
+                                  {lesson.is_published
+                                    ? <Eye className="h-3.5 w-3.5 text-success" />
+                                    : <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />
+                                  }
+                                </button>
+                                <button
+                                  onClick={() => setLessonQuestionsModal({ open: true, lessonId: lesson.id, lessonTitle: lesson.title })}
+                                  title="Questões da aula com IA"
+                                  className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                                >
+                                  <Sparkles className="h-3.5 w-3.5 text-purple-500 hover:text-purple-700" />
+                                </button>
+                              </div>
+                            ))
+                          }
                         </div>
                       )}
                     </div>
@@ -515,8 +606,7 @@ export default function ProducerCourseDetailPage() {
         onSubmit={d => createLesson.mutate({ ...d, moduleId: lessonModal.moduleId })}
         onPdfUploaded={() => {
           queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) });
-          setLessonModal({ open: false, moduleId: "" });
-          toast.success("Aula criada com PDF!");
+          // não fecha — usuário clica "Concluir" quando quiser
         }}
         onVideoSaved={() => queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) })}
       />
@@ -545,6 +635,7 @@ export default function ProducerCourseDetailPage() {
           video_url: editLesson.lesson.video_url || "",
           is_free_preview: editLesson.lesson.is_free_preview,
           material_url: editLesson.lesson.material_url,
+          materials: editLesson.lesson.materials ?? [],
           external_url: editLesson.lesson.external_url || "",
           video_hosted: editLesson.lesson.video_hosted,
         } : undefined}
@@ -562,6 +653,13 @@ export default function ProducerCourseDetailPage() {
           },
         })}
         onVideoSaved={() => queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) })}
+        onMaterialSaved={(updatedMaterials) => {           // ← novo
+          queryClient.invalidateQueries({ queryKey: QUERY_KEYS.COURSE(courseId) });
+          setEditLesson(prev => prev.lesson
+            ? { ...prev, lesson: { ...prev.lesson, materials: updatedMaterials } }
+            : prev
+          );
+        }}
         loading={updateLesson.isPending}
       />
     </div>
@@ -667,11 +765,12 @@ function CreateLessonModal({ open, createdLessonId, createdTitle, loading, hasVi
             )}
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Material de Apoio (PDF)</label>
-              <PdfUploader lessonId={createdLessonId} currentUrl={null}
+              <PdfUploader lessonId={createdLessonId} currentUrl={null} materials={[]}
                 onUploaded={(url) => { if (url) onPdfUploaded(); }} />
             </div>
             <DialogFooter>
               <Button variant="ghost" onClick={handleClose}>Pular por agora</Button>
+              <Button onClick={handleClose}>Concluir</Button>
             </DialogFooter>
           </div>
         )}
@@ -756,16 +855,18 @@ function SimpleModal({ open, onClose, title, placeholder, initialValue, onSubmit
   );
 }
 
-function LessonModal({ open, title, initialData, lessonId, hasVideoHosting, onClose, onSubmit, onVideoSaved, loading }: {
+function LessonModal({ open, title, initialData, lessonId, hasVideoHosting, onClose, onSubmit, onVideoSaved, onMaterialSaved, loading }: {
   open: boolean; title: string; lessonId?: string; hasVideoHosting: boolean;
   initialData?: {
     title: string; duration_minutes: number; video_url: string;
     is_free_preview?: boolean; material_url?: string | null;
+    materials?: { id: string; url: string; filename: string }[];
     external_url?: string | null; video_hosted?: boolean;
   };
   onClose: () => void;
   onSubmit: (d: { title: string; duration_minutes: number; video_url: string; is_free_preview?: boolean; external_url?: string | null }) => void;
   onVideoSaved: () => void;
+  onMaterialSaved?: (materials: { id: string; url: string; filename: string }[]) => void;
   loading: boolean;
 }) {
   const { register, handleSubmit, reset, watch } = useForm({
@@ -841,7 +942,7 @@ function LessonModal({ open, title, initialData, lessonId, hasVideoHosting, onCl
           {lessonId && (
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Material de Apoio (PDF)</label>
-              <PdfUploader lessonId={lessonId} currentUrl={initialData?.material_url} onUploaded={() => { }} />
+              <PdfUploader lessonId={lessonId} currentUrl={initialData?.material_url} materials={initialData?.materials ?? []} onUploaded={() => { }} onMaterialsChange={onMaterialSaved} />
             </div>
           )}
           <DialogFooter>

@@ -178,17 +178,22 @@ export default function LessonPage() {
           </Card>
         </div>
 
-        {/* Material PDF */}
-        {lesson.material_url && (
+        {/* Materiais de Apoio */}
+        {(lesson.materials?.length > 0) && (
           <Card>
-            <CardContent className="p-4">
-              <p className="text-xs font-semibold text-muted-foreground mb-2">MATERIAL DE APOIO</p>
-              <a href={lesson.material_url} target="_blank" rel="noopener noreferrer">
-                <Button variant="outline" className="w-full gap-2 text-sm">
-                  <FileText className="h-4 w-4" />Abrir PDF
-                  <ExternalLink className="h-3 w-3 ml-auto" />
-                </Button>
-              </a>
+            <CardContent className="p-4 space-y-2">
+              <p className="text-xs font-semibold text-muted-foreground">
+                MATERIAL{lesson.materials.length > 1 ? "IS" : ""} DE APOIO
+              </p>
+              {lesson.materials.map((mat: { id: string; url: string; filename: string }) => (
+                <a key={mat.id} href={mat.url} target="_blank" rel="noopener noreferrer">
+                  <Button variant="outline" className="w-full gap-2 text-sm justify-start">
+                    <FileText className="h-4 w-4 shrink-0" />
+                    <span className="truncate flex-1 text-left">{mat.filename}</span>
+                    <ExternalLink className="h-3 w-3 ml-auto shrink-0" />
+                  </Button>
+                </a>
+              ))}
             </CardContent>
           </Card>
         )}

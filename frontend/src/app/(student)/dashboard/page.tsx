@@ -79,7 +79,7 @@ export default function DashboardPage() {
                     <div className="flex items-center justify-between mb-3">
                         <div>
                             <p className="text-sm font-medium text-foreground">
-                                Meta semanal
+                                Missão semanal
                             </p>
                             <p className="text-xs text-muted-foreground">
                                 {Math.round(time_studied.week_minutes)}min de{" "}

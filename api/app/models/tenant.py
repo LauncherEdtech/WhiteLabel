@@ -17,6 +17,7 @@ class Tenant(BaseModel):
     - Dados completamente isolados dos outros tenants
     - Configurações de features habilitadas
     """
+
     __tablename__ = "tenants"
 
     # ── Identificação ─────────────────────────────────────────────────────────
@@ -26,20 +27,17 @@ class Tenant(BaseModel):
         unique=True,
         nullable=False,
         index=True,
-    )  # Ex: "curso-juridico" — usado como fallback de identificação
+    )
 
     # ── Domínio customizado ───────────────────────────────────────────────────
-    # SEGURANÇA: Domínio verificado via DNS challenge antes de ativar
     custom_domain = Column(String(255), unique=True, nullable=True, index=True)
     domain_verified = Column(Boolean, default=False, nullable=False)
 
     # ── Status ────────────────────────────────────────────────────────────────
     is_active = Column(Boolean, default=True, nullable=False)
-    # Plano determina features disponíveis (básico, pro, enterprise)
     plan = Column(String(50), default="basic", nullable=False)
 
     # ── Branding ──────────────────────────────────────────────────────────────
-    # Armazenado como JSON para flexibilidade sem migrations a cada nova config
     branding = Column(
         JSON,
         default=lambda: {
@@ -53,16 +51,22 @@ class Tenant(BaseModel):
         nullable=False,
     )
 
-    # ── Configurações de features ──────────────────────────────────────────────
-    # Permite ligar/desligar módulos por tenant sem deploy
+    # ── Features ──────────────────────────────────────────────────────────────
+    # Adicione features aqui e em is_feature_enabled() ao criar novas.
+    # Valores ausentes no JSON são tratados como False pelo is_feature_enabled.
     features = Column(
         JSON,
         default=lambda: {
-            "ai_schedule": True,          # Cronograma inteligente
+            "ai_schedule": True,  # Cronograma inteligente
             "ai_question_extract": True,  # Extração de questões com Gemini
             "simulados": True,
             "analytics_producer": True,
             "ai_tutor_chat": True,
+            # ── Banco de Questões Compartilhado ──────────────────────────────
+            # Dá acesso ao banco global de questões de concurso.
+            # Com esta feature o produtor também pode submeter novas questões
+            # para revisão pelo admin.
+            "question_bank_concursos": False,  # Desabilitado por padrão
         },
         nullable=False,
     )
@@ -83,7 +87,7 @@ class Tenant(BaseModel):
     users = relationship(
         "User",
         back_populates="tenant",
-        lazy="dynamic",   # Lazy dynamic: não carrega todos os alunos na memória
+        lazy="dynamic",
         cascade="all, delete-orphan",
     )
     courses = relationship(
@@ -97,5 +101,8 @@ class Tenant(BaseModel):
         return f"<Tenant {self.slug}>"
 
     def is_feature_enabled(self, feature: str) -> bool:
-        """Verifica se uma feature está habilitada para este tenant."""
-        return self.features.get(feature, False)
+        """
+        Verifica se uma feature está habilitada para este tenant.
+        Valores ausentes no JSON retornam False (safe default).
+        """
+        return bool(self.features.get(feature, False))

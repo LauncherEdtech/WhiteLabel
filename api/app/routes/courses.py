@@ -106,7 +106,6 @@ class LessonSchema(Schema):
     description = fields.Str(allow_none=True, load_default=None)
     video_url = fields.Str(allow_none=True, load_default=None)
     duration_minutes = fields.Int(load_default=0, validate=validate.Range(min=0))
-    material_url = fields.Str(allow_none=True, load_default=None)
     video_s3_key = fields.Str(allow_none=True, load_default=None)
     external_url = fields.Str(allow_none=True, load_default=None)
     order = fields.Int(load_default=0)
@@ -676,6 +675,63 @@ def create_module(subject_id: str):
     )
 
 
+# ── Reordenar aulas de um módulo ──────────────────────────────────────────────
+
+
+@courses_bp.route("/modules/<string:module_id>/lessons/reorder", methods=["PUT"])
+@jwt_required()
+@require_tenant
+def reorder_lessons(module_id: str):
+    """
+    Reordena as aulas de um módulo.
+    Body: { "ordered_ids": ["lesson_id_1", "lesson_id_2", ...] }
+    Atribui order=0,1,2,... conforme a posição na lista.
+    """
+    claims = get_jwt()
+    if not _is_producer_or_above(claims):
+        return jsonify({"error": "forbidden"}), 403
+
+    tenant = get_current_tenant()
+    module = Module.query.filter_by(
+        id=module_id,
+        tenant_id=tenant.id,
+        is_deleted=False,
+    ).first()
+    if not module:
+        return jsonify({"error": "not_found"}), 404
+
+    body = request.get_json(force=True) or {}
+    ordered_ids: list[str] = body.get("ordered_ids", [])
+    if not ordered_ids:
+        return jsonify({"error": "ordered_ids is required"}), 400
+
+    # Busca todas as aulas do módulo de uma vez
+    lessons_map: dict[str, Lesson] = {
+        l.id: l
+        for l in Lesson.query.filter_by(
+            module_id=module.id,
+            tenant_id=tenant.id,
+            is_deleted=False,
+        ).all()
+    }
+
+    # Valida que todos os IDs pertencem a este módulo
+    for lesson_id in ordered_ids:
+        if lesson_id not in lessons_map:
+            return (
+                jsonify({"error": f"lesson {lesson_id} not found in this module"}),
+                404,
+            )
+
+    # Atualiza a ordem atomicamente
+    for index, lesson_id in enumerate(ordered_ids):
+        lessons_map[lesson_id].order = index
+
+    db.session.commit()
+
+    return jsonify({"message": "Aulas reordenadas.", "count": len(ordered_ids)}), 200
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # LESSONS (aulas)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -705,6 +761,17 @@ def create_lesson(module_id: str):
     except ValidationError as e:
         return jsonify({"error": "validation_error", "details": e.messages}), 400
 
+    max_order = (
+        db.session.query(db.func.max(Lesson.order))
+        .filter_by(
+            module_id=module.id,
+            tenant_id=tenant.id,
+            is_deleted=False,
+        )
+        .scalar()
+    )
+    next_order = (max_order or 0) + 1
+
     lesson = Lesson(
         tenant_id=tenant.id,
         module_id=module.id,
@@ -712,9 +779,8 @@ def create_lesson(module_id: str):
         description=data.get("description"),
         video_url=data.get("video_url"),
         duration_minutes=data["duration_minutes"],
-        material_url=data.get("material_url"),
         external_url=data.get("external_url"),
-        order=data["order"],
+        order=next_order,
         is_published=data.get("is_published", True),  # Publicada por padrão
         is_free_preview=data.get("is_free_preview", False),
     )
@@ -972,8 +1038,6 @@ def update_lesson(lesson_id: str):
     lesson.is_published = data["is_published"]
     lesson.is_free_preview = data.get("is_free_preview", lesson.is_free_preview)
 
-    if "material_url" in raw_json:
-        lesson.material_url = data.get("material_url")
     # ✅ FIX 2: só atualiza video_url se foi explicitamente enviado no request
     # Sem isso, toggleLesson (que não manda video_url) apagava a URL salva
     if "video_url" in raw_json:
@@ -1038,7 +1102,10 @@ def _serialize_lesson(lesson: Lesson, progress=None, full: bool = False) -> dict
         "ai_topics": lesson.ai_topics or [],
         "video_url": video_url,  # ← corrigido: usa a variável, não lesson.video_url
         "video_hosted": bool(lesson.video_s3_key),
-        "material_url": lesson.material_url,
+        "materials": lesson.materials or [],
+        "material_url": (
+            (lesson.materials or [{}])[0].get("url") if lesson.materials else None
+        ),
         "external_url": lesson.external_url,
         "progress": (
             {

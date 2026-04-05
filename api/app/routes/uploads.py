@@ -215,7 +215,7 @@ def logo_confirm():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PDF DE AULAS
+# PDF DE AULAS — suporte a múltiplos materiais por aula
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -224,8 +224,9 @@ def logo_confirm():
 @require_tenant
 def pdf_presigned_url():
     """
-    Gera URL pré-assinada para upload de PDF de material de aula.
+    Gera URL pré-assinada para upload de PDF.
     Body: { lesson_id: str, filename: str }
+    Inalterado — o frontend continua usando este endpoint.
     """
     claims = get_jwt()
     if not _is_producer_or_above(claims):
@@ -244,7 +245,7 @@ def pdf_presigned_url():
         id=lesson_id, tenant_id=tenant.id, is_deleted=False
     ).first()
     if not lesson:
-        return jsonify({"error": "not_found", "message": "Aula não encontrada."}), 404
+        return jsonify({"error": "not_found"}), 404
 
     content_type = "application/pdf"
     safe_name = "".join(c for c in filename if c.isalnum() or c in "._- ")[:100]
@@ -252,38 +253,26 @@ def pdf_presigned_url():
         safe_name += ".pdf"
 
     key = f"tenants/{tenant.id}/lessons/{lesson_id}/{uuid.uuid4()}_{safe_name}"
-
     bucket = current_app.config.get("AWS_S3_BUCKET", "")
     if not bucket:
-        return (
-            jsonify({"error": "s3_not_configured", "message": "S3 não configurado."}),
-            500,
-        )
+        return jsonify({"error": "s3_not_configured"}), 500
 
     try:
         presigned = _generate_presigned_post(bucket, key, content_type, MAX_PDF_SIZE)
     except ClientError as e:
         current_app.logger.error(f"S3 PDF presigned error: {e}")
-        return (
-            jsonify({"error": "s3_error", "message": "Erro ao gerar URL de upload."}),
-            500,
-        )
+        return jsonify({"error": "s3_error"}), 500
 
     region = current_app.config.get("AWS_REGION", "sa-east-1")
     public_url = _s3_public_url(bucket, region, key)
 
-    return (
-        jsonify(
-            {
-                "upload_url": presigned["url"],
-                "fields": presigned["fields"],
-                "public_url": public_url,
-                "key": key,
-                "lesson_id": lesson_id,
-            }
-        ),
-        200,
-    )
+    return jsonify({
+        "upload_url": presigned["url"],
+        "fields": presigned["fields"],
+        "public_url": public_url,
+        "key": key,
+        "lesson_id": lesson_id,
+    }), 200
 
 
 @uploads_bp.route("/pdf/confirm", methods=["PATCH"])
@@ -291,7 +280,7 @@ def pdf_presigned_url():
 @require_tenant
 def pdf_confirm():
     """
-    Após upload para o S3, salva material_url na aula.
+    Após upload para o S3, ADICIONA o material ao array materials da aula.
     Body: { lesson_id: str, material_url: str, filename: str }
     """
     claims = get_jwt()
@@ -303,7 +292,7 @@ def pdf_confirm():
 
     lesson_id = data.get("lesson_id", "").strip()
     material_url = data.get("material_url", "").strip()
-    filename = data.get("filename", "Material").strip()
+    filename = data.get("filename", "Material.pdf").strip()
 
     if not lesson_id or not material_url:
         return jsonify({"error": "lesson_id e material_url são obrigatórios"}), 400
@@ -314,26 +303,30 @@ def pdf_confirm():
     if not lesson:
         return jsonify({"error": "not_found"}), 404
 
-    lesson.material_url = material_url
+    new_material = {
+        "id": str(uuid.uuid4()),
+        "url": material_url,
+        "filename": filename,
+    }
+
+    current = list(lesson.materials or [])
+    current.append(new_material)
+    lesson.materials = current
+    flag_modified(lesson, "materials")
     db.session.commit()
 
-    return (
-        jsonify(
-            {
-                "message": "Material salvo com sucesso.",
-                "material_url": material_url,
-                "filename": filename,
-            }
-        ),
-        200,
-    )
+    return jsonify({
+        "message": "Material adicionado.",
+        "material": new_material,
+        "total": len(current),
+    }), 200
 
 
-@uploads_bp.route("/pdf/<string:lesson_id>", methods=["DELETE"])
+@uploads_bp.route("/pdf/<string:lesson_id>/<string:material_id>", methods=["DELETE"])
 @jwt_required()
 @require_tenant
-def pdf_delete(lesson_id: str):
-    """Remove material_url da aula (não deleta do S3, apenas desvincula)."""
+def pdf_delete_one(lesson_id: str, material_id: str):
+    """Remove um material específico pelo seu ID do array materials."""
     claims = get_jwt()
     if not _is_producer_or_above(claims):
         return jsonify({"error": "forbidden"}), 403
@@ -345,10 +338,40 @@ def pdf_delete(lesson_id: str):
     if not lesson:
         return jsonify({"error": "not_found"}), 404
 
-    lesson.material_url = None
+    current = list(lesson.materials or [])
+    updated = [m for m in current if m.get("id") != material_id]
+
+    if len(updated) == len(current):
+        return jsonify({"error": "material not found"}), 404
+
+    lesson.materials = updated
+    flag_modified(lesson, "materials")
     db.session.commit()
 
-    return jsonify({"message": "Material removido da aula."}), 200
+    return jsonify({"message": "Material removido.", "remaining": len(updated)}), 200
+
+
+@uploads_bp.route("/pdf/<string:lesson_id>", methods=["DELETE"])
+@jwt_required()
+@require_tenant
+def pdf_delete_all(lesson_id: str):
+    """Remove TODOS os materiais de uma aula (mantido para compatibilidade)."""
+    claims = get_jwt()
+    if not _is_producer_or_above(claims):
+        return jsonify({"error": "forbidden"}), 403
+
+    tenant = get_current_tenant()
+    lesson = Lesson.query.filter_by(
+        id=lesson_id, tenant_id=tenant.id, is_deleted=False
+    ).first()
+    if not lesson:
+        return jsonify({"error": "not_found"}), 404
+
+    lesson.materials = []
+    flag_modified(lesson, "materials")
+    db.session.commit()
+
+    return jsonify({"message": "Todos os materiais removidos."}), 200
 
 
 # ══════════════════════════════════════════════════════════════════════════════

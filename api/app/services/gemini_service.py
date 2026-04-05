@@ -3,8 +3,9 @@
 Serviço de integração com Google Gemini API.
 
 Pipeline de geração de questões:
-1. Se video_url YouTube → passa URL diretamente ao Gemini via file_data
-   (Gemini busca o vídeo nos servidores do Google — sem bloqueio de IP AWS)
+1. Se video_url YouTube → busca transcrição real via youtube-transcript-api (com proxy)
+   → Gemini recebe texto com timestamps e gera questões baseadas no conteúdo real
+   (pipeline idêntico ao Colab — contorna bloqueio de IP AWS via YOUTUBE_PROXY_URL)
 2. Fallback → usa title + description + ai_summary + ai_topics
 """
 
@@ -30,10 +31,14 @@ except ImportError:
 
 def _get_client():
     """Retorna cliente Gemini configurado com a API key."""
-    return genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    from google.genai import types as t
+
+    return genai.Client(
+        api_key=os.environ["GEMINI_API_KEY"],
+        http_options=t.HttpOptions(api_version="v1beta"),
+    )
 
 
-# Modelo estável com suporte nativo a YouTube URL e contexto de 1M tokens
 MODEL = "gemini-2.5-flash-lite"
 
 
@@ -58,33 +63,6 @@ class GeminiService:
             logger.error(f"Erro Gemini (_call): {e}")
             return None
 
-    def _call_with_video(self, video_url: str, prompt: str, max_tokens: int = 8192) -> Optional[str]:
-        if not _GEMINI_AVAILABLE:
-            logger.error("GEMINI INDISPONÍVEL — verifique GEMINI_API_KEY e pacote google-genai")
-            return None
-        logger.info(f"Gemini video: url={video_url[:60]} modelo={MODEL}")
-        try:
-            client = _get_client()
-            response = client.models.generate_content(
-                model=MODEL,
-                contents=genai_types.Content(
-                    parts=[
-                        genai_types.Part(file_data=genai_types.FileData(file_uri=video_url)),
-                        genai_types.Part(text=prompt),
-                    ]
-                ),
-                config=genai_types.GenerateContentConfig(
-                    max_output_tokens=max_tokens,
-                    temperature=0.3,
-                ),
-            )
-            logger.info(f"Gemini respondeu: {len(response.text)} chars")
-            return response.text
-        except Exception as e:
-            logger.error(f"Erro Gemini _call_with_video: {type(e).__name__}: {e}")
-            return None
-
-
     def _parse_json(self, text: str) -> Optional[dict | list]:
         """Extrai JSON de uma resposta do Gemini."""
         if not text:
@@ -101,6 +79,79 @@ class GeminiService:
                     pass
         return None
 
+    # ── Transcrição YouTube ───────────────────────────────────────────────────
+
+    def fetch_youtube_transcript(self, video_url: str) -> Optional[str]:
+        """
+        Busca transcrição YouTube com timestamps — pipeline idêntico ao Colab.
+
+        Usa proxy via YOUTUBE_PROXY_URL para bypass do bloqueio de IP do AWS ECS.
+        Sem proxy, o YouTube bloqueia IPs de cloud providers (AWS, GCP, Azure).
+
+        Configure YOUTUBE_PROXY_URL nas task definitions do ECS:
+          http://user:password@host:port  (ex: Webshare.io free tier)
+
+        Retorna texto formatado '[MM:SS] texto' ou None se indisponível.
+        """
+        try:
+            from youtube_transcript_api import YouTubeTranscriptApi
+
+            # Extrai video_id da URL
+            video_id = None
+            for padrao in [
+                r"(?:v=)([A-Za-z0-9_-]{11})",
+                r"(?:youtu\.be/)([A-Za-z0-9_-]{11})",
+                r"(?:embed/)([A-Za-z0-9_-]{11})",
+            ]:
+                match = re.search(padrao, video_url)
+                if match:
+                    video_id = match.group(1)
+                    break
+
+            if not video_id:
+                logger.warning(
+                    f"fetch_youtube_transcript: não extraiu video_id de {video_url}"
+                )
+                return None
+
+            # Proxy para bypass do bloqueio de IP AWS
+            proxy_url = os.environ.get("YOUTUBE_PROXY_URL")
+            extra_kwargs = {}
+            if proxy_url:
+                extra_kwargs["proxies"] = {"https": proxy_url, "http": proxy_url}
+                logger.info(f"fetch_youtube_transcript: usando proxy para {video_id}")
+            else:
+                logger.warning(
+                    "fetch_youtube_transcript: YOUTUBE_PROXY_URL não configurado — "
+                    "pode falhar em ambiente AWS (IP bloqueado pelo YouTube)"
+                )
+
+            ytt_api = YouTubeTranscriptApi()
+            transcript_list = ytt_api.list(video_id, **extra_kwargs)
+            transcript = transcript_list.find_transcript(["pt-BR", "pt", "en"])
+            trechos = transcript.fetch()
+
+            # Formata com timestamps — idêntico ao Colab
+            linhas = []
+            for t in trechos:
+                start = int(t.start)
+                mm = start // 60
+                ss = start % 60
+                texto = t.text.strip()
+                if texto:
+                    linhas.append(f"[{mm:02d}:{ss:02d}] {texto}")
+
+            resultado = "\n".join(linhas)
+            logger.info(
+                f"fetch_youtube_transcript: {len(linhas)} trechos para {video_id} "
+                f"(proxy={'sim' if proxy_url else 'não'})"
+            )
+            return resultado if resultado else None
+
+        except Exception as e:
+            logger.warning(f"fetch_youtube_transcript falhou para {video_url}: {e}")
+            return None
+
     # ── Geração de questões de aulas ──────────────────────────────────────────
 
     def generate_lesson_questions(
@@ -112,11 +163,14 @@ class GeminiService:
         video_url: Optional[str] = None,
     ) -> list[dict]:
         """
-        Gera questões para uma aula.
+        Gera questões para uma aula via Gemini.
 
-        Se video_url for YouTube, passa a URL diretamente ao Gemini.
-        O Gemini analisa o vídeo nos próprios servidores do Google.
-        Fallback para contexto textual se não houver vídeo ou se falhar.
+        Pipeline (ordem de prioridade):
+        1. YouTube URL → busca transcrição real via youtube-transcript-api (com proxy)
+           → Gemini recebe texto com timestamps e gera questões do conteúdo real
+        2. Fallback → usa lesson_context (title + description + ai_summary + ai_topics)
+
+        Idêntico ao pipeline do Colab que funciona corretamente.
         """
         is_youtube = video_url and (
             "youtube.com" in video_url or "youtu.be" in video_url
@@ -124,31 +178,43 @@ class GeminiService:
 
         if is_youtube:
             logger.info(
-                f"generate_lesson_questions: usando YouTube URL para '{lesson_title}'"
+                f"generate_lesson_questions: buscando transcrição YouTube para '{lesson_title}'"
             )
-            result = self._generate_from_youtube_url(
-                video_url, lesson_title, count, difficulty
-            )
-            if result:
-                return result
-            logger.warning(
-                f"generate_lesson_questions: YouTube URL falhou, usando fallback de contexto"
-            )
+            transcript = self.fetch_youtube_transcript(video_url)
+            if transcript:
+                logger.info(
+                    f"generate_lesson_questions: transcrição obtida ({len(transcript)} chars) — "
+                    f"gerando questões com base no conteúdo real da aula"
+                )
+                result = self._generate_from_transcript(
+                    transcript, lesson_title, count, difficulty
+                )
+                if result:
+                    return result
+                logger.warning(
+                    "generate_lesson_questions: geração a partir de transcrição falhou, "
+                    "usando fallback de contexto"
+                )
+            else:
+                logger.warning(
+                    f"generate_lesson_questions: transcrição YouTube indisponível para "
+                    f"'{lesson_title}', usando fallback de contexto"
+                )
 
         return self._generate_from_context(
             lesson_context, lesson_title, count, difficulty
         )
 
-    def _generate_from_youtube_url(
+    def _generate_from_transcript(
         self,
-        video_url: str,
+        transcript: str,
         lesson_title: str,
         count: int,
         difficulty: str,
     ) -> list[dict]:
         """
-        Gera questões passando a URL do YouTube diretamente ao Gemini.
-        Sem youtube-transcript-api — Gemini busca o vídeo no Google.
+        Gera questões a partir da transcrição real da aula — idêntico ao Colab.
+        O Gemini recebe o texto com timestamps e gera questões baseadas no conteúdo real.
         """
         if count >= 5:
             easy = max(1, count // 4)
@@ -158,22 +224,28 @@ class GeminiService:
         else:
             dist = f"{count} questão(ões)"
 
+        # Limita transcrição a ~80k chars para não estourar o contexto do Gemini
+        transcript_truncated = (
+            transcript[:80000] if len(transcript) > 80000 else transcript
+        )
+
         prompt = f"""Você é um professor especialista em concursos públicos brasileiros.
 
-Assista ao vídeo desta aula e crie {count} questões de múltipla escolha no padrão concurso público.
+Você receberá a transcrição de uma videoaula com timestamps no formato [MM:SS].
+Sua tarefa é criar {count} questões de múltipla escolha no padrão concurso público.
 
 TÍTULO DA AULA: {lesson_title}
 DISTRIBUIÇÃO: {dist}
 
 INSTRUÇÕES:
+- Use APENAS o conteúdo explicado na transcrição — não invente informações externas
 - Cada questão deve ter exatamente 4 alternativas: A, B, C, D
-- Use APENAS o conteúdo explicado no vídeo — não invente informações externas
 - As questões devem avaliar compreensão real do que foi ensinado
-- Os distratores (alternativas erradas) devem ser plausíveis
+- Os distratores (alternativas erradas) devem ser plausíveis, não óbvios
 - Escreva em português formal (padrão concurso público)
-- A justificativa deve citar o conteúdo explicado no vídeo
+- A justificativa deve citar o conteúdo explicado na aula
 
-Responda APENAS com JSON válido (lista), sem texto adicional:
+Responda APENAS com JSON válido (lista), sem texto adicional, sem markdown:
 [
   {{
     "statement": "enunciado completo da questão",
@@ -181,7 +253,7 @@ Responda APENAS com JSON válido (lista), sem texto adicional:
     "topic": "tópico específico desta questão",
     "difficulty": "easy | medium | hard",
     "correct_alternative_key": "a | b | c | d",
-    "correct_justification": "explicação citando o vídeo",
+    "correct_justification": "explicação citando o conteúdo da aula",
     "alternatives": [
       {{"key": "a", "text": "texto da alternativa A", "distractor_justification": null}},
       {{"key": "b", "text": "texto da alternativa B", "distractor_justification": "por que B está errada"}},
@@ -191,9 +263,12 @@ Responda APENAS com JSON válido (lista), sem texto adicional:
   }}
 ]
 
-distractor_justification deve ser null para a alternativa correta."""
+distractor_justification deve ser null APENAS para a alternativa correta.
 
-        response = self._call_with_video(video_url, prompt, max_tokens=8192)
+TRANSCRIÇÃO DA AULA:
+{transcript_truncated}"""
+
+        response = self._call(prompt, max_tokens=8192)
         result = self._parse_json(response)
 
         if isinstance(result, list):
@@ -201,12 +276,12 @@ distractor_justification deve ser null para a alternativa correta."""
                 self._validate_question(q) for q in result if self._is_valid_question(q)
             ]
             logger.info(
-                f"_generate_from_youtube_url: {len(valid)} questões para '{lesson_title}'"
+                f"_generate_from_transcript: {len(valid)} questões válidas para '{lesson_title}'"
             )
             return valid
 
         logger.warning(
-            f"_generate_from_youtube_url: sem resultado para '{lesson_title}'"
+            f"_generate_from_transcript: Gemini não retornou JSON válido para '{lesson_title}'"
         )
         return []
 
@@ -511,4 +586,3 @@ APENAS JSON."""
         prompt = f"""Aula "{lesson_title}" com nota {avg_rating}/5 ({low_count}/{total_count} baixas).
 Comentários:\n{comments_text}\nDiagnóstico, problemas e sugestões. Máx 300 palavras."""
         return self._call(prompt, max_tokens=600)
-

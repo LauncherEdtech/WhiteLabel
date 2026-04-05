@@ -13,6 +13,11 @@ export const QUERY_KEYS = {
     QUESTION: (id: string) => ["questions", id],
     MY_HISTORY: ["questions", "my-history"],
 
+    // Banco de Questões (admin)
+    QUESTION_BANK_STATS: ["questions", "bank", "stats"],
+    QUESTION_BANK_PENDING: ["questions", "bank", "pending"],
+    QUESTION_BANK_LIST: (params?: object) => ["questions", "bank", "list", params],
+
     // Analytics
     STUDENT_DASHBOARD: (userId?: string) => ["analytics", "student", "dashboard", userId],
     PRODUCER_OVERVIEW: (courseId?: string) => ["analytics", "producer", "overview", courseId],
