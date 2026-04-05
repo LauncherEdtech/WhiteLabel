@@ -1,6 +1,6 @@
 # api/app/routes/producer/questions.py
 #
-# Rotas do infoprodutor para gerenciar questões do banco compartilhado.
+# Rotas do infoprodutor para submeter questões ao banco compartilhado.
 #
 # Fluxo de submissão:
 #   1. Produtor envia questão → backend verifica duplicata por hash
@@ -11,30 +11,42 @@
 #   6. Rejeitada: produtor vê motivo no painel
 # ─────────────────────────────────────────────────────────────────────────────
 
-from datetime import datetime
 from uuid import uuid4
 
 from flask import Blueprint, g, jsonify, request
+from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity
 from marshmallow import Schema, ValidationError, fields, validate
 
-from ...models.question import (
+from app.extensions import db
+from app.middleware.tenant import require_tenant, require_feature
+from app.models.question import (
     Alternative,
+    DifficultyLevel,
     Question,
-    QuestionAttempt,
     QuestionSourceType,
     QuestionTag,
     QuestionType,
-    DifficultyLevel,
     ReviewStatus,
-    compute_statement_hash,
 )
-from ...extensions import db
-from ...decorators import producer_required, feature_required
+from app.models.user import UserRole
 
 producer_questions_bp = Blueprint("producer_questions", __name__)
 
 
-# ── Schemas de validação ──────────────────────────────────────────────────────
+# ── Helpers de autorização ────────────────────────────────────────────────────
+
+
+def _require_producer(claims: dict):
+    if claims.get("role") not in (
+        UserRole.SUPER_ADMIN.value,
+        UserRole.PRODUCER_ADMIN.value,
+        UserRole.PRODUCER_STAFF.value,
+    ):
+        return jsonify({"error": "forbidden", "message": "Acesso negado."}), 403
+    return None
+
+
+# ── Schemas ───────────────────────────────────────────────────────────────────
 
 
 class AlternativeSchema(Schema):
@@ -118,16 +130,15 @@ def _serialize_question(q: Question, include_review: bool = False) -> dict:
 
 
 @producer_questions_bp.route("/questions", methods=["GET"])
-@producer_required
-@feature_required("question_bank_concursos")
+@jwt_required()
+@require_tenant
+@require_feature("question_bank_concursos")
 def list_questions():
-    """
-    Lista questões visíveis para o produtor:
-      - Banco global aprovado
-      - Próprias questões submetidas (qualquer status)
-    Suporta filtros: discipline, topic, difficulty, question_type,
-                     review_status, page, per_page
-    """
+    claims = get_jwt()
+    err = _require_producer(claims)
+    if err:
+        return err
+
     tenant = g.tenant
     discipline = request.args.get("discipline")
     topic = request.args.get("topic")
@@ -165,20 +176,17 @@ def list_questions():
 
 
 @producer_questions_bp.route("/questions/submit", methods=["POST"])
-@producer_required
-@feature_required("question_bank_concursos")
+@jwt_required()
+@require_tenant
+@require_feature("question_bank_concursos")
 def submit_question():
-    """
-    Produtor submete uma questão para o banco global.
+    claims = get_jwt()
+    err = _require_producer(claims)
+    if err:
+        return err
 
-    Fluxo:
-      1. Valida schema
-      2. Verifica duplicata por statement_hash
-      3. Salva com review_status = PENDING e tenant_id = NULL
-      4. Retorna 201 ou 409 (duplicata)
-    """
     tenant = g.tenant
-    current_user = g.current_user
+    user_id = get_jwt_identity()
 
     try:
         data = QuestionSubmitSchema().load(request.get_json() or {})
@@ -207,7 +215,6 @@ def submit_question():
             409,
         )
 
-    # Valida se a alternativa correta está na lista
     alt_keys = {a["key"] for a in data["alternatives"]}
     if data["correct_alternative_key"] not in alt_keys:
         return (
@@ -218,17 +225,13 @@ def submit_question():
             400,
         )
 
-    # ── Cria a questão ────────────────────────────────────────────────────────
     question = Question(
         id=str(uuid4()),
-        tenant_id=None,  # Banco global — sem dono de tenant
+        tenant_id=None,
         source_type=QuestionSourceType.BANK,
-        # Rastreamento do produtor
         submitted_by_tenant_id=tenant.id,
-        submitted_by_user_id=current_user.id,
-        # Aguarda revisão do admin
+        submitted_by_user_id=user_id,
         review_status=ReviewStatus.PENDING,
-        # Dados pedagógicos
         statement=data["statement"],
         discipline=data["discipline"].strip().upper(),
         topic=data.get("topic"),
@@ -242,24 +245,22 @@ def submit_question():
         exam_year=data.get("exam_year"),
         exam_name=data.get("exam_name"),
     )
-    # statement_hash é setado automaticamente via SQLAlchemy event
 
     db.session.add(question)
-    db.session.flush()  # Obtém question.id antes de criar alternatives/tags
+    db.session.flush()
 
-    # Alternativas
     for alt_data in data["alternatives"]:
-        alt = Alternative(
-            id=str(uuid4()),
-            tenant_id=None,
-            question_id=question.id,
-            key=alt_data["key"],
-            text=alt_data["text"],
-            distractor_justification=alt_data.get("distractor_justification"),
+        db.session.add(
+            Alternative(
+                id=str(uuid4()),
+                tenant_id=None,
+                question_id=question.id,
+                key=alt_data["key"],
+                text=alt_data["text"],
+                distractor_justification=alt_data.get("distractor_justification"),
+            )
         )
-        db.session.add(alt)
 
-    # Tags
     for tag_str in data.get("tags", []):
         tag_str = tag_str.strip().lower()
         if tag_str:
@@ -284,31 +285,39 @@ def submit_question():
 
 
 @producer_questions_bp.route("/questions/<question_id>", methods=["GET"])
-@producer_required
-@feature_required("question_bank_concursos")
+@jwt_required()
+@require_tenant
+@require_feature("question_bank_concursos")
 def get_question(question_id):
-    """Retorna questão visível para o tenant (banco global ou submetida por ele)."""
+    claims = get_jwt()
+    err = _require_producer(claims)
+    if err:
+        return err
+
     tenant = g.tenant
     q = (
         Question.query_for_tenant(tenant)
         .filter(Question.id == question_id)
         .first_or_404()
     )
+
     return jsonify(_serialize_question(q, include_review=True))
 
 
 @producer_questions_bp.route("/questions/submitted", methods=["GET"])
-@producer_required
-@feature_required("question_bank_concursos")
+@jwt_required()
+@require_tenant
+@require_feature("question_bank_concursos")
 def list_submitted():
-    """
-    Lista APENAS as questões que este produtor submeteu,
-    com seus respectivos statuses de revisão.
-    """
+    claims = get_jwt()
+    err = _require_producer(claims)
+    if err:
+        return err
+
     tenant = g.tenant
     page = int(request.args.get("page", 1))
     per_page = min(int(request.args.get("per_page", 20)), 100)
-    status = request.args.get("review_status")  # pending | approved | rejected
+    status = request.args.get("review_status")
 
     query = db.session.query(Question).filter(
         Question.submitted_by_tenant_id == tenant.id
@@ -320,6 +329,16 @@ def list_submitted():
         page=page, per_page=per_page, error_out=False
     )
 
+    def _count(s):
+        return (
+            db.session.query(Question)
+            .filter(
+                Question.submitted_by_tenant_id == tenant.id,
+                Question.review_status == s,
+            )
+            .count()
+        )
+
     return jsonify(
         questions=[
             _serialize_question(q, include_review=True) for q in paginated.items
@@ -328,23 +347,8 @@ def list_submitted():
         page=page,
         pages=paginated.pages,
         summary={
-            "pending": db.session.query(Question)
-            .filter(
-                Question.submitted_by_tenant_id == tenant.id,
-                Question.review_status == ReviewStatus.PENDING,
-            )
-            .count(),
-            "approved": db.session.query(Question)
-            .filter(
-                Question.submitted_by_tenant_id == tenant.id,
-                Question.review_status == ReviewStatus.APPROVED,
-            )
-            .count(),
-            "rejected": db.session.query(Question)
-            .filter(
-                Question.submitted_by_tenant_id == tenant.id,
-                Question.review_status == ReviewStatus.REJECTED,
-            )
-            .count(),
+            "pending": _count(ReviewStatus.PENDING),
+            "approved": _count(ReviewStatus.APPROVED),
+            "rejected": _count(ReviewStatus.REJECTED),
         },
     )

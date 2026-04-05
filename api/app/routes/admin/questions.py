@@ -1,20 +1,18 @@
 # api/app/routes/admin/questions.py
 #
 # Rotas administrativas para o banco de questões compartilhado.
-#
-# Responsabilidades:
-#   - Bulk-import via JSON processado pelo notebook Gemini
-#   - Listagem de questões pendentes por produtor
-#   - Aprovação / Rejeição com motivo
-#   - Visão geral do banco (stats por disciplina, produtor etc.)
+# Restrito a super_admin via JWT.
 # ─────────────────────────────────────────────────────────────────────────────
 
 from datetime import datetime
 from uuid import uuid4
 
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, jsonify, request
+from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity
+from sqlalchemy import func
 
-from ...models.question import (
+from app.extensions import db
+from app.models.question import (
     Alternative,
     DifficultyLevel,
     Question,
@@ -22,17 +20,24 @@ from ...models.question import (
     QuestionTag,
     QuestionType,
     ReviewStatus,
-    compute_statement_hash,
 )
-from ...models.tenant import Tenant
-from ...extensions import db
-from ...decorators import admin_required
+from app.models.tenant import Tenant
+from app.models.user import UserRole
 
 admin_questions_bp = Blueprint("admin_questions", __name__)
 
 
+# ── Helper de autorização ─────────────────────────────────────────────────────
+
+
+def _require_super_admin():
+    claims = get_jwt()
+    if claims.get("role") != UserRole.SUPER_ADMIN.value:
+        return jsonify({"error": "forbidden", "message": "Acesso restrito."}), 403
+    return None
+
+
 # ── Mapeamentos de normalização ───────────────────────────────────────────────
-# O notebook Gemini pode gerar variações — normalizamos aqui na borda de entrada.
 
 _DIFFICULTY_MAP = {
     "easy": DifficultyLevel.EASY,
@@ -52,7 +57,7 @@ _QTYPE_MAP = {
     "raciocínio": QuestionType.RACIOCINIO,
     "memorizacao": QuestionType.MEMORIZACAO,
     "memorização": QuestionType.MEMORIZACAO,
-    "definicao": QuestionType.MEMORIZACAO,  # mapeado para mais próximo
+    "definicao": QuestionType.MEMORIZACAO,
     "definição": QuestionType.MEMORIZACAO,
 }
 
@@ -60,7 +65,7 @@ _QTYPE_MAP = {
 # ── Serializer ────────────────────────────────────────────────────────────────
 
 
-def _serialize_question_admin(q: Question) -> dict:
+def _serialize_admin(q: Question) -> dict:
     submitted_tenant = None
     if q.submitted_by_tenant_id:
         t = db.session.get(Tenant, q.submitted_by_tenant_id)
@@ -106,18 +111,12 @@ def _serialize_question_admin(q: Question) -> dict:
 
 
 @admin_questions_bp.route("/questions/bulk-import", methods=["POST"])
-@admin_required
+@jwt_required()
 def bulk_import():
-    """
-    Importa lista de questões processadas pelo notebook Gemini.
+    err = _require_super_admin()
+    if err:
+        return err
 
-    Comportamento:
-      - external_id existente → atualiza campos (exceto alternatives já criadas)
-      - Novo → cria com review_status = APPROVED, tenant_id = NULL
-      - Duplicata por hash (sem external_id) → skipa e reporta
-
-    Body: array JSON no formato gerado pelo notebook (questoes_para_importacao.json)
-    """
     data = request.get_json()
     if not isinstance(data, list):
         return jsonify(error="Esperado um array JSON"), 400
@@ -129,14 +128,12 @@ def bulk_import():
     for item in data:
         ext_id = item.get("external_id")
         try:
-            # 1. Tenta por external_id (idempotência)
             q = (
                 db.session.query(Question).filter_by(external_id=ext_id).first()
                 if ext_id
                 else None
             )
 
-            # 2. Se não encontrou por external_id, verifica duplicata por hash
             if q is None:
                 duplicate = Question.find_duplicate(item.get("statement", ""))
                 if duplicate:
@@ -156,13 +153,12 @@ def bulk_import():
                 q = Question()
                 q.id = str(uuid4())
                 q.external_id = ext_id
-                q.tenant_id = None  # Banco global
+                q.tenant_id = None
                 q.source_type = QuestionSourceType.BANK
-                q.review_status = ReviewStatus.APPROVED  # Admin import = já aprovado
+                q.review_status = ReviewStatus.APPROVED
                 q.submitted_by_tenant_id = None
                 q.submitted_by_user_id = None
 
-            # Campos atualizáveis
             q.statement = item["statement"]
             q.discipline = item.get("discipline", "").strip().upper()
             q.topic = item.get("topic")
@@ -179,13 +175,11 @@ def bulk_import():
             q.exam_name = item.get("exam_name")
             q.source_document_id = item.get("source")
             q.is_active = True
-            # statement_hash setado automaticamente via event listener
 
             if is_new:
                 db.session.add(q)
                 db.session.flush()
 
-                # Alternatives (apenas na criação — atualização preserva as existentes)
                 for alt in item.get("alternatives", []):
                     db.session.add(
                         Alternative(
@@ -202,8 +196,6 @@ def bulk_import():
                         )
                     )
 
-                # Tags
-                db.session.query(QuestionTag).filter_by(question_id=q.id).delete()
                 for tag_str in item.get("tags", []):
                     tag_str = tag_str.strip().lower()
                     if tag_str:
@@ -220,19 +212,13 @@ def bulk_import():
             else:
                 updated += 1
 
-            # Commit em lotes para não manter transação aberta
             if (inserted + updated) % 50 == 0:
                 db.session.commit()
 
         except Exception as e:
             db.session.rollback()
             errors += 1
-            error_details.append(
-                {
-                    "external_id": ext_id,
-                    "error": str(e),
-                }
-            )
+            error_details.append({"external_id": ext_id, "error": str(e)})
 
     db.session.commit()
 
@@ -242,25 +228,23 @@ def bulk_import():
             updated=updated,
             skipped=skipped,
             errors=errors,
-            skip_details=skip_details[:20],  # Limita payload
+            skip_details=skip_details[:20],
             error_details=error_details[:20],
         ),
         200,
     )
 
 
-# ── Listagem de questões (admin) ──────────────────────────────────────────────
+# ── Listagem ──────────────────────────────────────────────────────────────────
 
 
 @admin_questions_bp.route("/questions", methods=["GET"])
-@admin_required
+@jwt_required()
 def list_questions():
-    """
-    Lista todas as questões do banco global com filtros avançados.
+    err = _require_super_admin()
+    if err:
+        return err
 
-    Filtros: discipline, topic, difficulty, question_type,
-             review_status, submitted_by_tenant_id, page, per_page
-    """
     discipline = request.args.get("discipline")
     topic = request.args.get("topic")
     difficulty = request.args.get("difficulty")
@@ -274,7 +258,6 @@ def list_questions():
         Question.source_type == QuestionSourceType.BANK,
         Question.tenant_id.is_(None),
     )
-
     if discipline:
         query = query.filter(Question.discipline.ilike(f"%{discipline}%"))
     if topic:
@@ -293,7 +276,7 @@ def list_questions():
     )
 
     return jsonify(
-        questions=[_serialize_question_admin(q) for q in paginated.items],
+        questions=[_serialize_admin(q) for q in paginated.items],
         total=paginated.total,
         page=page,
         pages=paginated.pages,
@@ -301,12 +284,12 @@ def list_questions():
 
 
 @admin_questions_bp.route("/questions/pending", methods=["GET"])
-@admin_required
+@jwt_required()
 def list_pending():
-    """
-    Lista questões pendentes de revisão, agrupadas por produtor.
-    Filtro opcional por tenant_id para ver apenas de um produtor específico.
-    """
+    err = _require_super_admin()
+    if err:
+        return err
+
     tenant_filter = request.args.get("tenant_id")
     page = int(request.args.get("page", 1))
     per_page = min(int(request.args.get("per_page", 30)), 100)
@@ -316,16 +299,12 @@ def list_pending():
         Question.source_type == QuestionSourceType.BANK,
         Question.tenant_id.is_(None),
     )
-
     if tenant_filter:
         query = query.filter(Question.submitted_by_tenant_id == tenant_filter)
 
     paginated = query.order_by(Question.created_at.asc()).paginate(
         page=page, per_page=per_page, error_out=False
     )
-
-    # Resumo por produtor
-    from sqlalchemy import func
 
     summary = (
         db.session.query(
@@ -342,10 +321,10 @@ def list_pending():
         .all()
     )
 
-    summary_with_names = []
+    by_tenant = []
     for tenant_id, count in summary:
         t = db.session.get(Tenant, tenant_id)
-        summary_with_names.append(
+        by_tenant.append(
             {
                 "tenant_id": tenant_id,
                 "tenant_name": t.name if t else "Desconhecido",
@@ -355,11 +334,11 @@ def list_pending():
         )
 
     return jsonify(
-        questions=[_serialize_question_admin(q) for q in paginated.items],
+        questions=[_serialize_admin(q) for q in paginated.items],
         total=paginated.total,
         page=page,
         pages=paginated.pages,
-        by_tenant=summary_with_names,
+        by_tenant=by_tenant,
     )
 
 
@@ -367,12 +346,12 @@ def list_pending():
 
 
 @admin_questions_bp.route("/questions/<question_id>/approve", methods=["POST"])
-@admin_required
+@jwt_required()
 def approve_question(question_id):
-    """
-    Aprova uma questão pendente → entra no banco global visível a todos.
-    Idempotente: aprovar uma já aprovada não causa erro.
-    """
+    err = _require_super_admin()
+    if err:
+        return err
+
     q = db.session.get(Question, question_id)
     if not q:
         return jsonify(error="Questão não encontrada"), 404
@@ -381,25 +360,21 @@ def approve_question(question_id):
 
     q.review_status = ReviewStatus.APPROVED
     q.rejection_reason = None
-    q.reviewed_by_user_id = g.current_user.id
+    q.reviewed_by_user_id = get_jwt_identity()
     q.reviewed_at = datetime.utcnow()
     q.is_reviewed = True
-
     db.session.commit()
 
-    return jsonify(
-        message="Questão aprovada com sucesso.",
-        question=_serialize_question_admin(q),
-    )
+    return jsonify(message="Questão aprovada.", question=_serialize_admin(q))
 
 
 @admin_questions_bp.route("/questions/<question_id>/reject", methods=["POST"])
-@admin_required
+@jwt_required()
 def reject_question(question_id):
-    """
-    Rejeita uma questão com motivo obrigatório.
-    A questão continua no banco (com status = rejected) para o produtor consultar.
-    """
+    err = _require_super_admin()
+    if err:
+        return err
+
     q = db.session.get(Question, question_id)
     if not q:
         return jsonify(error="Questão não encontrada"), 404
@@ -413,22 +388,21 @@ def reject_question(question_id):
 
     q.review_status = ReviewStatus.REJECTED
     q.rejection_reason = reason
-    q.reviewed_by_user_id = g.current_user.id
+    q.reviewed_by_user_id = get_jwt_identity()
     q.reviewed_at = datetime.utcnow()
     q.is_reviewed = True
-
     db.session.commit()
 
-    return jsonify(
-        message="Questão rejeitada.",
-        question=_serialize_question_admin(q),
-    )
+    return jsonify(message="Questão rejeitada.", question=_serialize_admin(q))
 
 
 @admin_questions_bp.route("/questions/<question_id>", methods=["DELETE"])
-@admin_required
+@jwt_required()
 def delete_question(question_id):
-    """Remove permanentemente uma questão do banco (soft-delete via is_active)."""
+    err = _require_super_admin()
+    if err:
+        return err
+
     q = db.session.get(Question, question_id)
     if not q:
         return jsonify(error="Questão não encontrada"), 404
@@ -438,14 +412,15 @@ def delete_question(question_id):
     return jsonify(message="Questão desativada.")
 
 
-# ── Stats do banco ────────────────────────────────────────────────────────────
+# ── Stats ─────────────────────────────────────────────────────────────────────
 
 
 @admin_questions_bp.route("/questions/stats", methods=["GET"])
-@admin_required
+@jwt_required()
 def bank_stats():
-    """Visão geral do banco de questões para o painel admin."""
-    from sqlalchemy import func
+    err = _require_super_admin()
+    if err:
+        return err
 
     base = db.session.query(Question).filter(
         Question.source_type == QuestionSourceType.BANK,
@@ -476,17 +451,18 @@ def bank_stats():
         .all()
     }
 
-    # Top produtores por volume de submissões
     top_submitters = (
         base.filter(Question.submitted_by_tenant_id.isnot(None))
         .with_entities(
-            Question.submitted_by_tenant_id, func.count(Question.id).label("total")
+            Question.submitted_by_tenant_id,
+            func.count(Question.id).label("total"),
         )
         .group_by(Question.submitted_by_tenant_id)
         .order_by(func.count(Question.id).desc())
         .limit(10)
         .all()
     )
+
     top_submitters_named = []
     for tenant_id, total in top_submitters:
         t = db.session.get(Tenant, tenant_id)

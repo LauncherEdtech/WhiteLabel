@@ -170,7 +170,7 @@ class Question(BaseModel, TenantMixin):
 
     # ── Vínculo com conteúdo do produtor ──────────────────────────────────────
     subject_id = Column(UUID(as_uuid=False), ForeignKey("subjects.id"), nullable=True)
-    source_document_id = Column(String(255), nullable=True)
+    source_document_id = Column(Text, nullable=True)
 
     # ── Enunciado ─────────────────────────────────────────────────────────────
     statement = Column(Text, nullable=False)
