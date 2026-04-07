@@ -4,7 +4,7 @@
 import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 import { useTenantStore } from "@/lib/stores/tenantStore";
-import { ChevronRight, Palette, Globe, Bell, Shield, Paintbrush } from "lucide-react";
+import { ChevronRight, Palette, Globe, Bell, Shield, Paintbrush, Share2 } from "lucide-react";
 
 const SETTINGS_ITEMS = [
   {
@@ -22,6 +22,16 @@ const SETTINGS_ITEMS = [
     color: "text-violet-500 bg-violet-500/10",
     badge: "Novo",
   },
+
+  {
+    href: "/producer/settings/sharing",
+    icon: Share2,
+    label: "Compartilhar",
+    description: "Design da Cápsula de Estudos que seus alunos compartilham",
+    color: "text-emerald-500 bg-emerald-500/10",
+    badge: "Novo",
+  },
+
   {
     href: "/producer/settings/domain",
     icon: Globe,

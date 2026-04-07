@@ -206,7 +206,11 @@ function SimuladoCard({ simulado }: { simulado: Simulado }) {
                 <p className="text-xs text-muted-foreground">{attempt!.correct_answers}/{attempt!.total_questions}</p>
               </div>
             )}
-            <Link href={`/simulados/${simulado.id}`}>
+            <Link href={
+              isCompleted
+                ? `/simulados/${simulado.id}/result?attempt=${attempt!.id}`
+                : `/simulados/${simulado.id}`
+            }>
               <Button size="sm" variant={isCompleted ? "outline" : "default"}>
                 {isInProgress ? (
                   <><Play className="h-3 w-3" />Continuar</>

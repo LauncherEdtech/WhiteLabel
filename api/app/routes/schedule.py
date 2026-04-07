@@ -475,6 +475,7 @@ def _serialize_schedule(schedule: StudySchedule) -> dict:
         "id": schedule.id,
         "course_id": schedule.course_id,
         "status": schedule.status,
+        "source_type": schedule.source_type or "ai",
         "target_date": schedule.target_date,
         "abandonment_risk": schedule.abandonment_risk_score,
         "ai_notes": schedule.ai_notes,

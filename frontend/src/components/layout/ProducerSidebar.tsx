@@ -12,6 +12,8 @@ import { cn } from "@/lib/utils/cn";
 import { useTenantStore } from "@/lib/stores/tenantStore";
 import { useLogout } from "@/lib/hooks/useAuth";
 import { useAuthStore } from "@/lib/stores/authStore";
+import Image from "next/image";
+
 
 const navItems = [
     { href: "/producer/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -33,17 +35,29 @@ export function ProducerSidebar() {
     return (
         <aside className="w-64 shrink-0 flex flex-col border-r border-border bg-card h-screen">
             <div className="p-5 border-b border-border">
-                <div className="flex items-center gap-3">
-                    <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center">
-                        <GraduationCap className="h-5 w-5 text-primary-foreground" />
-                    </div>
+                <Link href="/producer/dashboard" className="flex items-center gap-3">
+                    {branding.logo_url ? (
+                        <div className="h-8 w-8 rounded-lg overflow-hidden shrink-0 border border-border">
+                            <Image
+                                src={branding.logo_url}
+                                alt={branding.platform_name}
+                                width={32}
+                                height={32}
+                                className="h-full w-full object-contain"
+                            />
+                        </div>
+                    ) : (
+                        <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center shrink-0">
+                            <GraduationCap className="h-5 w-5 text-primary-foreground" />
+                        </div>
+                    )}
                     <div className="min-w-0">
                         <p className="font-display font-semibold text-sm text-foreground truncate">
                             {branding.platform_name}
                         </p>
                         <p className="text-xs text-muted-foreground">Painel do Produtor</p>
                     </div>
-                </div>
+                </Link>
             </div>
 
             <nav className="flex-1 p-3 space-y-1 overflow-y-auto">

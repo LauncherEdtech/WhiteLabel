@@ -1,7 +1,15 @@
 // frontend/src/app/(auth)/[tenant]/login/page.tsx
-// CORRIGIDO: passa tenantSlug diretamente para useLogin() no onSubmit,
-// eliminando a dependência do cookie estar setado antes da chamada API.
-// Mantido como Client Component para evitar problemas de build em produção.
+//
+// FIX: A tela de login agora aguarda os dados frescos do servidor antes de
+// escolher o layout e renderizar o conteúdo. Isso elimina a causa raiz do bug:
+//
+//   ANTES: branding vinha do Zustand (localStorage), que podia ter dados
+//          de outro tenant ou estar vazio. Layout era escolhido com dado stale.
+//
+//   DEPOIS: a página mostra um skeleton mínimo enquanto busca os dados do
+//           tenant pelo slug da URL. Só renderiza o layout correto quando os
+//           dados chegam. O Zustand é atualizado como efeito colateral,
+//           mas nunca é a fonte de verdade para este render.
 
 "use client";
 
@@ -27,12 +35,18 @@ const loginSchema = z.object({
 type LoginForm = z.infer<typeof loginSchema>;
 
 // ── Conteúdo editável ─────────────────────────────────────────────────────────
+
 function getContent(branding: Record<string, any>) {
     return {
         badge: branding.login_badge ?? "Rumo à Aprovação",
         headline: branding.login_headline ?? "Sua aprovação começa aqui.",
         subtext: branding.login_subtext ?? "Estudo inteligente com cronograma adaptativo, questões com feedback e simulados completos.",
-        features: (branding.login_features ?? ["Cronograma Personalizado", "Questões do seu edital", "Simulados Estratégicos", "Dashboard Inteligente"]) as string[],
+        features: (branding.login_features ?? [
+            "Cronograma Personalizado",
+            "Questões do seu edital",
+            "Simulados Estratégicos",
+            "Dashboard Inteligente",
+        ]) as string[],
         formTitle: branding.login_form_title ?? "Entrar",
         formSubtitle: branding.login_form_subtitle ?? "Acesse sua conta para continuar estudando.",
         logoUrl: (branding.logo_url ?? null) as string | null,
@@ -40,155 +54,48 @@ function getContent(branding: Record<string, any>) {
     };
 }
 
-// ── Layouts ───────────────────────────────────────────────────────────────────
+// ── Skeleton de carregamento ──────────────────────────────────────────────────
+// Exibido enquanto os dados frescos do tenant ainda não chegaram do servidor.
+// Intencionalmente neutro para não "piscar" com o layout errado.
 
-function SplitLayout({ children, c }: { children: React.ReactNode; c: ReturnType<typeof getContent> }) {
-    return (
-        <div className="min-h-screen flex">
-            <div className="hidden lg:flex lg:w-1/2 bg-primary flex-col justify-between p-12">
-                <div className="inline-flex items-center gap-2 bg-white/15 border border-white/20 text-white text-sm font-semibold px-4 py-1.5 rounded-full w-fit">
-                    🎯 {c.badge}
-                </div>
-                <div className="space-y-6">
-                    <h1 className="font-display text-4xl font-bold text-white leading-tight">{c.headline}</h1>
-                    <p className="text-white/70 text-lg leading-relaxed">{c.subtext}</p>
-                    {c.features.length > 0 && (
-                        <ul className="space-y-3 pt-2">
-                            {c.features.map((f, i) => (
-                                <li key={i} className="flex items-center gap-3 text-white/80">
-                                    <CheckCircle2 className="h-4 w-4 text-white/50 shrink-0" />
-                                    <span className="text-sm">{f}</span>
-                                </li>
-                            ))}
-                        </ul>
-                    )}
-                </div>
-                <p className="text-white/30 text-xs">© {new Date().getFullYear()} {c.platformName}</p>
-            </div>
-            <div className="flex-1 flex items-center justify-center p-8 bg-background">
-                <div className="w-full max-w-sm">
-                    {c.logoUrl
-                        // eslint-disable-next-line @next/next/no-img-element
-                        ? <img src={c.logoUrl} alt={c.platformName} className="h-12 mb-8 object-contain hidden lg:block" />
-                        : null}
-                    {children}
-                </div>
-            </div>
-        </div>
-    );
-}
-
-function CenteredLayout({ children, c }: { children: React.ReactNode; c: ReturnType<typeof getContent> }) {
-    return (
-        <div className="min-h-screen flex flex-col items-center justify-center bg-background p-6">
-            <div className="flex flex-col items-center mb-8">
-                {c.logoUrl
-                    // eslint-disable-next-line @next/next/no-img-element
-                    ? <img src={c.logoUrl} alt={c.platformName} className="h-14 mb-4 object-contain" />
-                    : <div className="h-14 w-14 rounded-2xl bg-primary flex items-center justify-center mb-4 shadow-lg shadow-primary/25">
-                        <GraduationCap className="h-8 w-8 text-primary-foreground" />
-                    </div>}
-                <h1 className="text-xl font-bold text-foreground">{c.platformName}</h1>
-                <p className="text-sm text-muted-foreground mt-1 text-center max-w-xs">{c.subtext}</p>
-            </div>
-            <div className="w-full max-w-sm bg-card border border-border rounded-2xl p-8 shadow-xl">{children}</div>
-            <p className="mt-6 text-xs text-muted-foreground">© {new Date().getFullYear()} {c.platformName}</p>
-        </div>
-    );
-}
-
-function FullBgLayout({ children, c, branding }: { children: React.ReactNode; c: ReturnType<typeof getContent>; branding: Record<string, any> }) {
-    const bgStyle: React.CSSProperties = branding.login_bg_url
-        ? { backgroundImage: `url(${branding.login_bg_url})`, backgroundSize: "cover", backgroundPosition: "center" }
-        : { background: branding.login_bg_color ?? "hsl(var(--primary))" };
-    return (
-        <div className="min-h-screen flex items-center justify-center p-6 relative" style={bgStyle}>
-            <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px]" />
-            <div className="relative z-10 w-full max-w-sm">
-                <div className="flex flex-col items-center mb-6">
-                    {c.logoUrl
-                        // eslint-disable-next-line @next/next/no-img-element
-                        ? <img src={c.logoUrl} alt={c.platformName} className="h-12 mb-3 object-contain" />
-                        : <><div className="h-12 w-12 rounded-xl bg-white/20 backdrop-blur border border-white/30 flex items-center justify-center mb-3">
-                            <GraduationCap className="h-7 w-7 text-white" /></div>
-                            <h1 className="text-white text-xl font-bold">{c.platformName}</h1></>}
-                </div>
-                <div className="bg-card/95 backdrop-blur-xl border border-border rounded-2xl p-8 shadow-2xl">{children}</div>
-            </div>
-        </div>
-    );
-}
-
-function MinimalLayout({ children, c }: { children: React.ReactNode; c: ReturnType<typeof getContent> }) {
+function LoginSkeleton() {
     return (
         <div className="min-h-screen flex items-center justify-center bg-background">
-            <div className="w-full max-w-sm px-6">
-                <div className="flex items-center gap-2 mb-10">
-                    {c.logoUrl
-                        // eslint-disable-next-line @next/next/no-img-element
-                        ? <img src={c.logoUrl} alt={c.platformName} className="h-7 object-contain" />
-                        : <><div className="h-6 w-6 rounded bg-primary flex items-center justify-center">
-                            <Shield className="h-3.5 w-3.5 text-primary-foreground" /></div>
-                            <span className="text-sm font-semibold text-foreground">{c.platformName}</span></>}
+            <div className="w-full max-w-sm px-6 space-y-5 animate-pulse">
+                <div className="h-7 w-28 bg-muted rounded-lg mx-auto" />
+                <div className="space-y-3">
+                    <div className="h-4 w-full bg-muted rounded" />
+                    <div className="h-4 w-full bg-muted rounded" />
+                    <div className="h-10 w-full bg-muted rounded-lg" />
                 </div>
-                {children}
             </div>
         </div>
     );
 }
 
-// ── Página principal ──────────────────────────────────────────────────────────
+// ── Formulário ────────────────────────────────────────────────────────────────
 
-export default function TenantLoginPage() {
-    const params = useParams<{ tenant: string }>();
-    const tenantSlug = params.tenant;
+interface FormProps {
+    tenantSlug: string;
+    formTitle: string;
+    formSubtitle: string;
+    logoUrl?: string | null;
+    platformName?: string;
+}
 
+function LoginFormBlock({ tenantSlug, formTitle, formSubtitle, logoUrl, platformName }: FormProps) {
     const [showPassword, setShowPassword] = useState(false);
     const [serverError, setServerError] = useState("");
-    const { tenant, setTenant } = useTenantStore();
     const login = useLogin();
-
-    const branding = (tenant?.branding ?? {}) as Record<string, any>;
-    const c = getContent(branding);
-    const loginLayout: string = branding.login_layout ?? "split";
-
-    // Seta cookie imediatamente na montagem do componente
-    // (não espera useEffect — disponível para qualquer chamada subsequente)
-    if (typeof window !== "undefined" && tenantSlug) {
-        Cookies.set("tenant_slug", tenantSlug, { sameSite: "lax", expires: 1 });
-    }
-
-    // Busca branding do tenant se ainda não tiver no store
-    useEffect(() => {
-        if (!tenantSlug) return;
-        Cookies.set("tenant_slug", tenantSlug, { sameSite: "lax", expires: 1 });
-
-        // Busca tenant pelo slug da URL para aplicar branding correto
-        fetch(`/api/tenant?slug=${tenantSlug}&t=${Date.now()}`, {
-            headers: { "x-tenant-slug": tenantSlug, "Cache-Control": "no-cache" },
-        })
-            .then(r => r.ok ? r.json() : null)
-            .then(data => {
-                if (data?.id) {
-                    setTenant(data);
-                    applyBrandingCssVars(data.branding ?? {});
-                }
-            })
-            .catch(() => { });
-    }, [tenantSlug, setTenant]);
 
     const { register, handleSubmit, formState: { errors } } = useForm<LoginForm>({
         resolver: zodResolver(loginSchema),
     });
 
     const onSubmit = async (data: LoginForm) => {
-        // Garante cookie antes da chamada (redundante mas seguro)
-        if (tenantSlug) {
-            Cookies.set("tenant_slug", tenantSlug, { sameSite: "lax", expires: 1 });
-        }
+        Cookies.set("tenant_slug", tenantSlug, { sameSite: "lax", expires: 1 });
         setServerError("");
         try {
-            // ← CHAVE DO FIX: passa tenantSlug diretamente, bypassa dependência de cookie
             await login.mutateAsync({ ...data, tenantSlug });
         } catch (err) {
             const e = err as AxiosError<{ message: string }>;
@@ -196,24 +103,22 @@ export default function TenantLoginPage() {
         }
     };
 
-    // ── Formulário ────────────────────────────────────────────────────────────
-    const form = (
+    return (
         <div className="space-y-6">
             <div>
-                {c.logoUrl && (
+                {logoUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={c.logoUrl} alt={c.platformName} className="h-10 mb-5 object-contain" />
-                )}
-                {!c.logoUrl && (
+                    <img src={logoUrl} alt={platformName} className="h-10 mb-5 object-contain" />
+                ) : (
                     <div className="flex items-center gap-2 mb-5 lg:hidden">
                         <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center">
                             <GraduationCap className="h-5 w-5 text-primary-foreground" />
                         </div>
-                        <span className="font-bold text-sm text-foreground">{c.platformName}</span>
+                        <span className="font-bold text-sm text-foreground">{platformName}</span>
                     </div>
                 )}
-                <h2 className="font-display text-2xl font-bold text-foreground">{c.formTitle}</h2>
-                <p className="text-muted-foreground text-sm mt-1">{c.formSubtitle}</p>
+                <h2 className="font-display text-2xl font-bold text-foreground">{formTitle}</h2>
+                <p className="text-muted-foreground text-sm mt-1">{formSubtitle}</p>
             </div>
 
             <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
@@ -254,8 +159,11 @@ export default function TenantLoginPage() {
                                 errors.password ? "border-destructive" : "border-input hover:border-ring"
                             )}
                         />
-                        <button type="button" onClick={() => setShowPassword(v => !v)}
-                            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                        <button
+                            type="button"
+                            onClick={() => setShowPassword(v => !v)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        >
                             {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                         </button>
                     </div>
@@ -281,12 +189,193 @@ export default function TenantLoginPage() {
             </p>
         </div>
     );
+}
 
-    // ── Escolhe layout ────────────────────────────────────────────────────────
+// ── Layouts ───────────────────────────────────────────────────────────────────
+
+type ContentType = ReturnType<typeof getContent>;
+
+function SplitLayout({ c, tenantSlug }: { c: ContentType; tenantSlug: string }) {
+    return (
+        <div className="min-h-screen flex">
+            <div className="hidden lg:flex lg:w-1/2 bg-primary flex-col justify-between p-12">
+                <div className="inline-flex items-center gap-2 bg-white/15 border border-white/20 text-white text-sm font-semibold px-4 py-1.5 rounded-full w-fit">
+                    🎯 {c.badge}
+                </div>
+                <div className="space-y-6">
+                    <h1 className="font-display text-4xl font-bold text-white leading-tight">{c.headline}</h1>
+                    <p className="text-white/70 text-lg leading-relaxed">{c.subtext}</p>
+                    {c.features.length > 0 && (
+                        <ul className="space-y-3 pt-2">
+                            {c.features.map((f, i) => (
+                                <li key={i} className="flex items-center gap-3 text-white/80">
+                                    <CheckCircle2 className="h-4 w-4 text-white/50 shrink-0" />
+                                    <span className="text-sm">{f}</span>
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                </div>
+                <p className="text-white/30 text-xs">© {new Date().getFullYear()} {c.platformName}</p>
+            </div>
+            <div className="flex-1 flex items-center justify-center p-8 bg-background">
+                <div className="w-full max-w-sm">
+                    {c.logoUrl && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={c.logoUrl} alt={c.platformName} className="h-12 mb-8 object-contain hidden lg:block" />
+                    )}
+                    <LoginFormBlock
+                        tenantSlug={tenantSlug}
+                        formTitle={c.formTitle}
+                        formSubtitle={c.formSubtitle}
+                        logoUrl={c.logoUrl}
+                        platformName={c.platformName}
+                    />
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function CenteredLayout({ c, tenantSlug }: { c: ContentType; tenantSlug: string }) {
+    return (
+        <div className="min-h-screen flex flex-col items-center justify-center bg-background p-6">
+            <div className="flex flex-col items-center mb-8">
+                {c.logoUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={c.logoUrl} alt={c.platformName} className="h-14 mb-4 object-contain" />
+                ) : (
+                    <div className="h-14 w-14 rounded-2xl bg-primary flex items-center justify-center mb-4 shadow-lg shadow-primary/25">
+                        <GraduationCap className="h-8 w-8 text-primary-foreground" />
+                    </div>
+                )}
+                <h1 className="text-xl font-bold text-foreground">{c.platformName}</h1>
+                <p className="text-sm text-muted-foreground mt-1 text-center max-w-xs">{c.subtext}</p>
+            </div>
+            <div className="w-full max-w-sm bg-card border border-border rounded-2xl p-8 shadow-xl">
+                <LoginFormBlock tenantSlug={tenantSlug} formTitle={c.formTitle} formSubtitle={c.formSubtitle} />
+            </div>
+            <p className="mt-6 text-xs text-muted-foreground">© {new Date().getFullYear()} {c.platformName}</p>
+        </div>
+    );
+}
+
+function FullBgLayout({ c, tenantSlug, branding }: { c: ContentType; tenantSlug: string; branding: Record<string, any> }) {
+    const bgStyle: React.CSSProperties = branding.login_bg_url
+        ? { backgroundImage: `url(${branding.login_bg_url})`, backgroundSize: "cover", backgroundPosition: "center" }
+        : { background: branding.login_bg_color ?? "hsl(var(--primary))" };
+
+    return (
+        <div className="min-h-screen flex items-center justify-center p-6 relative" style={bgStyle}>
+            <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px]" />
+            <div className="relative z-10 w-full max-w-sm">
+                <div className="flex flex-col items-center mb-6">
+                    {c.logoUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={c.logoUrl} alt={c.platformName} className="h-12 mb-3 object-contain" />
+                    ) : (
+                        <>
+                            <div className="h-12 w-12 rounded-xl bg-white/20 backdrop-blur border border-white/30 flex items-center justify-center mb-3">
+                                <GraduationCap className="h-7 w-7 text-white" />
+                            </div>
+                            <h1 className="text-white text-xl font-bold">{c.platformName}</h1>
+                        </>
+                    )}
+                </div>
+                <div className="bg-card/95 backdrop-blur-xl border border-border rounded-2xl p-8 shadow-2xl">
+                    <LoginFormBlock tenantSlug={tenantSlug} formTitle={c.formTitle} formSubtitle={c.formSubtitle} />
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function MinimalLayout({ c, tenantSlug }: { c: ContentType; tenantSlug: string }) {
+    return (
+        <div className="min-h-screen flex items-center justify-center bg-background">
+            <div className="w-full max-w-sm px-6">
+                <div className="flex items-center gap-2 mb-10">
+                    {c.logoUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={c.logoUrl} alt={c.platformName} className="h-7 object-contain" />
+                    ) : (
+                        <>
+                            <div className="h-6 w-6 rounded bg-primary flex items-center justify-center">
+                                <Shield className="h-3.5 w-3.5 text-primary-foreground" />
+                            </div>
+                            <span className="text-sm font-semibold text-foreground">{c.platformName}</span>
+                        </>
+                    )}
+                </div>
+                <LoginFormBlock tenantSlug={tenantSlug} formTitle={c.formTitle} formSubtitle={c.formSubtitle} />
+            </div>
+        </div>
+    );
+}
+
+// ── Página principal ──────────────────────────────────────────────────────────
+
+export default function TenantLoginPage() {
+    const params = useParams<{ tenant: string }>();
+    const tenantSlug = params.tenant;
+
+    const { setTenant } = useTenantStore();
+
+    // ── FIX PRINCIPAL ─────────────────────────────────────────────────────────
+    // `fetchedBranding` começa como `null` (estado de carregamento).
+    // Só recebe valor após o fetch completar — seja com dados reais ou {}.
+    // O layout/conteúdo da tela NUNCA é escolhido com base no Zustand/localStorage.
+    // Isso elimina o bug de "tela diferente a cada acesso".
+    const [fetchedBranding, setFetchedBranding] = useState<Record<string, any> | null>(null);
+
+    useEffect(() => {
+        if (!tenantSlug) {
+            setFetchedBranding({});
+            return;
+        }
+
+        // Seta cookie para uso no formulário de login
+        Cookies.set("tenant_slug", tenantSlug, { sameSite: "lax", expires: 1 });
+
+        // Busca SEMPRE dados frescos pelo slug — ignora qualquer cache anterior
+        fetch(`/api/tenant?slug=${tenantSlug}&t=${Date.now()}`, {
+            headers: {
+                "x-tenant-slug": tenantSlug,
+                "Cache-Control": "no-cache",
+            },
+        })
+            .then(r => r.ok ? r.json() : null)
+            .then(data => {
+                if (data?.id) {
+                    // Atualiza o Zustand como efeito colateral (para o resto do app),
+                    // mas o `fetchedBranding` é a fonte de verdade desta página.
+                    setTenant(data);
+                    applyBrandingCssVars(data.branding ?? {});
+                    setFetchedBranding(data.branding ?? {});
+                } else {
+                    // Tenant não encontrado — usa defaults silenciosamente
+                    setFetchedBranding({});
+                }
+            })
+            .catch(() => {
+                // Falha de rede — usa defaults (melhor que tela quebrada)
+                setFetchedBranding({});
+            });
+    }, [tenantSlug]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Enquanto os dados não chegaram: skeleton neutro, sem piscar layout errado
+    if (fetchedBranding === null) {
+        return <LoginSkeleton />;
+    }
+
+    // A partir daqui, `fetchedBranding` tem dados reais (ou {} como fallback)
+    const c = getContent(fetchedBranding);
+    const loginLayout: string = fetchedBranding.login_layout ?? "split";
+
     switch (loginLayout) {
-        case "centered": return <CenteredLayout c={c}>{form}</CenteredLayout>;
-        case "fullbg": return <FullBgLayout c={c} branding={branding}>{form}</FullBgLayout>;
-        case "minimal": return <MinimalLayout c={c}>{form}</MinimalLayout>;
-        default: return <SplitLayout c={c}>{form}</SplitLayout>;
+        case "centered": return <CenteredLayout c={c} tenantSlug={tenantSlug} />;
+        case "fullbg": return <FullBgLayout c={c} tenantSlug={tenantSlug} branding={fetchedBranding} />;
+        case "minimal": return <MinimalLayout c={c} tenantSlug={tenantSlug} />;
+        default: return <SplitLayout c={c} tenantSlug={tenantSlug} />;
     }
 }

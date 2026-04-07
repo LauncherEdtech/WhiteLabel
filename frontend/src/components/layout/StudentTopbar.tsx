@@ -16,14 +16,16 @@ import { cn } from "@/lib/utils/cn";
 import { useTenantStore } from "@/lib/stores/tenantStore";
 import { useLogout } from "@/lib/hooks/useAuth";
 import { useAuthStore } from "@/lib/stores/authStore";
+import Image from "next/image";
+
 
 const navItems = [
-    { href: "/dashboard",  label: "Dashboard",  icon: LayoutDashboard },
-    { href: "/courses",    label: "Cursos",      icon: BookOpen },
-    { href: "/questions",  label: "Questões",    icon: HelpCircle },
-    { href: "/simulados",  label: "Simulados",   icon: ClipboardList },
-    { href: "/schedule",   label: "Cronograma",  icon: Calendar },
-    { href: "/analytics",  label: "Desempenho",  icon: BarChart3 },
+    { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+    { href: "/courses", label: "Cursos", icon: BookOpen },
+    { href: "/questions", label: "Questões", icon: HelpCircle },
+    { href: "/simulados", label: "Simulados", icon: ClipboardList },
+    { href: "/schedule", label: "Cronograma", icon: Calendar },
+    { href: "/analytics", label: "Desempenho", icon: BarChart3 },
     { href: "/hall-of-fame", label: "Conquistas", icon: Trophy },
 ];
 
@@ -41,9 +43,21 @@ export function StudentTopbar() {
             <header className="fixed top-0 left-0 right-0 z-40 h-14 border-b border-border bg-card/95 backdrop-blur-sm flex items-center px-4 gap-4">
                 {/* Logo */}
                 <Link href="/dashboard" className="flex items-center gap-2 shrink-0 mr-2">
-                    <div className="h-7 w-7 rounded-md bg-primary flex items-center justify-center">
-                        <GraduationCap className="h-4 w-4 text-primary-foreground" />
-                    </div>
+                    {branding.logo_url ? (
+                        <div className="h-7 w-7 rounded-lg overflow-hidden shrink-0 border border-border">
+                            <Image
+                                src={branding.logo_url}
+                                alt={branding.platform_name}
+                                width={28}
+                                height={28}
+                                className="h-full w-full object-contain"
+                            />
+                        </div>
+                    ) : (
+                        <div className="h-7 w-7 rounded-lg bg-primary flex items-center justify-center shrink-0">
+                            <GraduationCap className="h-4 w-4 text-primary-foreground" />
+                        </div>
+                    )}
                     <span className="font-semibold text-sm text-foreground hidden sm:block truncate max-w-[120px]">
                         {branding.platform_name}
                     </span>

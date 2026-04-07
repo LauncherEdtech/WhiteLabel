@@ -7,8 +7,20 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ProgressBar } from "@/components/shared/ProgressBar";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils/cn";
-import { BarChart3, Target, Clock, BookOpen } from "lucide-react";
+import Link from "next/link";
+import { BarChart3, Target, Clock, BookOpen, Share2 } from "lucide-react";
 import type { DisciplinePerformance } from "@/types/api";
+
+
+function formatStudyTime(minutes: number): string {
+    const totalMin = Math.round(minutes);
+    if (totalMin < 1) return "0min";
+    const h = Math.floor(totalMin / 60);
+    const min = totalMin % 60;
+    if (h === 0) return `${min}min`;
+    if (min === 0) return `${h}h`;
+    return `${h}h ${min}min`;
+}
 
 export default function AnalyticsPage() {
     const { data, isLoading } = useStudentDashboard();
@@ -39,12 +51,31 @@ export default function AnalyticsPage() {
                 <p className="text-sm text-muted-foreground mt-0.5">Análise completa do seu progresso</p>
             </div>
 
+
+            {/* ── Cápsula de Estudos ── */}
+            <Link href="/study-capsule">
+                <div className="flex items-center justify-between p-4 rounded-xl border border-border bg-muted/20 hover:border-primary/40 hover:bg-primary/5 transition-all cursor-pointer group">
+                    <div className="flex items-center gap-3">
+                        <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+                            <Share2 className="h-5 w-5 text-primary" />
+                        </div>
+                        <div>
+                            <p className="text-sm font-semibold text-foreground">Cápsula de Estudos</p>
+                            <p className="text-xs text-muted-foreground">Veja seu resumo mensal e compartilhe nas redes</p>
+                        </div>
+                    </div>
+                    <span className="text-xs font-medium text-primary opacity-0 group-hover:opacity-100 transition-opacity">
+                        Abrir →
+                    </span>
+                </div>
+            </Link>
+
             {/* Resumo geral */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 {[
                     { icon: <Target className="h-5 w-5" />, label: "Acerto geral", value: `${questions.overall_accuracy}%`, color: "primary" },
                     { icon: <BarChart3 className="h-5 w-5" />, label: "Total respondidas", value: String(questions.total_answered), color: "secondary" },
-                    { icon: <Clock className="h-5 w-5" />, label: "Horas estudadas", value: `${Math.round(time_studied.week_minutes / 60)}h`, color: "warning" },
+                    { icon: <Clock className="h-5 w-5" />, label: "Horas estudadas", value: formatStudyTime(time_studied.week_minutes), color: "warning" },
                     { icon: <BookOpen className="h-5 w-5" />, label: "Aulas assistidas", value: `${lesson_progress.total_watched}/${lesson_progress.total_available}`, color: "success" },
                 ].map(({ icon, label, value, color }) => (
                     <Card key={label}>
@@ -123,7 +154,7 @@ export default function AnalyticsPage() {
                     <div className="grid grid-cols-2 gap-3 pt-1">
                         <div className="p-3 rounded-lg bg-muted text-center">
                             <p className="text-lg font-display font-bold text-foreground">
-                                {Math.round(time_studied.today_minutes)}min
+                                {formatStudyTime(time_studied.today_minutes)}
                             </p>
                             <p className="text-xs text-muted-foreground">Hoje</p>
                         </div>

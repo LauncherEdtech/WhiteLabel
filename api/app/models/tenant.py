@@ -47,6 +47,7 @@ class Tenant(BaseModel):
             "favicon_url": None,
             "platform_name": "Plataforma de Estudos",
             "support_email": None,
+            "capsule_style": "operativo",
         },
         nullable=False,
     )

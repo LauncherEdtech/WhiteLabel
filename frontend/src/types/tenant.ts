@@ -24,6 +24,7 @@ export interface TenantBranding {
     login_bg_url?: string | null;
     /** Cor de fundo do login (hex) */
     login_bg_color?: string | null;
+    capsule_style?: CapsuleStyle;
 }
 
 export type ColorPaletteKey =
@@ -38,6 +39,7 @@ export type ColorPaletteKey =
 export type StudentLayout = "sidebar" | "topbar" | "minimal";
 export type ProducerLayout = "sidebar" | "topbar";
 export type LoginLayout = "split" | "centered" | "fullbg" | "minimal";
+export type CapsuleStyle = "operativo" | "campeao" | "relatorio";
 
 export interface ColorPalette {
     key: ColorPaletteKey | "custom";

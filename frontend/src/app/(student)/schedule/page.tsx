@@ -155,14 +155,14 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
             {/* Outro valor personalizado */}
             <div className={cn(
               "col-span-1 flex items-center rounded-xl border-2 px-2 transition-all",
-              ![2,3,4,5,6,7,8].includes(hours) ? "border-primary" : "border-border"
+              ![2, 3, 4, 5, 6, 7, 8].includes(hours) ? "border-primary" : "border-border"
             )}>
               <input
                 type="number"
                 min={2}
                 max={24}
                 placeholder="+"
-                value={![2,3,4,5,6,7,8].includes(hours) ? hours : ""}
+                value={![2, 3, 4, 5, 6, 7, 8].includes(hours) ? hours : ""}
                 onChange={e => {
                   const v = Number(e.target.value);
                   if (v >= 2) setHours(v);
@@ -188,9 +188,9 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
           </div>
           <div className="grid grid-cols-2 gap-2">
             {[
-              { label: "Manhã",     time: "08:00" },
-              { label: "Tarde",     time: "14:00" },
-              { label: "Noite",     time: "19:00" },
+              { label: "Manhã", time: "08:00" },
+              { label: "Tarde", time: "14:00" },
+              { label: "Noite", time: "19:00" },
               { label: "Madrugada", time: "22:00" },
             ].map(({ label, time }) => (
               <button key={time} onClick={() => setStartTime(time)}

@@ -38,15 +38,17 @@ export function StudentSidebar() {
             <div className="p-5 border-b border-border">
                 <Link href="/dashboard" className="flex items-center gap-3">
                     {branding.logo_url ? (
-                        <Image
-                            src={branding.logo_url}
-                            alt={branding.platform_name}
-                            width={32}
-                            height={32}
-                            className="rounded-lg"
-                        />
+                        <div className="h-8 w-8 rounded-lg overflow-hidden shrink-0 border border-border">
+                            <Image
+                                src={branding.logo_url}
+                                alt={branding.platform_name}
+                                width={32}
+                                height={32}
+                                className="h-full w-full object-contain"
+                            />
+                        </div>
                     ) : (
-                        <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center">
+                        <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center shrink-0">
                             <GraduationCap className="h-5 w-5 text-primary-foreground" />
                         </div>
                     )}

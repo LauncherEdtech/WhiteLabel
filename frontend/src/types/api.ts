@@ -239,3 +239,34 @@ export interface SimuladoAttemptSummary {
     started_at: string;
     finished_at: string | null;
 }
+
+
+// ── Cápsula de Estudos ────────────────────────────────────────────────────────
+
+export interface CapsuleDiscipline {
+    discipline: string;
+    accuracy_rate: number;
+    total: number;
+}
+
+export interface StudyCapsule {
+    period_label: string;
+    month: number;
+    year: number;
+    student_name: string;
+    rank: { name: string; icon: string };
+    total_minutes: number;
+    questions_answered: number;
+    accuracy_rate: number;
+    lessons_watched: number;
+    top_disciplines: CapsuleDiscipline[];
+    highlight_badge: { key: string; name: string; icon: string } | null;
+    streak_days: number;
+    ai_phrase: string;
+    tenant_name: string;
+    tenant_logo_url: string | null;
+    tenant_primary_color: string;
+    capsule_style: "operativo" | "campeao" | "relatorio";
+    generated_at: string;
+}
+

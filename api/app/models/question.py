@@ -23,11 +23,13 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     event,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -65,9 +67,9 @@ class QuestionType(str, enum.Enum):
 # ── Helpers de deduplicação ───────────────────────────────────────────────────
 
 
-def _normalize_statement(text: str) -> str:
+def _normalize_statement(text_: str) -> str:
     """Remove acentos, pontuação e normaliza espaços para comparação."""
-    t = text.lower().strip()
+    t = text_.lower().strip()
     t = unicodedata.normalize("NFD", t)
     t = "".join(c for c in t if unicodedata.category(c) != "Mn")
     t = re.sub(r"[^a-z0-9\s]", "", t)
@@ -368,6 +370,13 @@ class QuestionAttempt(BaseModel, TenantMixin):
     SEGURANÇA: tenant_id sempre preenchido — dados de aluno nunca são globais.
     A questão respondida pode ser global (tenant_id NULL na Question),
     mas a tentativa sempre pertence ao tenant.
+
+    UNICIDADE:
+    - Contextos não-simulado (practice, schedule, review, lesson):
+        UNIQUE(user_id, question_id, context) — index parcial WHERE context != 'simulado'
+    - Contexto simulado:
+        UNIQUE(user_id, question_id, simulado_attempt_id) — index parcial WHERE context = 'simulado'
+        Isso permite a mesma questão em simulados DIFERENTES sem conflito.
     """
 
     __tablename__ = "question_attempts"
@@ -407,12 +416,25 @@ class QuestionAttempt(BaseModel, TenantMixin):
     question = relationship("Question", back_populates="attempts")
 
     __table_args__ = (
-        UniqueConstraint(
+        # Contextos não-simulado: impede dupla tentativa na mesma questão/contexto
+        # Usa partial index — não interfere com simulados
+        Index(
+            "uq_attempt_non_simulado",
             "user_id",
             "question_id",
             "context",
-            name="uq_attempt_user_question_context",
-            comment="Evita dupla tentativa no mesmo contexto",
+            unique=True,
+            postgresql_where=text("context != 'simulado'"),
+        ),
+        # Contexto simulado: impede duplicata dentro do MESMO simulado,
+        # mas permite a mesma questão em simulados diferentes
+        Index(
+            "uq_attempt_simulado",
+            "user_id",
+            "question_id",
+            "simulado_attempt_id",
+            unique=True,
+            postgresql_where=text("context = 'simulado'"),
         ),
     )
 

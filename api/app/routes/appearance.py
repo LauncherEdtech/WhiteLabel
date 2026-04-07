@@ -171,6 +171,7 @@ def get_appearance():
         "login_features":     branding.get("login_features"),
         "login_form_title":   branding.get("login_form_title"),
         "login_form_subtitle":branding.get("login_form_subtitle"),
+        "capsule_style":      branding.get("capsule_style", "operativo"),
     }
  
     return jsonify({
@@ -239,6 +240,12 @@ def update_appearance():
     if "login_bg_color" in data:
         branding["login_bg_color"] = data["login_bg_color"] or None
  
+     # ── Cápsula de Estudos ────────────────────────────────────────────────────
+    if "capsule_style" in data:
+        if data["capsule_style"] not in ("operativo", "campeao", "relatorio"):
+            return jsonify({"error": "invalid_capsule_style"}), 400
+        branding["capsule_style"] = data["capsule_style"]
+
     # ── Conteúdo editável do login ────────────────────────────────────────────
     for field in LOGIN_CONTENT_FIELDS:
         if field not in data:
@@ -272,6 +279,7 @@ def update_appearance():
             "login_features":     branding.get("login_features"),
             "login_form_title":   branding.get("login_form_title"),
             "login_form_subtitle":branding.get("login_form_subtitle"),
+            "capsule_style": branding.get("capsule_style", "operativo"),
         },
         "css_vars": COLOR_PALETTES.get(
             branding.get("color_palette", "classic"), COLOR_PALETTES["classic"]
