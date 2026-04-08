@@ -9,39 +9,56 @@ const API_URL = isServer
     ? (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api/v1")
     : "/api/v1";
 
-// Em dev/Codespaces sempre usa este tenant
 const DEFAULT_TENANT = "concurso-demo";
+const PLATFORM_DOMAIN = "launcheredu.com.br";
 
 function resolveTenantSlug(): string {
     if (typeof window === "undefined") return DEFAULT_TENANT;
 
     const hostname = window.location.hostname;
 
-    // Codespaces ou localhost → sempre concurso-demo
+    // Localhost / Codespaces → sempre concurso-demo
     const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
     const isCodespaces = hostname.includes("app.github.dev");
-
     if (isLocal || isCodespaces) {
         Cookies.set("tenant_slug", DEFAULT_TENANT, { sameSite: "lax", expires: 1 });
         return DEFAULT_TENANT;
     }
 
-    // ALB ou localhost — lê do cookie (setado pelo proxy.ts via URL)
+    // ALB direto → lê do cookie (setado pelo proxy.ts via URL path)
     const isALB = hostname.includes(".elb.amazonaws.com");
-    if (isALB || isLocal) {
+    if (isALB) {
         const cookieSlug = Cookies.get("tenant_slug");
         if (cookieSlug) return cookieSlug;
         return DEFAULT_TENANT;
     }
 
-    // Produção com domínio customizado: extrai do subdomínio
-    // Ex: cursojuridico.plataforma.com → cursojuridico
-    const parts = hostname.split(".");
-    if (parts.length >= 3) {
-        const slug = parts[0];
-        Cookies.set("tenant_slug", slug, { sameSite: "lax", expires: 1 });
+    // APEX domain (launcheredu.com.br ou www.launcheredu.com.br) →
+    // não é tenant. Sem isso, "launcheredu" seria extraído como slug → 404.
+    const isApex =
+        hostname === PLATFORM_DOMAIN || hostname === `www.${PLATFORM_DOMAIN}`;
+    if (isApex) {
+        // Rotas /admin-login e /admin/* sempre usam o tenant "platform"
+        // (onde o super admin está cadastrado)
+        const path = window.location.pathname;
+        if (path.startsWith("/admin")) {
+            return "platform";
+        }
+        const cookieSlug = Cookies.get("tenant_slug");
+        if (cookieSlug && cookieSlug !== PLATFORM_DOMAIN) return cookieSlug;
+        return DEFAULT_TENANT;
+    }
+
+    // Subdomínio de tenant: quarteconcurso.launcheredu.com.br → quarteconcurso
+    if (hostname.endsWith(`.${PLATFORM_DOMAIN}`)) {
+        const slug = hostname.split(".")[0];
+        Cookies.set("tenant_slug", slug, { sameSite: "lax", expires: 1, secure: true });
         return slug;
     }
+
+    // Domínio customizado do produtor (Fase 2) → lê do cookie
+    const cookieSlug = Cookies.get("tenant_slug");
+    if (cookieSlug) return cookieSlug;
 
     return DEFAULT_TENANT;
 }
@@ -61,7 +78,6 @@ apiClient.interceptors.request.use((config) => {
         config.headers.Authorization = `Bearer ${token}`;
     }
 
-    // Sempre resolve o tenant corretamente
     const tenantSlug = resolveTenantSlug();
     config.headers["X-Tenant-Slug"] = tenantSlug;
 

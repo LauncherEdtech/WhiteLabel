@@ -625,6 +625,7 @@ def answer_question(question_id: str):
         existing_attempt.chosen_alternative_key = chosen_key
         existing_attempt.is_correct = is_correct
         existing_attempt.response_time_seconds = data.get("response_time_seconds")
+        existing_attempt.created_at = datetime.now(timezone.utc)
         attempt = existing_attempt
     else:
         attempt = QuestionAttempt(

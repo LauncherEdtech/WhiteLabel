@@ -3,9 +3,9 @@
 # SEGURANÇA: Padrão factory evita estado global e facilita testes isolados.
 
 import os
+import re
 import logging
 
-# from api.tests.conftest import app
 from flask import Flask, jsonify
 
 from .config import config_by_name
@@ -55,8 +55,6 @@ def _configure_logging(app: Flask) -> None:
         level=log_level,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
-    # SEGURANÇA: Nunca logue senhas, tokens ou dados pessoais
-    # Adicionar filtros de sanitização aqui se necessário
 
 
 def _init_extensions(app: Flask) -> None:
@@ -67,11 +65,34 @@ def _init_extensions(app: Flask) -> None:
     mail.init_app(app)
     limiter.init_app(app)
 
+    # ── CORS ──────────────────────────────────────────────────────────────────
+    # SEGURANÇA: Nunca usar "*" com supports_credentials=True (browsers rejeitam).
+    # Lista explícita de origens permitidas:
+    #   - Qualquer subdomínio de launcheredu.com.br (tenants)
+    #   - O apex (admin, landing)
+    #   - Localhost para desenvolvimento
+    #
+    # IMPORTANTE: ao adicionar um novo ambiente (staging, etc.),
+    # adicione a origem aqui E na variável CORS_ORIGINS do ECS.
+
+    allowed_origins = [
+        # Subdomínios de produção: *.launcheredu.com.br
+        re.compile(r"https://[a-z0-9\-]+\.launcheredu\.com\.br$"),
+        # Apex
+        "https://launcheredu.com.br",
+        "https://www.launcheredu.com.br",
+        # Desenvolvimento local
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        # ALB direto (útil para health checks e testes internos)
+        re.compile(r"http://.*\.elb\.amazonaws\.com$"),
+    ]
+
     cors.init_app(
         app,
         resources={
             r"/*": {
-                "origins": "*",
+                "origins": allowed_origins,
                 "allow_headers": [
                     "Content-Type",
                     "Authorization",
@@ -79,7 +100,9 @@ def _init_extensions(app: Flask) -> None:
                     "X-Requested-With",
                 ],
                 "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-                "supports_credentials": False,
+                # supports_credentials=True permite enviar JWT no header Authorization
+                # a partir de origens específicas (não funciona com "*")
+                "supports_credentials": True,
                 "max_age": 3600,
             }
         },
@@ -102,7 +125,6 @@ def _init_extensions(app: Flask) -> None:
             401,
         )
 
-    # FinOps: import local evita circular import na inicialização do módulo
     from app.middleware.activity_tracker import track_user_activity
 
     @app.after_request
@@ -133,7 +155,7 @@ def _register_blueprints(app: Flask) -> None:
     from .routes.producer.questions import producer_questions_bp
     from .routes.admin.questions import admin_questions_bp
 
-    app.register_blueprint(health_bp)  # /health (sem prefixo)
+    app.register_blueprint(health_bp)
     app.register_blueprint(auth_bp, url_prefix="/api/v1/auth")
     app.register_blueprint(tenants_bp, url_prefix="/api/v1/tenants")
     app.register_blueprint(courses_bp, url_prefix="/api/v1/courses")
@@ -190,7 +212,6 @@ def _register_error_handlers(app: Flask) -> None:
 
     @app.errorhandler(500)
     def internal_error(e):
-        # SEGURANÇA: Nunca expõe o erro real em produção
         app.logger.error(f"Erro interno: {e}", exc_info=True)
         return (
             jsonify(
@@ -221,15 +242,12 @@ def _configure_celery(app: Flask) -> None:
             "task": "app.tasks.schedule_tasks.nightly_schedule_check",
             "schedule": 3 * 3600,
         },
-        # FinOps: publica ActiveUsers no CloudWatch a cada 60s
-        # Alimenta o auto scaling da Fase 2 (Step Scaling por usuários)
         "publish-cloudwatch-metrics": {
             "task": "app.tasks.cloudwatch_metrics.publish_active_users_metric",
-            "schedule": 60,  # a cada 60 segundos
+            "schedule": 60,
         },
     }
 
-    # Garante que tasks rodem com o contexto do app Flask
     class ContextTask(celery_app.Task):
         def __call__(self, *args, **kwargs):
             with app.app_context():

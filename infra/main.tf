@@ -34,12 +34,6 @@ provider "aws" {
 
 data "aws_availability_zones" "available" { state = "available" }
 
-# ══════════════════════════════════════════════════════════════════════════════
-# NETWORKING
-# VPC com subnets públicas (ECS) e privadas (RDS + Redis)
-# Sem NAT Gateway — free tier
-# ══════════════════════════════════════════════════════════════════════════════
-
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
   enable_dns_hostnames = true
@@ -52,7 +46,6 @@ resource "aws_internet_gateway" "main" {
   tags   = { Name = "${var.project_name}-igw" }
 }
 
-# Subnets públicas — ECS tasks rodam aqui (assignPublicIp=ENABLED)
 resource "aws_subnet" "public" {
   count                   = 2
   vpc_id                  = aws_vpc.main.id
@@ -62,7 +55,6 @@ resource "aws_subnet" "public" {
   tags = { Name = "${var.project_name}-public-${count.index}" }
 }
 
-# Subnets privadas — RDS e Redis ficam aqui
 resource "aws_subnet" "private" {
   count             = 2
   vpc_id            = aws_vpc.main.id
@@ -86,11 +78,6 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SECURITY GROUPS
-# ══════════════════════════════════════════════════════════════════════════════
-
-# ALB — aceita HTTP/HTTPS da internet
 resource "aws_security_group" "alb" {
   name        = "${var.project_name}-alb-sg"
   description = "ALB: aceita trafego HTTP/HTTPS publico"
@@ -120,7 +107,6 @@ resource "aws_security_group" "alb" {
   }
 }
 
-# ECS Tasks — aceita trafego do ALB, acessa RDS/Redis/ECR/internet
 resource "aws_security_group" "ecs_tasks" {
   name        = "${var.project_name}-ecs-sg"
   description = "ECS tasks: aceita do ALB, sai para internet (ECR, RDS, Redis)"
@@ -142,7 +128,6 @@ resource "aws_security_group" "ecs_tasks" {
     security_groups = [aws_security_group.alb.id]
   }
 
-  # Saída irrestrita — necessário para ECR pull, RDS, Redis, Gemini API
   egress {
     description = "Saida irrestrita"
     from_port   = 0
@@ -152,7 +137,6 @@ resource "aws_security_group" "ecs_tasks" {
   }
 }
 
-# RDS — aceita apenas do ECS
 resource "aws_security_group" "rds" {
   name        = "${var.project_name}-rds-sg"
   description = "RDS: aceita apenas das ECS tasks"
@@ -167,7 +151,6 @@ resource "aws_security_group" "rds" {
   }
 }
 
-# Redis — aceita apenas do ECS
 resource "aws_security_group" "redis" {
   name        = "${var.project_name}-redis-sg"
   description = "Redis: aceita apenas das ECS tasks"
@@ -182,32 +165,19 @@ resource "aws_security_group" "redis" {
   }
 }
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ECR — Repositórios de imagens Docker
-# ══════════════════════════════════════════════════════════════════════════════
-
 resource "aws_ecr_repository" "api" {
   name                 = "${var.project_name}-api"
   image_tag_mutability = "MUTABLE"
   image_scanning_configuration { scan_on_push = true }
-  lifecycle {
-    prevent_destroy = false
-  }
+  lifecycle { prevent_destroy = false }
 }
 
 resource "aws_ecr_repository" "frontend" {
   name                 = "${var.project_name}-frontend"
   image_tag_mutability = "MUTABLE"
   image_scanning_configuration { scan_on_push = true }
-  lifecycle {
-    prevent_destroy = false
-  }
+  lifecycle { prevent_destroy = false }
 }
-
-# ══════════════════════════════════════════════════════════════════════════════
-# RDS PostgreSQL — Free Tier (db.t3.micro, 20GB)
-# Fica em subnets privadas — acesso apenas via ECS
-# ══════════════════════════════════════════════════════════════════════════════
 
 resource "aws_db_subnet_group" "main" {
   name       = "${var.project_name}-db-subnet"
@@ -219,7 +189,7 @@ resource "aws_db_instance" "postgres" {
   identifier        = "${var.project_name}-postgres"
   engine            = "postgres"
   engine_version    = "16.13"
-  instance_class    = "db.t3.micro"  # Free tier
+  instance_class    = "db.t3.micro"
   allocated_storage = 20
   storage_type      = "gp2"
 
@@ -230,7 +200,6 @@ resource "aws_db_instance" "postgres" {
   db_subnet_group_name   = aws_db_subnet_group.main.name
   vpc_security_group_ids = [aws_security_group.rds.id]
 
-  # Free tier settings
   storage_encrypted       = false
   backup_retention_period = 1
   multi_az                = false
@@ -241,11 +210,6 @@ resource "aws_db_instance" "postgres" {
   tags = { Name = "${var.project_name}-postgres" }
 }
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ElastiCache Redis — Free Tier (cache.t3.micro)
-# Fica em subnets privadas — acesso apenas via ECS
-# ══════════════════════════════════════════════════════════════════════════════
-
 resource "aws_elasticache_subnet_group" "main" {
   name       = "${var.project_name}-redis-subnet"
   subnet_ids = aws_subnet.private[*].id
@@ -254,7 +218,7 @@ resource "aws_elasticache_subnet_group" "main" {
 resource "aws_elasticache_replication_group" "redis" {
   replication_group_id       = "${var.project_name}-redis"
   description                = "Redis cache para ${var.project_name}"
-  node_type                  = "cache.t3.micro"  # Free tier
+  node_type                  = "cache.t3.micro"
   port                       = 6379
   num_cache_clusters         = 1
   parameter_group_name       = "default.redis7"
@@ -269,10 +233,6 @@ resource "aws_elasticache_replication_group" "redis" {
 
   tags = { Name = "${var.project_name}-redis" }
 }
-
-# ══════════════════════════════════════════════════════════════════════════════
-# IAM — Role para ECS Task Execution
-# ══════════════════════════════════════════════════════════════════════════════
 
 resource "aws_iam_role" "ecs_task_execution" {
   name = "${var.project_name}-ecs-execution-role"
@@ -297,10 +257,6 @@ resource "aws_iam_role_policy_attachment" "ecs_ecr" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
-# ══════════════════════════════════════════════════════════════════════════════
-# CLOUDWATCH LOGS
-# ══════════════════════════════════════════════════════════════════════════════
-
 resource "aws_cloudwatch_log_group" "api" {
   name              = "/ecs/${var.project_name}/api"
   retention_in_days = 7
@@ -311,33 +267,21 @@ resource "aws_cloudwatch_log_group" "frontend" {
   retention_in_days = 7
 }
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ECS CLUSTER
-# ✅ CORREÇÃO: containerInsights "disabled" — economia ~$10/mês
-# ══════════════════════════════════════════════════════════════════════════════
-
 resource "aws_ecs_cluster" "main" {
   name = "${var.project_name}-cluster"
 
   setting {
     name  = "containerInsights"
-    value = "disabled"  # Era "enabled" — desabilitar economiza ~$10/mês
+    value = "disabled"
   }
 }
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ECS TASK DEFINITION — API Flask
-# ✅ CORREÇÃO: cpu 256 + memory 512 (era 512 + 1024) — economia ~$11/mês/task
-#    Uso real observado: 0.5% CPU, 28.5% memória (~292MB de 1024MB)
-#    Com 512MB: 292MB usados + 220MB de buffer → seguro
-# ══════════════════════════════════════════════════════════════════════════════
 
 resource "aws_ecs_task_definition" "api" {
   family                   = "${var.project_name}-api"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
-  cpu                      = "256"   
-  memory                   = "512"   
+  cpu                      = "256"
+  memory                   = "512"
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn            = aws_iam_role.ecs_task_execution.arn
 
@@ -363,8 +307,6 @@ resource "aws_ecs_task_definition" "api" {
       { name = "AWS_DEFAULT_REGION",    value = var.aws_region },
     ]
 
-    secrets = []
-
     logConfiguration = {
       logDriver = "awslogs"
       options = {
@@ -383,10 +325,6 @@ resource "aws_ecs_task_definition" "api" {
     }
   }])
 }
-
-# ══════════════════════════════════════════════════════════════════════════════
-# APPLICATION LOAD BALANCER
-# ══════════════════════════════════════════════════════════════════════════════
 
 resource "aws_lb" "main" {
   name               = "${var.project_name}-alb"
@@ -418,15 +356,25 @@ resource "aws_lb_target_group" "api" {
   tags = { Name = "${var.project_name}-api-tg" }
 }
 
+# ── HTTP Listener — redireciona TUDO para HTTPS ───────────────────────────────
+# ANTES: encaminhava para o target group da API (incorreto como default)
+# AGORA: redireciona 301 para HTTPS — nenhum tráfego HTTP chega aos containers
+
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.main.arn
   port              = 80
   protocol          = "HTTP"
 
   default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.api.arn
+    type = "redirect"
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
   }
+
+  tags = { Name = "${var.project_name}-http-redirect" }
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -452,7 +400,8 @@ resource "aws_ecs_service" "api" {
     container_port   = 5000
   }
 
-  depends_on = [aws_lb_listener.http]
+  # Depende do HTTPS listener agora (não mais do HTTP)
+  depends_on = [aws_lb_listener.https]
 
   lifecycle {
     ignore_changes = [task_definition, desired_count]
@@ -483,7 +432,11 @@ resource "aws_ecs_task_definition" "frontend" {
 
     environment = [
       { name = "NODE_ENV",            value = "production" },
-      { name = "NEXT_PUBLIC_API_URL", value = "http://${aws_lb.main.dns_name}/api/v1" },
+      # URL pública HTTPS — usada pelo browser (client-side)
+      { name = "NEXT_PUBLIC_API_URL", value = "https://launcheredu.com.br/api/v1" },
+      # URL interna HTTP — usada pelo Next.js server-side (SSR/RSC) sem passar pelo DNS público
+      # Mais rápido e sem custo de DNS resolution dentro da VPC
+      { name = "INTERNAL_API_URL",    value = "http://${aws_lb.main.dns_name}/api/v1" },
       { name = "PORT",                value = "3000" },
       { name = "HOSTNAME",            value = "0.0.0.0" },
     ]
@@ -529,41 +482,9 @@ resource "aws_lb_target_group" "frontend" {
   tags = { Name = "${var.project_name}-frontend-tg" }
 }
 
-# ── ALB Listener Rules ────────────────────────────────────────────────────
-
-resource "aws_lb_listener_rule" "api" {
-  listener_arn = aws_lb_listener.http.arn
-  priority     = 10
-
-  action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.api.arn
-  }
-
-  condition {
-    path_pattern {
-      values = ["/api/*", "/health"]
-    }
-  }
-}
-
-resource "aws_lb_listener_rule" "frontend" {
-  listener_arn = aws_lb_listener.http.arn
-  priority     = 20
-
-  action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.frontend.arn
-  }
-
-  condition {
-    path_pattern {
-      values = ["/*"]
-    }
-  }
-}
-
 # ── ECS Service Frontend ───────────────────────────────────────────────────
+# NOTA: As regras de listener (api, frontend) estão agora em https.tf
+# referenciando aws_lb_listener.https — não mais o listener HTTP.
 
 resource "aws_ecs_service" "frontend" {
   name            = "${var.project_name}-frontend"
@@ -584,7 +505,8 @@ resource "aws_ecs_service" "frontend" {
     container_port   = 3000
   }
 
-  depends_on = [aws_lb_listener_rule.frontend]
+  # Depende da regra HTTPS do frontend (movida para https.tf)
+  depends_on = [aws_lb_listener_rule.https_frontend]
 
   lifecycle {
     ignore_changes = [task_definition, desired_count]

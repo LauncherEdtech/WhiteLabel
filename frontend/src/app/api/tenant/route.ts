@@ -1,39 +1,64 @@
 // frontend/src/app/api/tenant/route.ts
-// Route handler Next.js — resolve o tenant pelo slug (query param, cookie ou header).
-// IMPORTANTE: cache desabilitado (no-store) para garantir branding sempre fresco.
-// O cache de 5min anterior causava o bug de branding "sumindo" após atualizar.
+// Route handler Next.js — resolve o tenant pelo slug.
 //
-// ATUALIZADO: aceita ?slug=X como query param com maior prioridade.
-// Isso resolve a race condition na página de login onde o cookie ainda não
-// foi setado mas o slug já está disponível na URL.
+// Ordem de prioridade (maior → menor):
+//   1. query param ?slug=X  (useTenantBySlug antes do cookie existir)
+//   2. HOST header          (subdomínio: quarteconcurso.launcheredu.com.br)
+//   3. x-tenant-slug header (chamadas internas)
+//   4. cookie tenant_slug   (sessão ativa)
+//   5. "concurso-demo"      (fallback)
+//
+// Cache desabilitado (no-store) — branding deve ser sempre fresco.
 
 import { NextRequest, NextResponse } from "next/server";
 
+const PLATFORM_DOMAIN = "launcheredu.com.br";
+const RESERVED_SUBDOMAINS = new Set(["www", "api", "admin", "mail"]);
+
+function extractSlugFromHost(host: string): string | null {
+  if (!host.endsWith(`.${PLATFORM_DOMAIN}`)) return null;
+  if (host.startsWith("www.")) return null;
+
+  const subdomain = host.split(".")[0].toLowerCase();
+  if (RESERVED_SUBDOMAINS.has(subdomain)) return null;
+
+  return subdomain;
+}
+
 export async function GET(request: NextRequest) {
-  // Prioridade: query param > header > cookie
-  // Query param é usado por useTenantBySlug antes do cookie existir
   const { searchParams } = new URL(request.url);
+  const host = (request.headers.get("host") || "").toLowerCase();
+
   const slug =
     searchParams.get("slug") ||
+    extractSlugFromHost(host) ||
     request.headers.get("x-tenant-slug") ||
     request.cookies.get("tenant_slug")?.value ||
     "concurso-demo";
 
   const fallback = {
     slug,
-    branding: { primary_color: "#4F46E5", platform_name: "Plataforma de Estudos", support_email: "" },
+    branding: {
+      primary_color: "#4F46E5",
+      platform_name: "Plataforma de Estudos",
+      support_email: "",
+    },
     features: {},
     plan: "basic",
   };
 
   try {
-    const apiUrl = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL?.replace("/api/v1", "") || "http://localhost:5000";
+    // INTERNAL_API_URL pode vir com ou sem /api/v1 no final — normaliza.
+    // NEXT_PUBLIC_API_URL: remove /api/v1 para obter a base.
+    const rawUrl =
+      process.env.INTERNAL_API_URL ||
+      process.env.NEXT_PUBLIC_API_URL?.replace("/api/v1", "") ||
+      "http://localhost:5000";
+    // Remove /api/v1 do final se presente (evita URL duplicada)
+    const apiUrl = rawUrl.replace(/\/api\/v1\/?$/, "");
 
     const res = await fetch(`${apiUrl}/api/v1/tenants/by-slug/${slug}`, {
       headers: { "X-Tenant-Slug": slug },
-      // ── FIX: era `next: { revalidate: 300 }` — cache de 5 min causava
-      // branding stale mesmo após o produtor salvar novas configurações.
-      // Desabilitado: cada request busca diretamente do banco via Flask.
       cache: "no-store",
     });
 
@@ -44,7 +69,6 @@ export async function GET(request: NextRequest) {
 
     if (!tenant?.id) return NextResponse.json(fallback);
 
-    // Headers anti-cache para garantir que o browser também não armazene
     return NextResponse.json(tenant, {
       headers: {
         "Cache-Control": "no-store, no-cache, must-revalidate",

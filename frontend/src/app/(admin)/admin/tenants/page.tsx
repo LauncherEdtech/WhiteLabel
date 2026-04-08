@@ -36,7 +36,7 @@ const ALL_FEATURES: { key: string; label: string }[] = [
     { key: "ai_tutor_chat", label: "Tutor IA" },
     { key: "analytics_producer", label: "Analytics do produtor" },
     { key: "simulados", label: "Simulados" },
-    { key: "question_bank_concursos", label: "Banco de questões concursos" }, 
+    { key: "question_bank_concursos", label: "Banco de questões concursos" },
     { key: "video_hosting", label: "Hospedagem de vídeos" },
 ];
 
@@ -52,7 +52,7 @@ export default function TenantsPage() {
 
     const { data, isLoading } = useQuery({
         queryKey: QUERY_KEYS.TENANTS,
-        queryFn: () => apiClient.get("/tenants").then(r => r.data.tenants),
+        queryFn: () => apiClient.get("/tenants/").then(r => r.data.tenants),
     });
 
     const deleteMutation = useMutation({
@@ -242,7 +242,7 @@ function CreateTenantModal({ open, onClose }: { open: boolean; onClose: () => vo
     });
 
     const mutation = useMutation({
-        mutationFn: (d: any) => apiClient.post("/tenants", d).then(r => r.data),
+        mutationFn: (d: any) => apiClient.post("/tenants/", d).then(r => r.data),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: QUERY_KEYS.TENANTS });
             toast.success("Tenant criado!");

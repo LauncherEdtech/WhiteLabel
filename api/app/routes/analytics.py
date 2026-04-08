@@ -203,8 +203,14 @@ def _get_lesson_stats_for_tenant(tenant_id: str, course_id: str = None) -> dict:
         total_lessons_platform += course_lessons
         total_watched_platform += course_watched
 
+    # FIX: top_watched só inclui aulas com pelo menos 1 visualização real
     eligible = [r for r in all_lesson_stats if r["enrolled_count"] > 0]
-    top_watched = sorted(eligible, key=lambda x: x["completion_pct"], reverse=True)[:5]
+    top_watched = sorted(
+        [r for r in eligible if r["watched_count"] > 0],
+        key=lambda x: x["completion_pct"],
+        reverse=True,
+    )[:5]
+    # Menos assistidas: todas as elegíveis (0% é um dado relevante)
     low_watched = sorted(eligible, key=lambda x: x["completion_pct"])[:5]
 
     return {
@@ -340,6 +346,8 @@ def producer_overview():
                         "active_last_7_days": 0,
                         "engagement_rate": 0.0,
                         "at_risk_count": 0,
+                        "avg_accuracy": 0.0,
+                        "total_questions_answered": 0,
                     },
                     "at_risk_students": [],
                     "class_discipline_performance": [],
@@ -372,6 +380,28 @@ def producer_overview():
         round((active_recently / total_students) * 100, 1) if total_students else 0
     )
 
+    # FIX: Acerto médio da turma — query agregada única
+    q_totals = (
+        db.session.query(
+            func.count(QuestionAttempt.id).label("total"),
+            func.sum(case((QuestionAttempt.is_correct == True, 1), else_=0)).label(
+                "correct"
+            ),
+        )
+        .filter(
+            QuestionAttempt.tenant_id == tenant.id,
+            QuestionAttempt.user_id.in_(student_ids),
+            QuestionAttempt.is_deleted == False,
+        )
+        .one()
+    )
+    total_questions_answered = q_totals.total or 0
+    avg_accuracy = (
+        round((q_totals.correct / total_questions_answered) * 100, 1)
+        if total_questions_answered
+        else 0.0
+    )
+
     at_risk = _get_at_risk_students(student_ids, tenant.id)
     class_discipline_stats = _get_class_discipline_stats(student_ids, tenant.id)
     hardest_questions = _get_hardest_questions(tenant.id)
@@ -392,6 +422,8 @@ def producer_overview():
                     "active_last_7_days": active_recently,
                     "engagement_rate": engagement_rate,
                     "at_risk_count": len(at_risk),
+                    "avg_accuracy": avg_accuracy,
+                    "total_questions_answered": total_questions_answered,
                 },
                 "at_risk_students": at_risk[:10],
                 "class_discipline_performance": class_discipline_stats,
@@ -1096,8 +1128,6 @@ def _get_time_stats(
     questions_time_week = int(q_row.week_secs or 0)
 
     # ── 2. Tempo via aulas (joinedload elimina N+1) ───────────────────────────
-    # LessonProgress.lesson já existe no model — joinedload traz duration_minutes
-    # na mesma query em vez de fazer 1 SELECT por aula.
     lessons_today = (
         LessonProgress.query.options(joinedload(LessonProgress.lesson))
         .filter(
@@ -1248,10 +1278,45 @@ def _get_todays_pending(user_id: str, tenant_id: str, today_start: datetime) -> 
 
 
 def _get_at_risk_students(student_ids: list, tenant_id: str) -> list:
-    seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    """
+    FIX: Lógica de risco reescrita com 3 salvaguardas:
+      1. Alunos criados há < 3 dias são ignorados (ainda estão chegando)
+      2. Alunos com 10+ questões nos últimos 7 dias são ignorados (engajados)
+      3. Penalidade de accuracy só aplica com volume >= 10 e acerto < 30%
+    """
+    now = datetime.now(timezone.utc)
+    seven_days_ago = now - timedelta(days=7)
+    three_days_ago = now - timedelta(days=3)
     at_risk = []
 
     for student_id in student_ids:
+        student = User.query.get(student_id)
+        if not student:
+            continue
+
+        # Salvaguarda 1: conta criada há menos de 3 dias → não é risco ainda
+        created_at = student.created_at
+        if created_at:
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            if created_at >= three_days_ago:
+                continue
+
+        # Salvaguarda 2: atividade recente alta → aluno engajado, não é risco
+        recent_count = (
+            db.session.query(func.count(QuestionAttempt.id))
+            .filter(
+                QuestionAttempt.user_id == student_id,
+                QuestionAttempt.tenant_id == tenant_id,
+                QuestionAttempt.is_deleted == False,
+                QuestionAttempt.created_at >= seven_days_ago,
+            )
+            .scalar()
+            or 0
+        )
+        if recent_count >= 10:
+            continue
+
         risk_score = 0.0
         risk_reasons = []
 
@@ -1269,60 +1334,55 @@ def _get_at_risk_students(student_ids: list, tenant_id: str) -> list:
             risk_score += 0.4
             risk_reasons.append("Nunca respondeu questões")
         elif last_attempt.created_at < seven_days_ago:
-            days_inactive = (datetime.now(timezone.utc) - last_attempt.created_at).days
+            days_inactive = (now - last_attempt.created_at).days
             risk_score += min(0.4, days_inactive * 0.05)
             risk_reasons.append(f"Inativo há {days_inactive} dias")
 
-        total_attempts = QuestionAttempt.query.filter_by(
-            user_id=student_id,
-            tenant_id=tenant_id,
-            is_deleted=False,
-        ).count()
+        # Salvaguarda 3: penalidade de accuracy só com volume razoável e acerto muito baixo
+        total_attempts = (
+            db.session.query(func.count(QuestionAttempt.id))
+            .filter(
+                QuestionAttempt.user_id == student_id,
+                QuestionAttempt.tenant_id == tenant_id,
+                QuestionAttempt.is_deleted == False,
+            )
+            .scalar()
+            or 0
+        )
+        correct_attempts = (
+            db.session.query(func.count(QuestionAttempt.id))
+            .filter(
+                QuestionAttempt.user_id == student_id,
+                QuestionAttempt.tenant_id == tenant_id,
+                QuestionAttempt.is_correct == True,
+                QuestionAttempt.is_deleted == False,
+            )
+            .scalar()
+            or 0
+        )
 
-        correct_attempts = QuestionAttempt.query.filter_by(
-            user_id=student_id,
-            tenant_id=tenant_id,
-            is_correct=True,
-            is_deleted=False,
-        ).count()
-
-        if total_attempts >= 5:
+        if total_attempts >= 10:
             accuracy = correct_attempts / total_attempts
-            if accuracy < 0.4:
-                risk_score += 0.3
+            if accuracy < 0.30:
+                risk_score += 0.2
                 risk_reasons.append(
                     f"Taxa de acerto muito baixa ({round(accuracy * 100)}%)"
                 )
 
-        not_watched = LessonProgress.query.filter_by(
-            user_id=student_id,
-            tenant_id=tenant_id,
-            status="not_watched",
-            is_deleted=False,
-        ).count()
-
-        if not_watched >= 3:
-            risk_score += 0.2
-            risk_reasons.append(f"{not_watched} aulas marcadas como não assistidas")
-
         if risk_score >= 0.3:
-            student = User.query.get(student_id)
-            if student:
-                at_risk.append(
-                    {
-                        "id": student.id,
-                        "name": student.name,
-                        "email": student.email,
-                        "risk_score": round(min(risk_score, 1.0), 2),
-                        "risk_level": "alto" if risk_score >= 0.7 else "médio",
-                        "risk_reasons": risk_reasons,
-                        "last_activity": (
-                            last_attempt.created_at.isoformat()
-                            if last_attempt
-                            else None
-                        ),
-                    }
-                )
+            at_risk.append(
+                {
+                    "id": student.id,
+                    "name": student.name,
+                    "email": student.email,
+                    "risk_score": round(min(risk_score, 1.0), 2),
+                    "risk_level": "alto" if risk_score >= 0.7 else "médio",
+                    "risk_reasons": risk_reasons,
+                    "last_activity": (
+                        last_attempt.created_at.isoformat() if last_attempt else None
+                    ),
+                }
+            )
 
     return sorted(at_risk, key=lambda x: x["risk_score"], reverse=True)
 
@@ -1395,25 +1455,65 @@ def _get_hardest_questions(tenant_id: str) -> list:
 
 
 def _get_student_rankings(student_ids: list, tenant_id: str) -> dict:
-    student_stats = []
+    """
+    FIX: Lógica reescrita.
+      - top_performers: alunos com atividade, ordenados por acerto DESC
+      - needs_attention: alunos cadastrados há > 1 dia que nunca responderam
+        OU com acerto baixo E inativos — independente do tamanho da lista
+    """
+    now = datetime.now(timezone.utc)
+    one_day_ago = now - timedelta(days=1)
 
+    student_stats = []
     for student_id in student_ids:
         stats = _get_student_quick_stats(student_id, tenant_id)
         student = User.query.get(student_id)
         if student:
-            student_stats.append({"id": student.id, "name": student.name, **stats})
+            created_at = student.created_at
+            if created_at and created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            student_stats.append(
+                {
+                    "id": student.id,
+                    "name": student.name,
+                    "email": student.email,
+                    "created_at": created_at,
+                    **stats,
+                }
+            )
 
-    sorted_by_accuracy = sorted(
-        [s for s in student_stats if s["total_answered"] > 0],
-        key=lambda x: x["accuracy_rate"],
-        reverse=True,
-    )
+    # Top performers: apenas quem já respondeu questões, melhor acerto primeiro
+    with_activity = [s for s in student_stats if s["total_answered"] > 0]
+    top_performers = sorted(
+        with_activity, key=lambda x: x["accuracy_rate"], reverse=True
+    )[:5]
+
+    # Precisam de atenção: cadastrado há > 1 dia E sem atividade suficiente
+    needs_attention = []
+    for s in student_stats:
+        created_at = s.get("created_at")
+        # Ignora alunos recém-cadastrados (menos de 1 dia)
+        if created_at and created_at > one_day_ago:
+            continue
+
+        reason = None
+        if s["total_answered"] == 0:
+            reason = "Nunca respondeu questões"
+        elif s["accuracy_rate"] < 40 and s.get("is_at_risk"):
+            reason = f"Taxa de acerto baixa: {s['accuracy_rate']}%"
+
+        if reason:
+            needs_attention.append({**s, "attention_reason": reason})
+
+    # Remove created_at do payload (não precisa ir para o frontend)
+    for s in top_performers:
+        s.pop("created_at", None)
+    for s in needs_attention:
+        s.pop("created_at", None)
 
     return {
-        "top_performers": sorted_by_accuracy[:5],
-        "needs_attention": (
-            sorted_by_accuracy[-5:] if len(sorted_by_accuracy) > 5 else []
-        ),
+        "top_performers": top_performers,
+        "needs_attention": needs_attention[:10],
     }
 
 

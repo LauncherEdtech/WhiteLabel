@@ -134,6 +134,8 @@ def get_my_rating(lesson_id: str):
 def get_lesson_ratings(lesson_id: str):
     """
     Produtor vê todas as avaliações de uma aula, com comentários e alunos.
+    FIX: Retorna lesson_title, module_name, subject_name para o frontend saber
+         a qual aula aquela avaliação pertence.
     """
     tenant = get_current_tenant()
     claims = get_jwt()
@@ -146,6 +148,10 @@ def get_lesson_ratings(lesson_id: str):
     ).first()
     if not lesson:
         return jsonify({"error": "not_found"}), 404
+
+    # FIX: Busca metadados de localização da aula
+    module = Module.query.get(lesson.module_id) if lesson.module_id else None
+    subject = Subject.query.get(module.subject_id) if module else None
 
     ratings = (
         LessonRating.query.filter_by(
@@ -171,6 +177,9 @@ def get_lesson_ratings(lesson_id: str):
         jsonify(
             {
                 "lesson_id": lesson_id,
+                "lesson_title": lesson.title,
+                "module_name": module.name if module else None,
+                "subject_name": subject.name if subject else None,
                 "avg_rating": avg,
                 "total_ratings": total,
                 "distribution": distribution,
@@ -202,7 +211,8 @@ def get_lesson_ratings(lesson_id: str):
 def producer_ratings_overview():
     """
     Produtor vê ranking de aulas por avaliação média.
-    Mostra aulas com maiores e menores notas.
+    FIX: Retorna module_name e subject_name para contextualizar cada aula
+         na interface do produtor.
     """
     tenant = get_current_tenant()
     claims = get_jwt()
@@ -231,6 +241,11 @@ def producer_ratings_overview():
         lesson = Lesson.query.get(lesson_id)
         if not lesson or lesson.is_deleted:
             continue
+
+        # FIX: Busca módulo e disciplina para contextualizar a aula
+        module = Module.query.get(lesson.module_id) if lesson.module_id else None
+        subject = Subject.query.get(module.subject_id) if module else None
+
         ratings = data["ratings"]
         avg = round(sum(ratings) / len(ratings), 2)
         low_count = sum(1 for r in ratings if r <= 2)
@@ -238,6 +253,8 @@ def producer_ratings_overview():
             {
                 "lesson_id": lesson_id,
                 "lesson_title": lesson.title,
+                "module_name": module.name if module else None,
+                "subject_name": subject.name if subject else None,
                 "avg_rating": avg,
                 "total_ratings": len(ratings),
                 "low_ratings": low_count,
