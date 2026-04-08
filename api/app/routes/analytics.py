@@ -2,17 +2,33 @@
 # Dashboard do aluno + Analytics do produtor + Insights automáticos via Gemini.
 # SEGURANÇA: Todas as queries filtram por tenant_id.
 # Aluno só vê seus próprios dados. Produtor vê dados da turma.
+#
+# OTIMIZAÇÕES (v2):
+#   1. _get_questions_stats     → 1 query SQL com CASE WHEN (era .all() + Python)
+#   2. _get_discipline_stats    → 1 query JOIN + GROUP BY (era .all() + loop)
+#   3. _get_time_stats          → joinedload elimina N+1; SUM/CASE no banco
+#   4. _get_lesson_progress_stats → COUNT + CASE WHEN; subquery corrigida
+#   5. student_dashboard (rota) → cache Redis 3 min (cache-aside)
 
+import json
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
-from sqlalchemy import func, and_
+from sqlalchemy import func, and_, case
+from sqlalchemy.orm import joinedload
 
 from app.extensions import db, limiter
 from app.models.user import User, UserRole
-from app.models.course import Course, Subject, Lesson, LessonProgress, CourseEnrollment
+from app.models.course import (
+    Course,
+    Subject,
+    Module,
+    Lesson,
+    LessonProgress,
+    CourseEnrollment,
+)
 from app.models.question import Question, QuestionAttempt
 from app.models.schedule import StudySchedule, ScheduleItem, ScheduleCheckIn
 from app.middleware.tenant import (
@@ -24,7 +40,51 @@ from app.middleware.tenant import (
 
 analytics_bp = Blueprint("analytics", __name__)
 
-# ── Helpers de autorização ────────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HELPERS DE CACHE REDIS
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _cache_get(key: str):
+    """Lê do Redis. Retorna objeto Python ou None em caso de miss/erro."""
+    try:
+        from app.extensions import redis_client
+
+        raw = redis_client.get(key)
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+def _cache_set(key: str, value, ttl_seconds: int = 180):
+    """Grava no Redis com TTL. Falha silenciosamente."""
+    try:
+        from app.extensions import redis_client
+
+        redis_client.setex(key, ttl_seconds, json.dumps(value, default=str))
+    except Exception:
+        pass
+
+
+def _cache_delete(key: str):
+    """Remove chave do Redis. Chamado após ações que invalidam o dashboard."""
+    try:
+        from app.extensions import redis_client
+
+        redis_client.delete(key)
+    except Exception:
+        pass
+
+
+def _dashboard_cache_key(user_id: str, tenant_id: str) -> str:
+    """Chave padrão do cache do dashboard do aluno."""
+    return f"analytics:dashboard:{tenant_id}:{user_id}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HELPERS DE AUTORIZAÇÃO
+# ══════════════════════════════════════════════════════════════════════════════
 
 
 def _is_producer_or_above(claims: dict) -> bool:
@@ -37,6 +97,11 @@ def _is_producer_or_above(claims: dict) -> bool:
 
 def _is_student(claims: dict) -> bool:
     return claims.get("role") == UserRole.STUDENT.value
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ANALYTICS DE AULAS (produtor)
+# ══════════════════════════════════════════════════════════════════════════════
 
 
 def _get_lesson_stats_for_tenant(tenant_id: str, course_id: str = None) -> dict:
@@ -157,7 +222,7 @@ def before_request():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# DASHBOARD DO ALUNO
+# DASHBOARD DO ALUNO  —  com cache Redis 3 min
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -165,6 +230,16 @@ def before_request():
 @jwt_required()
 @require_tenant
 def student_dashboard():
+    """
+    Dashboard completo do aluno.
+    Resultados cacheados por 3 minutos no Redis (cache-aside).
+
+    Invalidar o cache chamando _cache_delete(_dashboard_cache_key(user_id, tenant_id))
+    nos endpoints:
+      • POST /questions/attempt
+      • POST /schedule/checkin/<id>
+      • POST /lessons/<id>/progress
+    """
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
     claims = get_jwt()
@@ -185,6 +260,13 @@ def student_dashboard():
             is_deleted=False,
         ).first()
 
+    # ── Tenta servir do cache (só para alunos — produtores sempre calculam) ──
+    if not _is_producer_or_above(claims):
+        cache_key = _dashboard_cache_key(target_user_id, tenant.id)
+        cached = _cache_get(cache_key)
+        if cached:
+            return jsonify(cached), 200
+
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start = today_start - timedelta(days=today_start.weekday())
@@ -204,24 +286,25 @@ def student_dashboard():
         time_stats=time_stats,
     )
 
-    return (
-        jsonify(
-            {
-                "student": {
-                    "id": target_user.id,
-                    "name": target_user.name,
-                },
-                "questions": questions_stats,
-                "discipline_performance": discipline_stats,
-                "lesson_progress": lesson_progress,
-                "time_studied": time_stats,
-                "todays_pending": todays_pending,
-                "insights": insights,
-                "generated_at": now.isoformat(),
-            }
-        ),
-        200,
-    )
+    payload = {
+        "student": {
+            "id": target_user.id,
+            "name": target_user.name,
+        },
+        "questions": questions_stats,
+        "discipline_performance": discipline_stats,
+        "lesson_progress": lesson_progress,
+        "time_studied": time_stats,
+        "todays_pending": todays_pending,
+        "insights": insights,
+        "generated_at": now.isoformat(),
+    }
+
+    # Grava no cache apenas para alunos
+    if not _is_producer_or_above(claims):
+        _cache_set(cache_key, payload, ttl_seconds=180)
+
+    return jsonify(payload), 200
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -385,10 +468,10 @@ def producer_student_list():
     )
 
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # CÁPSULA DE ESTUDOS — compartilhamento mensal do aluno
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 @analytics_bp.route("/student/study-capsule", methods=["GET"])
 @jwt_required()
@@ -407,7 +490,6 @@ def student_study_capsule():
     user_id = get_jwt_identity()
     claims = get_jwt()
 
-    # Produtor pode ver qualquer aluno
     if _is_producer_or_above(claims):
         target_user_id = request.args.get("user_id", user_id)
     else:
@@ -419,19 +501,18 @@ def student_study_capsule():
     if not user:
         return jsonify({"error": "user_not_found"}), 404
 
-    # ── Período ───────────────────────────────────────────────────────────────
     now = datetime.now(timezone.utc)
     try:
         month = int(request.args.get("month", now.month))
-        year  = int(request.args.get("year",  now.year))
+        year = int(request.args.get("year", now.year))
     except ValueError:
         return jsonify({"error": "invalid_params"}), 400
 
     _, last_day = monthrange(year, month)
     period_start = datetime(year, month, 1, tzinfo=timezone.utc)
-    period_end   = datetime(year, month, last_day, 23, 59, 59, tzinfo=timezone.utc)
+    period_end = datetime(year, month, last_day, 23, 59, 59, tzinfo=timezone.utc)
     period_start_iso = period_start.isoformat()
-    period_end_iso   = period_end.isoformat()
+    period_end_iso = period_end.isoformat()
 
     # ── 1. Questões do período ────────────────────────────────────────────────
     from app.models.simulado import SimuladoAttempt
@@ -445,10 +526,13 @@ def student_study_capsule():
     ).all()
 
     questions_answered = len(attempts)
-    questions_correct  = sum(1 for a in attempts if a.is_correct)
-    accuracy_rate = round((questions_correct / questions_answered) * 100, 1) if questions_answered else 0
+    questions_correct = sum(1 for a in attempts if a.is_correct)
+    accuracy_rate = (
+        round((questions_correct / questions_answered) * 100, 1)
+        if questions_answered
+        else 0
+    )
 
-    # Tempo via questões (excluindo simulados)
     practice_attempts = [a for a in attempts if a.context != "simulado"]
     questions_seconds = sum(a.response_time_seconds or 0 for a in practice_attempts)
 
@@ -497,9 +581,13 @@ def student_study_capsule():
     for disc, s in by_disc.items():
         if s["total"] >= 3:
             acc = round((s["correct"] / s["total"]) * 100, 1)
-            disc_list.append({"discipline": disc, "accuracy_rate": acc, "total": s["total"]})
+            disc_list.append(
+                {"discipline": disc, "accuracy_rate": acc, "total": s["total"]}
+            )
 
-    top_disciplines = sorted(disc_list, key=lambda x: x["accuracy_rate"], reverse=True)[:3]
+    top_disciplines = sorted(disc_list, key=lambda x: x["accuracy_rate"], reverse=True)[
+        :3
+    ]
 
     # ── 5. Rank atual ─────────────────────────────────────────────────────────
     from app.services.badge_engine import BadgeEngine, get_rank, BADGES
@@ -515,13 +603,17 @@ def student_study_capsule():
         if b.badge_key in BADGES
     )
     current_rank = get_rank(_earned_points)
-    # Badge destaque do período (mais recente conquistada no mês)
-    period_badges = StudentBadge.query.filter(
-        StudentBadge.user_id == target_user_id,
-        StudentBadge.tenant_id == tenant.id,
-        StudentBadge.earned_at >= period_start_iso,
-        StudentBadge.earned_at <= period_end_iso,
-    ).order_by(StudentBadge.earned_at.desc()).first()
+
+    period_badges = (
+        StudentBadge.query.filter(
+            StudentBadge.user_id == target_user_id,
+            StudentBadge.tenant_id == tenant.id,
+            StudentBadge.earned_at >= period_start_iso,
+            StudentBadge.earned_at <= period_end_iso,
+        )
+        .order_by(StudentBadge.earned_at.desc())
+        .first()
+    )
 
     highlight_badge = None
     if period_badges:
@@ -542,7 +634,8 @@ def student_study_capsule():
     # ── 7. Frase Gemini (cached Redis 24h) ───────────────────────────────────
     ai_phrase = _get_capsule_phrase(
         user=user,
-        month=month, year=year,
+        month=month,
+        year=year,
         total_minutes=total_minutes,
         questions_answered=questions_answered,
         accuracy_rate=accuracy_rate,
@@ -553,45 +646,65 @@ def student_study_capsule():
 
     # ── 8. Dados do tenant para o card ────────────────────────────────────────
     branding = tenant.branding or {}
-    months_pt = ["janeiro","fevereiro","março","abril","maio","junho",
-                  "julho","agosto","setembro","outubro","novembro","dezembro"]
+    months_pt = [
+        "janeiro",
+        "fevereiro",
+        "março",
+        "abril",
+        "maio",
+        "junho",
+        "julho",
+        "agosto",
+        "setembro",
+        "outubro",
+        "novembro",
+        "dezembro",
+    ]
 
-    return jsonify({
-        "period_label":      f"{months_pt[month - 1]} {year}",
-        "month":             month,
-        "year":              year,
-        "student_name":      user.name,
-        "rank":              current_rank,
-        "total_minutes":     total_minutes,
-        "questions_answered": questions_answered,
-        "accuracy_rate":     accuracy_rate,
-        "lessons_watched":   lessons_watched,
-        "top_disciplines":   top_disciplines,
-        "highlight_badge":   highlight_badge,
-        "streak_days":       streak_days,
-        "ai_phrase":         ai_phrase,
-        "tenant_name":       branding.get("platform_name", tenant.name),
-        "tenant_logo_url":   branding.get("logo_url"),
-        "tenant_primary_color": branding.get("primary_color", "#6366f1"),
-        "capsule_style":     branding.get("capsule_style", "operativo"),
-        "generated_at":      now.isoformat(),
-    }), 200
+    return (
+        jsonify(
+            {
+                "period_label": f"{months_pt[month - 1]} {year}",
+                "month": month,
+                "year": year,
+                "student_name": user.name,
+                "rank": current_rank,
+                "total_minutes": total_minutes,
+                "questions_answered": questions_answered,
+                "accuracy_rate": accuracy_rate,
+                "lessons_watched": lessons_watched,
+                "top_disciplines": top_disciplines,
+                "highlight_badge": highlight_badge,
+                "streak_days": streak_days,
+                "ai_phrase": ai_phrase,
+                "tenant_name": branding.get("platform_name", tenant.name),
+                "tenant_logo_url": branding.get("logo_url"),
+                "tenant_primary_color": branding.get("primary_color", "#6366f1"),
+                "capsule_style": branding.get("capsule_style", "operativo"),
+                "generated_at": now.isoformat(),
+            }
+        ),
+        200,
+    )
 
 
 def _get_capsule_phrase(
-    user, month: int, year: int,
-    total_minutes: int, questions_answered: int,
-    accuracy_rate: float, top_disciplines: list,
-    rank_name: str, tenant_id: str,
+    user,
+    month: int,
+    year: int,
+    total_minutes: int,
+    questions_answered: int,
+    accuracy_rate: float,
+    top_disciplines: list,
+    rank_name: str,
+    tenant_id: str,
 ) -> str:
     """Gera frase motivacional via Gemini, cached Redis 24h."""
-    from flask import current_app
-
     cache_key = f"capsule_phrase:{tenant_id}:{user.id}:{year}:{month}"
 
-    # Tenta Redis
     try:
         from app.extensions import redis_client
+
         cached = redis_client.get(cache_key)
         if cached:
             return cached.decode("utf-8")
@@ -606,10 +719,13 @@ def _get_capsule_phrase(
     if api_key:
         try:
             import google.generativeai as genai
+
             genai.configure(api_key=api_key)
             model = genai.GenerativeModel("gemini-2.5-flash-lite")
 
-            top_disc_str = ", ".join(d["discipline"] for d in top_disciplines[:2]) or "sem dados"
+            top_disc_str = (
+                ", ".join(d["discipline"] for d in top_disciplines[:2]) or "sem dados"
+            )
             prompt = f"""
 Crie uma frase motivacional personalizada para um aluno de concursos públicos.
 MÁXIMO 120 caracteres. Em português. Tom encorajador e direto.
@@ -629,9 +745,9 @@ Responda APENAS com a frase, sem aspas, sem explicação."""
         except Exception as e:
             current_app.logger.warning(f"Gemini capsule phrase falhou: {e}")
 
-    # Salva no Redis por 24h
     try:
         from app.extensions import redis_client
+
         redis_client.setex(cache_key, 86400, phrase.encode("utf-8"))
     except Exception:
         pass
@@ -640,8 +756,10 @@ Responda APENAS com a frase, sem aspas, sem explicação."""
 
 
 def _fallback_capsule_phrase(
-    rank_name: str, total_minutes: int,
-    questions_answered: int, accuracy_rate: float,
+    rank_name: str,
+    total_minutes: int,
+    questions_answered: int,
+    accuracy_rate: float,
 ) -> str:
     if accuracy_rate >= 75:
         return f"{rank_name}, você está em chamas! {accuracy_rate}% de acerto — continue assim rumo à aprovação."
@@ -650,7 +768,6 @@ def _fallback_capsule_phrase(
     if questions_answered >= 300:
         return f"{rank_name}, {questions_answered} questões respondidas este mês. Cada uma te aproxima da aprovação!"
     return f"{rank_name}, cada minuto de estudo conta. Continue firme na missão!"
-
 
 
 @analytics_bp.route("/producer/lessons", methods=["GET"])
@@ -669,33 +786,73 @@ def producer_lesson_analytics():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# HELPERS DE CÁLCULO
+# HELPERS DE CÁLCULO — OTIMIZADOS
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 def _get_questions_stats(
     user_id: str, tenant_id: str, today_start: datetime, week_start: datetime
 ) -> dict:
-    all_attempts = QuestionAttempt.query.filter_by(
-        user_id=user_id,
-        tenant_id=tenant_id,
-        is_deleted=False,
-    ).all()
+    """
+    Estatísticas de questões: total, hoje, semana, taxa de acerto.
 
-    total = len(all_attempts)
-    total_correct = sum(1 for a in all_attempts if a.is_correct)
+    OTIMIZAÇÃO: Uma única query SQL com CASE WHEN cobre os três períodos.
+    Antes: .all() carregava todos os registros do aluno na memória.
+    """
+    row = (
+        db.session.query(
+            # Total histórico
+            func.count(QuestionAttempt.id).label("total"),
+            func.sum(case((QuestionAttempt.is_correct == True, 1), else_=0)).label(
+                "total_correct"
+            ),
+            # Hoje
+            func.sum(
+                case((QuestionAttempt.created_at >= today_start, 1), else_=0)
+            ).label("today_total"),
+            func.sum(
+                case(
+                    (
+                        and_(
+                            QuestionAttempt.created_at >= today_start,
+                            QuestionAttempt.is_correct == True,
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("today_correct"),
+            # Esta semana
+            func.sum(
+                case((QuestionAttempt.created_at >= week_start, 1), else_=0)
+            ).label("week_total"),
+            func.sum(
+                case(
+                    (
+                        and_(
+                            QuestionAttempt.created_at >= week_start,
+                            QuestionAttempt.is_correct == True,
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("week_correct"),
+        )
+        .filter(
+            QuestionAttempt.user_id == user_id,
+            QuestionAttempt.tenant_id == tenant_id,
+            QuestionAttempt.is_deleted == False,
+        )
+        .one()
+    )
 
-    today_attempts = [
-        a for a in all_attempts if a.created_at and a.created_at >= today_start
-    ]
-    today_total = len(today_attempts)
-    today_correct = sum(1 for a in today_attempts if a.is_correct)
-
-    week_attempts = [
-        a for a in all_attempts if a.created_at and a.created_at >= week_start
-    ]
-    week_total = len(week_attempts)
-    week_correct = sum(1 for a in week_attempts if a.is_correct)
+    total = row.total or 0
+    total_correct = row.total_correct or 0
+    today_total = row.today_total or 0
+    today_correct = row.today_correct or 0
+    week_total = row.week_total or 0
+    week_correct = row.week_correct or 0
 
     return {
         "total_answered": total,
@@ -719,38 +876,41 @@ def _get_questions_stats(
 
 
 def _get_discipline_stats(user_id: str, tenant_id: str) -> list:
-    attempts = QuestionAttempt.query.filter_by(
-        user_id=user_id,
-        tenant_id=tenant_id,
-        is_deleted=False,
-    ).all()
+    """
+    Performance por disciplina, ordenada por taxa de acerto (pontos fracos primeiro).
 
-    by_discipline = defaultdict(
-        lambda: {"total": 0, "correct": 0, "wrong": 0, "response_times": []}
+    OTIMIZAÇÃO: JOIN + GROUP BY no PostgreSQL em vez de .all() + loop Python.
+    Antes: carregava todos os attempts, depois fazia question.discipline por acesso lazy.
+    """
+    rows = (
+        db.session.query(
+            Question.discipline.label("discipline"),
+            func.count(QuestionAttempt.id).label("total"),
+            func.sum(case((QuestionAttempt.is_correct == True, 1), else_=0)).label(
+                "correct"
+            ),
+            func.sum(case((QuestionAttempt.is_correct == False, 1), else_=0)).label(
+                "wrong"
+            ),
+            func.avg(QuestionAttempt.response_time_seconds).label("avg_time"),
+        )
+        .join(Question, QuestionAttempt.question_id == Question.id)
+        .filter(
+            QuestionAttempt.user_id == user_id,
+            QuestionAttempt.tenant_id == tenant_id,
+            QuestionAttempt.is_deleted == False,
+        )
+        .group_by(Question.discipline)
+        .all()
     )
 
-    for attempt in attempts:
-        question = attempt.question
-        if not question:
-            continue
-        disc = question.discipline or "Sem disciplina"
-        by_discipline[disc]["total"] += 1
-        if attempt.is_correct:
-            by_discipline[disc]["correct"] += 1
-        else:
-            by_discipline[disc]["wrong"] += 1
-        if attempt.response_time_seconds:
-            by_discipline[disc]["response_times"].append(attempt.response_time_seconds)
-
     result = []
-    for disc, stats in by_discipline.items():
-        total = stats["total"]
-        correct = stats["correct"]
-        avg_time = (
-            sum(stats["response_times"]) / len(stats["response_times"])
-            if stats["response_times"]
-            else 0
-        )
+    for row in rows:
+        disc = row.discipline or "Sem disciplina"
+        total = row.total or 0
+        correct = row.correct or 0
+        wrong = row.wrong or 0
+        avg_t = round(float(row.avg_time), 1) if row.avg_time else 0
         accuracy = round((correct / total) * 100, 1) if total else 0
 
         result.append(
@@ -758,9 +918,9 @@ def _get_discipline_stats(user_id: str, tenant_id: str) -> list:
                 "discipline": disc,
                 "total_answered": total,
                 "correct": correct,
-                "wrong": stats["wrong"],
+                "wrong": wrong,
                 "accuracy_rate": accuracy,
-                "avg_response_time_seconds": round(avg_time, 1),
+                "avg_response_time_seconds": avg_t,
                 "performance_label": _performance_label(accuracy),
             }
         )
@@ -778,43 +938,81 @@ def _performance_label(accuracy: float) -> str:
 
 
 def _get_lesson_progress_stats(user_id: str, tenant_id: str) -> dict:
-    progress_records = LessonProgress.query.filter_by(
-        user_id=user_id,
-        tenant_id=tenant_id,
-        is_deleted=False,
-    ).all()
+    """
+    Progresso geral nas aulas.
 
-    total_watched = sum(1 for p in progress_records if p.status == "watched")
-    total_not_watched = sum(1 for p in progress_records if p.status == "not_watched")
-    total_partial = sum(1 for p in progress_records if p.status == "partial")
+    OTIMIZAÇÕES:
+    1. COUNT + CASE WHEN no banco (era .all() + sum(1 for p in...) em Python)
+    2. Subquery de total_available corrigida (era nested session.query inválido)
+       Agora usa Subject → Module → Lesson em subqueries encadeadas limpas.
+    """
+    # ── Contagens por status direto no banco ──────────────────────────────────
+    row = (
+        db.session.query(
+            func.sum(case((LessonProgress.status == "watched", 1), else_=0)).label(
+                "watched"
+            ),
+            func.sum(case((LessonProgress.status == "not_watched", 1), else_=0)).label(
+                "not_watched"
+            ),
+            func.sum(case((LessonProgress.status == "partial", 1), else_=0)).label(
+                "partial"
+            ),
+        )
+        .filter(
+            LessonProgress.user_id == user_id,
+            LessonProgress.tenant_id == tenant_id,
+            LessonProgress.is_deleted == False,
+        )
+        .one()
+    )
 
-    enrollments = CourseEnrollment.query.filter_by(
-        user_id=user_id,
-        tenant_id=tenant_id,
-        is_active=True,
-        is_deleted=False,
-    ).all()
+    total_watched = row.watched or 0
+    total_not_watched = row.not_watched or 0
+    total_partial = row.partial or 0
+
+    # ── Total de aulas disponíveis via matrículas ativas ─────────────────────
+    enrollments = (
+        CourseEnrollment.query.filter_by(
+            user_id=user_id,
+            tenant_id=tenant_id,
+            is_active=True,
+            is_deleted=False,
+        )
+        .with_entities(CourseEnrollment.course_id)
+        .all()
+    )
 
     course_ids = [e.course_id for e in enrollments]
     total_available = 0
+
     if course_ids:
+        # Subquery: IDs dos subjects dos cursos matriculados
+        subject_ids_sq = (
+            db.session.query(Subject.id)
+            .filter(
+                Subject.course_id.in_(course_ids),
+                Subject.tenant_id == tenant_id,
+                Subject.is_deleted == False,
+            )
+            .subquery()
+        )
+
+        # Subquery: IDs dos modules desses subjects
+        module_ids_sq = (
+            db.session.query(Module.id)
+            .filter(
+                Module.subject_id.in_(subject_ids_sq),
+                Module.is_deleted == False,
+            )
+            .subquery()
+        )
+
+        # COUNT das aulas publicadas nesses modules
         total_available = (
             db.session.query(func.count(Lesson.id))
-            .join(
-                Subject.__table__,
-                Lesson.module_id.in_(
-                    db.session.query(
-                        db.session.query(Subject)
-                        .filter(
-                            Subject.course_id.in_(course_ids),
-                            Subject.tenant_id == tenant_id,
-                        )
-                        .with_entities(Subject.id)
-                        .subquery()
-                    )
-                ),
-            )
             .filter(
+                Lesson.module_id.in_(module_ids_sq),
                 Lesson.is_published == True,
                 Lesson.tenant_id == tenant_id,
                 Lesson.is_deleted == False,
@@ -845,85 +1043,125 @@ def _get_time_stats(
     2. LessonProgress: duração das aulas marcadas como assistidas
     3. SimuladoAttempt.total_time_seconds (tempo real de cada simulado concluído)
 
-    NOTAS DE IMPLEMENTAÇÃO:
-    - last_watched_at e finished_at são colunas String(50) no banco (ISO 8601)
-      → comparações feitas com .isoformat() para consistência de tipos
-    - Questões de contexto 'simulado' excluídas da fonte 1 para evitar
-      dupla contagem com a fonte 3
+    OTIMIZAÇÕES:
+    - Questões: SUM + CASE WHEN no banco em vez de .all() com dois loops
+    - Aulas: joinedload(LessonProgress.lesson) elimina o N+1 por aula
+    - Simulados: SUM + CASE WHEN no banco
+    - last_watched_at e finished_at são String(50) → comparação com .isoformat()
+    - Questões de contexto 'simulado' excluídas da fonte 1 (evita dupla contagem)
     """
     from app.models.simulado import SimuladoAttempt
 
-    # ── 1. Tempo via questões de prática / cronograma ─────────────────────────
-    attempts_today = QuestionAttempt.query.filter(
-        QuestionAttempt.user_id == user_id,
-        QuestionAttempt.tenant_id == tenant_id,
-        QuestionAttempt.is_deleted == False,
-        QuestionAttempt.created_at >= today_start,
-        QuestionAttempt.response_time_seconds.isnot(None),
-        QuestionAttempt.context != "simulado",
-    ).all()
+    today_iso = today_start.isoformat()
+    week_iso = week_start.isoformat()
 
-    attempts_week = QuestionAttempt.query.filter(
-        QuestionAttempt.user_id == user_id,
-        QuestionAttempt.tenant_id == tenant_id,
-        QuestionAttempt.is_deleted == False,
-        QuestionAttempt.created_at >= week_start,
-        QuestionAttempt.response_time_seconds.isnot(None),
-        QuestionAttempt.context != "simulado",
-    ).all()
+    # ── 1. Tempo via questões de prática (SUM no banco, sem .all()) ───────────
+    q_row = (
+        db.session.query(
+            func.sum(
+                case(
+                    (
+                        and_(
+                            QuestionAttempt.created_at >= today_start,
+                            QuestionAttempt.response_time_seconds.isnot(None),
+                        ),
+                        QuestionAttempt.response_time_seconds,
+                    ),
+                    else_=0,
+                )
+            ).label("today_secs"),
+            func.sum(
+                case(
+                    (
+                        and_(
+                            QuestionAttempt.created_at >= week_start,
+                            QuestionAttempt.response_time_seconds.isnot(None),
+                        ),
+                        QuestionAttempt.response_time_seconds,
+                    ),
+                    else_=0,
+                )
+            ).label("week_secs"),
+        )
+        .filter(
+            QuestionAttempt.user_id == user_id,
+            QuestionAttempt.tenant_id == tenant_id,
+            QuestionAttempt.is_deleted == False,
+            QuestionAttempt.context != "simulado",
+        )
+        .one()
+    )
 
-    questions_time_today = sum(a.response_time_seconds or 0 for a in attempts_today)
-    questions_time_week = sum(a.response_time_seconds or 0 for a in attempts_week)
+    questions_time_today = int(q_row.today_secs or 0)
+    questions_time_week = int(q_row.week_secs or 0)
 
-    # ── 2. Tempo via aulas assistidas ─────────────────────────────────────────
-    # last_watched_at é String(50) → .isoformat() para comparação correta
-    lessons_watched_today = LessonProgress.query.filter(
-        LessonProgress.user_id == user_id,
-        LessonProgress.tenant_id == tenant_id,
-        LessonProgress.status == "watched",
-        LessonProgress.is_deleted == False,
-        LessonProgress.last_watched_at >= today_start.isoformat(),
-    ).all()
+    # ── 2. Tempo via aulas (joinedload elimina N+1) ───────────────────────────
+    # LessonProgress.lesson já existe no model — joinedload traz duration_minutes
+    # na mesma query em vez de fazer 1 SELECT por aula.
+    lessons_today = (
+        LessonProgress.query.options(joinedload(LessonProgress.lesson))
+        .filter(
+            LessonProgress.user_id == user_id,
+            LessonProgress.tenant_id == tenant_id,
+            LessonProgress.status == "watched",
+            LessonProgress.is_deleted == False,
+            LessonProgress.last_watched_at >= today_iso,
+        )
+        .all()
+    )
 
-    lessons_time_today = 0
-    for prog in lessons_watched_today:
-        lesson = Lesson.query.get(prog.lesson_id)
-        if lesson and lesson.duration_minutes:
-            lessons_time_today += lesson.duration_minutes * 60
+    lessons_week = (
+        LessonProgress.query.options(joinedload(LessonProgress.lesson))
+        .filter(
+            LessonProgress.user_id == user_id,
+            LessonProgress.tenant_id == tenant_id,
+            LessonProgress.status == "watched",
+            LessonProgress.is_deleted == False,
+            LessonProgress.last_watched_at >= week_iso,
+        )
+        .all()
+    )
 
-    lessons_watched_week = LessonProgress.query.filter(
-        LessonProgress.user_id == user_id,
-        LessonProgress.tenant_id == tenant_id,
-        LessonProgress.status == "watched",
-        LessonProgress.is_deleted == False,
-        LessonProgress.last_watched_at >= week_start.isoformat(),
-    ).all()
+    lessons_time_today = sum(
+        (p.lesson.duration_minutes or 0) * 60 for p in lessons_today if p.lesson
+    )
+    lessons_time_week = sum(
+        (p.lesson.duration_minutes or 0) * 60 for p in lessons_week if p.lesson
+    )
 
-    lessons_time_week = 0
-    for prog in lessons_watched_week:
-        lesson = Lesson.query.get(prog.lesson_id)
-        if lesson and lesson.duration_minutes:
-            lessons_time_week += lesson.duration_minutes * 60
+    # ── 3. Tempo via simulados (SUM no banco) ─────────────────────────────────
+    sim_row = (
+        db.session.query(
+            func.sum(
+                case(
+                    (
+                        SimuladoAttempt.finished_at >= today_iso,
+                        SimuladoAttempt.total_time_seconds,
+                    ),
+                    else_=0,
+                )
+            ).label("today_secs"),
+            func.sum(
+                case(
+                    (
+                        SimuladoAttempt.finished_at >= week_iso,
+                        SimuladoAttempt.total_time_seconds,
+                    ),
+                    else_=0,
+                )
+            ).label("week_secs"),
+        )
+        .filter(
+            SimuladoAttempt.user_id == user_id,
+            SimuladoAttempt.tenant_id == tenant_id,
+            SimuladoAttempt.status.in_(["completed", "timed_out"]),
+            SimuladoAttempt.total_time_seconds.isnot(None),
+        )
+        .one()
+    )
 
-    # ── 3. Tempo via simulados concluídos ────────────────────────────────────
-    # finished_at é String(50) → .isoformat() para comparação correta
-    sim_today = SimuladoAttempt.query.filter(
-        SimuladoAttempt.user_id == user_id,
-        SimuladoAttempt.tenant_id == tenant_id,
-        SimuladoAttempt.status.in_(["completed", "timed_out"]),
-        SimuladoAttempt.total_time_seconds.isnot(None),
-        SimuladoAttempt.finished_at >= today_start.isoformat(),
-    ).all()
-    simulado_time_today = sum(s.total_time_seconds or 0 for s in sim_today)
-
-    sim_week = SimuladoAttempt.query.filter(
-        SimuladoAttempt.user_id == user_id,
-        SimuladoAttempt.tenant_id == tenant_id,
-        SimuladoAttempt.status.in_(["completed", "timed_out"]),
-        SimuladoAttempt.total_time_seconds.isnot(None),
-        SimuladoAttempt.finished_at >= week_start.isoformat(),
-    ).all()
-    simulado_time_week = sum(s.total_time_seconds or 0 for s in sim_week)
+    simulado_time_today = int(sim_row.today_secs or 0)
+    simulado_time_week = int(sim_row.week_secs or 0)
 
     # ── Totais ────────────────────────────────────────────────────────────────
     total_today_seconds = (
@@ -1234,8 +1472,6 @@ def _generate_insights(
     lesson_progress: dict,
     time_stats: dict,
 ) -> list:
-    from flask import current_app
-
     api_key = current_app.config.get("GEMINI_API_KEY", "")
 
     if api_key:
@@ -1306,8 +1542,6 @@ FORMATO OBRIGATÓRIO:
         if text.startswith("json"):
             text = text[4:]
     text = text.strip()
-
-    import json
 
     data = json.loads(text)
     return data.get("insights", [])[:3]

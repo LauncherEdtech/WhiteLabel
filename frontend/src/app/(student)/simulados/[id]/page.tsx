@@ -1,7 +1,7 @@
 // frontend/src/app/(student)/simulados/[id]/page.tsx
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useSimulado, useStartAttempt, useAnswerSimulado, useFinishAttempt } from "@/lib/hooks/useSimulados";
 import { useTimer } from "@/lib/hooks/useTimer";
@@ -10,8 +10,105 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils/cn";
 import { secondsToDisplay, isTimeCritical, timerColor } from "@/lib/utils/time";
-import { Clock, CheckCircle2, ChevronLeft, ChevronRight, Flag } from "lucide-react";
+import { Clock, CheckCircle2, ChevronLeft, ChevronRight, Flag, BookOpen, LayoutList } from "lucide-react";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface SimuladoQuestion {
+    id: string;
+    statement: string;
+    context: string | null;
+    discipline: string | null;
+    difficulty: string | null;
+    alternatives: { key: string; text: string }[];
+    chosen_key?: string | null;
+}
+
+// ── Discipline sidebar ────────────────────────────────────────────────────────
+
+function DisciplinePanel({
+    questions,
+    answers,
+    currentIndex,
+    onJump,
+}: {
+    questions: SimuladoQuestion[];
+    answers: Record<string, string>;
+    currentIndex: number;
+    onJump: (index: number) => void;
+}) {
+    // Agrupa questões por disciplina mantendo a ordem de aparecimento
+    const groups = useMemo(() => {
+        const map = new Map<string, { name: string; indices: number[] }>();
+        questions.forEach((q, i) => {
+            const disc = q.discipline || "Sem disciplina";
+            if (!map.has(disc)) map.set(disc, { name: disc, indices: [] });
+            map.get(disc)!.indices.push(i);
+        });
+        return Array.from(map.values());
+    }, [questions]);
+
+    if (groups.length <= 1) return null;
+
+    return (
+        <aside className="w-52 shrink-0 space-y-1.5">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-1 flex items-center gap-1.5">
+                <LayoutList className="h-3.5 w-3.5" />
+                Disciplinas
+            </p>
+            {groups.map((group) => {
+                const answeredInGroup = group.indices.filter(i => answers[questions[i]?.id]).length;
+                const isActive = group.indices.includes(currentIndex);
+                const firstUnanswered = group.indices.find(i => !answers[questions[i]?.id]);
+                const jumpTo = firstUnanswered ?? group.indices[0];
+
+                return (
+                    <button
+                        key={group.name}
+                        onClick={() => onJump(jumpTo)}
+                        className={cn(
+                            "w-full text-left px-3 py-2.5 rounded-xl border transition-all",
+                            isActive
+                                ? "border-primary bg-primary/8 shadow-sm"
+                                : "border-border hover:border-primary/40 hover:bg-muted/50"
+                        )}
+                    >
+                        <p className={cn(
+                            "text-xs font-medium leading-snug line-clamp-2",
+                            isActive ? "text-primary" : "text-foreground"
+                        )}>
+                            {group.name}
+                        </p>
+                        <div className="flex items-center justify-between mt-1.5">
+                            <div className="flex-1 h-1 rounded-full bg-muted overflow-hidden mr-2">
+                                <div
+                                    className={cn(
+                                        "h-full rounded-full transition-all",
+                                        answeredInGroup === group.indices.length
+                                            ? "bg-success"
+                                            : "bg-primary"
+                                    )}
+                                    style={{ width: `${(answeredInGroup / group.indices.length) * 100}%` }}
+                                />
+                            </div>
+                            <span className={cn(
+                                "text-[10px] font-mono shrink-0",
+                                answeredInGroup === group.indices.length
+                                    ? "text-success"
+                                    : "text-muted-foreground"
+                            )}>
+                                {answeredInGroup}/{group.indices.length}
+                            </span>
+                        </div>
+                    </button>
+                );
+            })}
+        </aside>
+    );
+}
+
+// ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function SimuladoPage() {
     const { id } = useParams<{ id: string }>();
@@ -28,6 +125,9 @@ export default function SimuladoPage() {
     const [startTime, setStartTime] = useState<number>(Date.now());
     const [confirmFinish, setConfirmFinish] = useState(false);
     const [started, setStarted] = useState(false);
+    // Questões do attempt (preenchidas após /start — inclui personalizadas)
+    const [attemptQuestions, setAttemptQuestions] = useState<SimuladoQuestion[]>([]);
+    const [showDisciplines, setShowDisciplines] = useState(true);
 
     const timeLimit = simulado?.time_limit_minutes ? simulado.time_limit_minutes * 60 : 3600;
 
@@ -37,7 +137,6 @@ export default function SimuladoPage() {
         onExpire: () => handleFinish(true),
     });
 
-    // Inicia o timer quando o simulado começa
     useEffect(() => {
         if (started) startTimer();
     }, [started]);
@@ -46,8 +145,18 @@ export default function SimuladoPage() {
         if (!id) return;
         const data = await startAttempt.mutateAsync(id);
         const aid = data.attempt?.id;
+        const qs: SimuladoQuestion[] = data.attempt?.questions || [];
+
+        // Pré-popula respostas já dadas (retomada de tentativa)
+        const preAnswered: Record<string, string> = {};
+        qs.forEach((q: SimuladoQuestion) => {
+            if (q.chosen_key) preAnswered[q.id] = q.chosen_key;
+        });
+
         if (aid) {
             setAttemptId(aid);
+            setAttemptQuestions(qs);
+            setAnswers(preAnswered);
             setStarted(true);
             setStartTime(Date.now());
         }
@@ -82,11 +191,21 @@ export default function SimuladoPage() {
 
     if (!simulado) return null;
 
-    const questions = simulado.questions || [];
+    // Usa questões do attempt quando iniciado (inclui personalizadas),
+    // senão usa as do GET (simulados fixos no lobby)
+    const questions: SimuladoQuestion[] = started
+        ? attemptQuestions
+        : (simulado.questions || []);
+
+    // Total real: para simulados personalizados, questions[] pode estar vazio no lobby
+    const totalQuestions = started
+        ? questions.length
+        : (simulado.total_questions || questions.length || 0);
+
     const currentQuestion = questions[currentIndex];
     const answeredCount = Object.keys(answers).length;
 
-    // Tela de lobby
+    // ── Lobby ─────────────────────────────────────────────────────────────────
     if (!started) {
         return (
             <div className="max-w-lg mx-auto space-y-6 animate-fade-in pt-8">
@@ -103,7 +222,7 @@ export default function SimuladoPage() {
                         </div>
                         <div className="grid grid-cols-2 gap-4 py-2">
                             <div className="p-3 rounded-lg bg-muted text-center">
-                                <p className="font-display text-2xl font-bold text-foreground">{questions.length}</p>
+                                <p className="font-display text-2xl font-bold text-foreground">{totalQuestions}</p>
                                 <p className="text-xs text-muted-foreground">Questões</p>
                             </div>
                             <div className="p-3 rounded-lg bg-muted text-center">
@@ -111,6 +230,17 @@ export default function SimuladoPage() {
                                 <p className="text-xs text-muted-foreground">Tempo</p>
                             </div>
                         </div>
+                        {/* Badge de filtro de histórico */}
+                        {simulado.settings?.question_filter && simulado.settings.question_filter !== "all" && (
+                            <div className="flex items-center justify-center gap-1.5 text-xs text-primary bg-primary/8 px-3 py-1.5 rounded-full border border-primary/20 w-fit mx-auto">
+                                <BookOpen className="h-3 w-3" />
+                                {{
+                                    not_answered: "Questões não respondidas",
+                                    previously_wrong: "Questões erradas antes",
+                                    previously_correct: "Questões acertadas antes",
+                                }[simulado.settings.question_filter as string] ?? simulado.settings.question_filter}
+                            </div>
+                        )}
                         <p className="text-xs text-muted-foreground">
                             Mínimo para aprovação: {Math.round((simulado.settings?.passing_score || 0.6) * 100)}%
                         </p>
@@ -123,17 +253,37 @@ export default function SimuladoPage() {
         );
     }
 
+    // ── Prova ─────────────────────────────────────────────────────────────────
     return (
-        <div className="max-w-3xl mx-auto space-y-4 animate-fade-in">
-            {/* Header com timer */}
-            <div className="flex items-center justify-between py-2">
-                <div className="text-sm text-muted-foreground">
-                    {currentIndex + 1} / {questions.length}
+        <div className="animate-fade-in">
+            {/* Header fixo com timer */}
+            <div className="flex items-center justify-between py-2 mb-4">
+                <div className="flex items-center gap-3">
+                    <div className="text-sm text-muted-foreground font-mono">
+                        {currentIndex + 1}<span className="text-muted-foreground/50">/{totalQuestions}</span>
+                    </div>
+                    {/* Toggle painel de disciplinas */}
+                    {questions.some(q => q.discipline) && (
+                        <button
+                            onClick={() => setShowDisciplines(v => !v)}
+                            className={cn(
+                                "flex items-center gap-1 text-xs px-2 py-1 rounded-lg border transition-all",
+                                showDisciplines
+                                    ? "border-primary/30 bg-primary/8 text-primary"
+                                    : "border-border text-muted-foreground hover:text-foreground"
+                            )}
+                        >
+                            <LayoutList className="h-3 w-3" />
+                            Disciplinas
+                        </button>
+                    )}
                 </div>
+
                 <div className={cn("flex items-center gap-2 font-display text-xl font-bold tabular-nums", timerColor(seconds))}>
                     <Clock className={cn("h-5 w-5", isTimeCritical(seconds) && "animate-pulse")} />
                     {secondsToDisplay(seconds)}
                 </div>
+
                 <Button
                     variant="outline" size="sm"
                     onClick={() => setConfirmFinish(true)}
@@ -144,94 +294,145 @@ export default function SimuladoPage() {
                 </Button>
             </div>
 
-            {/* Progress */}
-            <Progress value={(answeredCount / questions.length) * 100} className="h-1.5" />
+            {/* Barra de progresso geral */}
+            <Progress value={(answeredCount / totalQuestions) * 100} className="h-1 mb-4" />
 
-            {/* Questão atual */}
-            {currentQuestion && (
-                <Card>
-                    <CardContent className="p-6 space-y-5">
-                        <div className="flex items-center gap-2">
-                            {currentQuestion.discipline && (
-                                <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded-md">
-                                    {currentQuestion.discipline}
-                                </span>
-                            )}
-                            {answers[currentQuestion.id] && (
-                                <span className="text-xs bg-success/10 text-success px-2 py-0.5 rounded-md flex items-center gap-1">
-                                    <CheckCircle2 className="h-3 w-3" /> Respondida
-                                </span>
-                            )}
-                        </div>
+            {/* Layout com sidebar de disciplinas */}
+            <div className="flex gap-5">
+                {/* Sidebar */}
+                {showDisciplines && questions.length > 0 && (
+                    <DisciplinePanel
+                        questions={questions}
+                        answers={answers}
+                        currentIndex={currentIndex}
+                        onJump={(i) => setCurrentIndex(i)}
+                    />
+                )}
 
-                        <p className="text-sm text-foreground leading-relaxed font-medium">
-                            {currentQuestion.statement}
-                        </p>
+                {/* Questão + navegação */}
+                <div className="flex-1 min-w-0 space-y-4">
+                    {currentQuestion && (
+                        <Card className="animate-fade-in">
+                            <CardContent className="p-6 space-y-5">
+                                {/* Metadados */}
+                                <div className="flex items-center gap-2 flex-wrap">
+                                    {currentQuestion.discipline && (
+                                        <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded-md font-medium">
+                                            {currentQuestion.discipline}
+                                        </span>
+                                    )}
+                                    {currentQuestion.difficulty && (
+                                        <span className={cn(
+                                            "text-xs px-2 py-0.5 rounded-md border font-medium",
+                                            currentQuestion.difficulty === "easy" && "bg-success/10 text-success border-success/20",
+                                            currentQuestion.difficulty === "medium" && "bg-warning/10 text-warning border-warning/20",
+                                            currentQuestion.difficulty === "hard" && "bg-destructive/10 text-destructive border-destructive/20",
+                                        )}>
+                                            {{ easy: "Fácil", medium: "Médio", hard: "Difícil" }[currentQuestion.difficulty] ?? currentQuestion.difficulty}
+                                        </span>
+                                    )}
+                                    {answers[currentQuestion.id] && (
+                                        <span className="text-xs bg-success/10 text-success px-2 py-0.5 rounded-md flex items-center gap-1">
+                                            <CheckCircle2 className="h-3 w-3" /> Respondida
+                                        </span>
+                                    )}
+                                </div>
 
-                        <div className="space-y-2">
-                            {currentQuestion.alternatives?.map((alt: { key: string; text: string }) => {
-                                const isSelected = answers[currentQuestion.id] === alt.key;
+                                {/* Contexto */}
+                                {currentQuestion.context && (
+                                    <div className="p-3 rounded-lg bg-muted text-sm text-muted-foreground leading-relaxed border-l-4 border-primary/30 whitespace-pre-wrap">
+                                        {currentQuestion.context}
+                                    </div>
+                                )}
+
+                                {/* Enunciado */}
+                                <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">
+                                    {currentQuestion.statement}
+                                </p>
+
+                                {/* Alternativas */}
+                                <div className="space-y-2">
+                                    {currentQuestion.alternatives?.map((alt) => {
+                                        const isSelected = answers[currentQuestion.id] === alt.key;
+                                        return (
+                                            <button
+                                                key={alt.key}
+                                                onClick={() => handleSelect(currentQuestion.id, alt.key)}
+                                                className={cn(
+                                                    "w-full flex items-start gap-3 p-3.5 rounded-xl border text-left transition-all duration-150 active:scale-[0.99]",
+                                                    isSelected
+                                                        ? "border-primary bg-primary/5 shadow-sm"
+                                                        : "border-border hover:border-primary/50 hover:bg-accent"
+                                                )}
+                                            >
+                                                <span className={cn(
+                                                    "h-6 w-6 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 mt-0.5",
+                                                    isSelected ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+                                                )}>
+                                                    {alt.key.toUpperCase()}
+                                                </span>
+                                                <span className={cn("text-sm leading-relaxed", isSelected && "text-foreground font-medium")}>
+                                                    {alt.text}
+                                                </span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </CardContent>
+                        </Card>
+                    )}
+
+                    {/* Navegação + mapa de questões */}
+                    <div className="flex items-center justify-between">
+                        <Button
+                            variant="outline" size="sm"
+                            onClick={() => setCurrentIndex(i => Math.max(0, i - 1))}
+                            disabled={currentIndex === 0}
+                        >
+                            <ChevronLeft className="h-4 w-4" /> Anterior
+                        </Button>
+
+                        {/* Mapa de questões — mostra no máx 20 por vez */}
+                        <div className="flex gap-1 flex-wrap justify-center max-w-xs">
+                            {questions.slice(
+                                Math.max(0, currentIndex - 9),
+                                Math.min(questions.length, Math.max(0, currentIndex - 9) + 20)
+                            ).map((q, offset) => {
+                                const realIndex = Math.max(0, currentIndex - 9) + offset;
                                 return (
                                     <button
-                                        key={alt.key}
-                                        onClick={() => handleSelect(currentQuestion.id, alt.key)}
+                                        key={realIndex}
+                                        onClick={() => setCurrentIndex(realIndex)}
                                         className={cn(
-                                            "w-full flex items-start gap-3 p-3.5 rounded-xl border text-left transition-all duration-150 active:scale-[0.99]",
-                                            isSelected
-                                                ? "border-primary bg-primary/5 shadow-sm"
-                                                : "border-border hover:border-primary/50 hover:bg-accent"
+                                            "h-7 w-7 rounded-md text-xs font-medium transition-all",
+                                            realIndex === currentIndex && "ring-2 ring-primary ring-offset-1",
+                                            answers[q.id]
+                                                ? "bg-primary text-primary-foreground"
+                                                : "bg-muted text-muted-foreground hover:bg-muted-foreground/20"
                                         )}
                                     >
-                                        <span className={cn(
-                                            "h-6 w-6 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 mt-0.5",
-                                            isSelected ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
-                                        )}>
-                                            {alt.key.toUpperCase()}
-                                        </span>
-                                        <span className={cn("text-sm leading-relaxed", isSelected && "text-foreground font-medium")}>
-                                            {alt.text}
-                                        </span>
+                                        {realIndex + 1}
                                     </button>
                                 );
                             })}
                         </div>
-                    </CardContent>
-                </Card>
-            )}
 
-            {/* Navegação */}
-            <div className="flex items-center justify-between">
-                <Button variant="outline" size="sm" onClick={() => setCurrentIndex((i) => Math.max(0, i - 1))} disabled={currentIndex === 0}>
-                    <ChevronLeft className="h-4 w-4" /> Anterior
-                </Button>
-
-                {/* Mapa de questões */}
-                <div className="flex gap-1 flex-wrap justify-center max-w-xs">
-                    {questions.map((_: unknown, i: number) => (
-                        <button
-                            key={i}
-                            onClick={() => setCurrentIndex(i)}
-                            className={cn(
-                                "h-7 w-7 rounded-md text-xs font-medium transition-all",
-                                i === currentIndex && "ring-2 ring-primary ring-offset-1",
-                                answers[questions[i]?.id] ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
-                            )}
+                        <Button
+                            variant="outline" size="sm"
+                            onClick={() => setCurrentIndex(i => Math.min(questions.length - 1, i + 1))}
+                            disabled={currentIndex === questions.length - 1}
                         >
-                            {i + 1}
-                        </button>
-                    ))}
+                            Próxima <ChevronRight className="h-4 w-4" />
+                        </Button>
+                    </div>
                 </div>
-
-                <Button variant="outline" size="sm" onClick={() => setCurrentIndex((i) => Math.min(questions.length - 1, i + 1))} disabled={currentIndex === questions.length - 1}>
-                    Próxima <ChevronRight className="h-4 w-4" />
-                </Button>
             </div>
 
             <ConfirmDialog
                 open={confirmFinish}
                 onOpenChange={setConfirmFinish}
                 title="Finalizar simulado?"
-                description={`Você respondeu ${answeredCount} de ${questions.length} questões. Tem certeza que deseja finalizar?`}
+                description={`Você respondeu ${answeredCount} de ${totalQuestions} questões. Tem certeza que deseja finalizar?`}
                 confirmLabel="Finalizar"
                 onConfirm={() => handleFinish()}
                 loading={finishAttempt.isPending}

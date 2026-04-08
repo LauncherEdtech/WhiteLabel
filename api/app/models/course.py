@@ -2,7 +2,17 @@
 # Hierarquia de conteúdo: Course > Subject > Module > Lesson
 # Cada nível pertence a um tenant (isolamento garantido).
 
-from sqlalchemy import Column, String, Text, Boolean, Integer, ForeignKey, JSON, Float
+from sqlalchemy import (
+    Column,
+    String,
+    Text,
+    Boolean,
+    Integer,
+    ForeignKey,
+    JSON,
+    Float,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -54,8 +64,6 @@ class CourseEnrollment(BaseModel, TenantMixin):
 
     course = relationship("Course", back_populates="students")
     user = relationship("User")
-
-    from sqlalchemy import UniqueConstraint
 
     __table_args__ = (
         UniqueConstraint("course_id", "user_id", name="uq_enrollment_course_user"),
@@ -137,9 +145,7 @@ class Lesson(BaseModel, TenantMixin):
 
     # IA: resumo gerado pelo Gemini (pipeline assíncrono)
     ai_summary = Column(Text, nullable=True)
-    ai_topics = Column(
-        JSON, default=list, nullable=False
-    )  # ["habeas corpus", "prisão preventiva"]
+    ai_topics = Column(JSON, default=list, nullable=False)  # ["habeas corpus", ...]
     ai_processed_at = Column(String(50), nullable=True)  # ISO datetime
 
     is_published = Column(Boolean, default=False, nullable=False)
@@ -151,7 +157,6 @@ class Lesson(BaseModel, TenantMixin):
         back_populates="lesson",
         lazy="dynamic",
     )
-
     questions = relationship(
         "Question",
         back_populates="lesson",
@@ -173,20 +178,16 @@ class LessonProgress(BaseModel, TenantMixin):
     user_id = Column(UUID(as_uuid=False), ForeignKey("users.id"), nullable=False)
 
     # Check-in: aluno confirma se assistiu ou não
-    status = Column(
-        String(20),
-        default="not_started",
-        nullable=False,
-    )
     # Valores possíveis: not_started | watched | not_watched | partial
+    status = Column(String(20), default="not_started", nullable=False)
 
     watch_percentage = Column(Float, default=0.0, nullable=False)  # 0.0 a 1.0
     last_watched_at = Column(String(50), nullable=True)  # ISO datetime
 
+    # lesson: many-to-one — usado com joinedload em analytics._get_time_stats
+    # para eliminar N+1 ao somar duration_minutes de aulas assistidas.
     lesson = relationship("Lesson", back_populates="progress_records")
     user = relationship("User", back_populates="lesson_progress")
-
-    from sqlalchemy import UniqueConstraint
 
     __table_args__ = (
         UniqueConstraint("lesson_id", "user_id", name="uq_progress_lesson_user"),

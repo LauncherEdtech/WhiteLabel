@@ -605,27 +605,44 @@ def answer_question(question_id: str):
         data = schema.load(request.get_json(force=True) or {})
     except ValidationError as e:
         return jsonify({"error": "validation_error", "details": e.messages}), 400
-
     # Normaliza para maiúsculo — banco global usa A-E, questões antigas usam a-e
     chosen_key = data["chosen_alternative_key"].upper()
     is_correct = chosen_key == question.correct_alternative_key.upper()
+    context = data.get("context", "practice")
 
-    # Registra a tentativa
-    attempt = QuestionAttempt(
-        tenant_id=tenant.id,
+    # Upsert: se já existe tentativa para este (user, question, context), atualiza
+    existing_attempt = QuestionAttempt.query.filter_by(
         user_id=user_id,
         question_id=question.id,
-        chosen_alternative_key=chosen_key,
-        is_correct=is_correct,
-        response_time_seconds=data.get("response_time_seconds"),
-        context=data.get("context", "practice"),
-    )
-    db.session.add(attempt)
+        tenant_id=tenant.id,
+        context=context,
+        is_deleted=False,
+    ).first()
 
-    # Atualiza stats da questão
-    question.total_attempts += 1
-    if is_correct:
-        question.correct_attempts += 1
+    is_new_attempt = existing_attempt is None
+
+    if existing_attempt:
+        existing_attempt.chosen_alternative_key = chosen_key
+        existing_attempt.is_correct = is_correct
+        existing_attempt.response_time_seconds = data.get("response_time_seconds")
+        attempt = existing_attempt
+    else:
+        attempt = QuestionAttempt(
+            tenant_id=tenant.id,
+            user_id=user_id,
+            question_id=question.id,
+            chosen_alternative_key=chosen_key,
+            is_correct=is_correct,
+            response_time_seconds=data.get("response_time_seconds"),
+            context=context,
+        )
+        db.session.add(attempt)
+
+    # Atualiza stats apenas em novas tentativas (evita inflacionar contadores)
+    if is_new_attempt:
+        question.total_attempts += 1
+        if is_correct:
+            question.correct_attempts += 1
 
     db.session.commit()
 

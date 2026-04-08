@@ -23,7 +23,6 @@ import {
 const DAYS_PT = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 
 // ── Redirecionamento inteligente por tipo de item ─────────────────────────────
-// Suporta question_filters do cronograma do produtor
 function buildItemUrl(item: any, courseId: string): string {
   switch (item.item_type) {
     case "lesson":
@@ -31,20 +30,24 @@ function buildItemUrl(item: any, courseId: string): string {
       return `/courses/${courseId}`;
 
     case "review":
-      // Revisão com filtros pré-setados pelo produtor
       if (item.question_filters) {
         return buildQuestionsUrl(item.question_filters, item.subject?.id);
       }
       if (item.lesson?.id) return `/courses/${courseId}/lessons/${item.lesson.id}`;
-      if (item.subject?.id) return `/questions?subject_id=${item.subject.id}&previously_wrong=true`;
+      if (item.subject?.name) {
+        const p = new URLSearchParams({ discipline: item.subject.name, previously_wrong: "true" });
+        return `/questions?${p.toString()}`;
+      }
       return `/questions`;
 
     case "questions":
-      // Questões com filtros pré-setados pelo produtor
       if (item.question_filters) {
         return buildQuestionsUrl(item.question_filters, item.subject?.id);
       }
-      if (item.subject?.id) return `/questions?subject_id=${item.subject.id}&not_answered=true`;
+      if (item.subject?.name) {
+        const p = new URLSearchParams({ discipline: item.subject.name, not_answered: "true" });
+        return `/questions?${p.toString()}`;
+      }
       return `/questions`;
 
     case "simulado":
@@ -152,7 +155,6 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
                 {h}h
               </button>
             ))}
-            {/* Outro valor personalizado */}
             <div className={cn(
               "col-span-1 flex items-center rounded-xl border-2 px-2 transition-all",
               ![2, 3, 4, 5, 6, 7, 8].includes(hours) ? "border-primary" : "border-border"
@@ -252,12 +254,7 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
   );
 }
 
-// ── Tela inicial: escolha entre template do professor ou cronograma IA ────────
-// Exibida quando o aluno ainda não tem cronograma para o curso.
-// Fluxo:
-//   1. Consulta se há template publicado para o curso
-//   2. Se sim → exibe ProducerTemplateChoice (adotar ou criar próprio)
-//   3. Se não (ou se aluno escolheu "criar próprio") → exibe ScheduleWizard
+// ── Tela inicial ──────────────────────────────────────────────────────────────
 
 function ScheduleStartView({ courseId, onGenerated }: { courseId: string; onGenerated: () => void }) {
   const [forceAI, setForceAI] = useState(false);
@@ -269,7 +266,6 @@ function ScheduleStartView({ courseId, onGenerated }: { courseId: string; onGene
     enabled: !forceAI,
   });
 
-  // Enquanto carrega, exibe skeleton
   if (templateLoading && !forceAI) {
     return (
       <div className="max-w-lg mx-auto space-y-4">
@@ -281,12 +277,10 @@ function ScheduleStartView({ courseId, onGenerated }: { courseId: string; onGene
 
   const hasPublishedTemplate = !forceAI && !!templateData?.template;
 
-  // Sem template publicado → vai direto para o wizard de criação IA
   if (!hasPublishedTemplate || forceAI) {
     return <ScheduleWizard courseId={courseId} onGenerated={onGenerated} />;
   }
 
-  // Tem template → exibe a tela de escolha
   return (
     <div className="max-w-lg mx-auto">
       <ProducerTemplateChoice
@@ -302,7 +296,7 @@ function ScheduleStartView({ courseId, onGenerated }: { courseId: string; onGene
   );
 }
 
-// ── Item do cronograma com redirecionamento inteligente ───────────────────────
+// ── Item do cronograma ────────────────────────────────────────────────────────
 
 function ScheduleItemRow({ item, courseId, onCheckin, loading }: {
   item: any;
@@ -324,7 +318,6 @@ function ScheduleItemRow({ item, courseId, onCheckin, loading }: {
   const cfg = typeConfig[item.item_type] || typeConfig.lesson;
   const Icon = cfg.icon;
 
-  // Título: prioridade para título do template do professor, depois título da aula, depois padrão
   const title =
     item.template_item_title
     || item.lesson?.title
@@ -343,7 +336,6 @@ function ScheduleItemRow({ item, courseId, onCheckin, loading }: {
       isSkipped && "bg-muted/30 border-border opacity-50",
       !isDoneOrSkipped && "bg-background border-border hover:border-primary/20",
     )}>
-      {/* Check button */}
       <button
         onClick={() => !isDoneOrSkipped && onCheckin(item.id, true)}
         disabled={loading || isDoneOrSkipped}
@@ -357,12 +349,10 @@ function ScheduleItemRow({ item, courseId, onCheckin, loading }: {
         {isDone && <CheckCircle2 className="h-3.5 w-3.5 text-white" />}
       </button>
 
-      {/* Type icon */}
       <div className={cn("h-8 w-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5", cfg.color)}>
         <Icon className="h-4 w-4" />
       </div>
 
-      {/* Content */}
       <div className="flex-1 min-w-0">
         <p className={cn("text-sm font-medium", isDoneOrSkipped && "line-through text-muted-foreground")}>
           {title}
@@ -381,21 +371,18 @@ function ScheduleItemRow({ item, courseId, onCheckin, loading }: {
           )}
         </div>
 
-        {/* Nota do professor (template do produtor) */}
         {item.template_item_notes && (
           <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mt-1.5">
             📌 {item.template_item_notes}
           </p>
         )}
 
-        {/* Dica da IA (cronograma adaptativo) */}
         {item.priority_reason && !item.template_item_notes && (
           <p className="text-xs text-muted-foreground mt-1 italic">
             💡 {item.priority_reason}
           </p>
         )}
 
-        {/* Filtros aplicados (questões/revisão do template) */}
         {(item.item_type === "questions" || item.item_type === "review") && item.question_filters && (
           <div className="flex flex-wrap gap-1 mt-1.5">
             {item.question_filters.difficulty && (
@@ -416,7 +403,6 @@ function ScheduleItemRow({ item, courseId, onCheckin, loading }: {
           </div>
         )}
 
-        {/* Botões de ação */}
         {!isDoneOrSkipped && (
           <div className="flex items-center gap-2 mt-2">
             <button
@@ -494,7 +480,7 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
   const formatDate = (dateStr: string) => {
     const d = new Date(dateStr + "T12:00:00");
     const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    today.setHours(12, 0, 0, 0); // FIX: mesma hora que "d" → diff sempre inteiro
     const diff = Math.round((d.getTime() - today.getTime()) / 86400000);
     const weekday = DAYS_PT[d.getDay()];
     const formatted = d.toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
@@ -509,18 +495,16 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
 
   return (
     <div className="space-y-6 animate-fade-in">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="font-display text-2xl font-bold text-foreground">Cronograma</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             {isProducerTemplate
-              ? "Cronograma do professor · adaptado à sua disponibilidade"
+              ? "Cronograma adaptado à sua disponibilidade"
               : "Adaptativo · atualiza com seu desempenho"}
           </p>
         </div>
         <div className="flex gap-2">
-          {/* Reorganizar só disponível para cronograma IA */}
           {!isProducerTemplate && (
             <Button variant="outline" size="sm" onClick={() => reorganizeMutation.mutate()} disabled={reorganizeMutation.isPending}>
               <RefreshCw className="h-4 w-4" />
@@ -538,18 +522,16 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
         </div>
       </div>
 
-      {/* Badge: cronograma do professor */}
       {isProducerTemplate && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/5 border border-primary/20">
           <Calendar className="h-4 w-4 text-primary shrink-0" />
           <p className="text-xs text-muted-foreground">
-            Você está seguindo o <strong className="text-foreground">cronograma do professor</strong>.
-            As datas foram ajustadas para os seus dias de estudo.
+            As <strong className="text-foreground">datas</strong>.
+            foram ajustadas para os seus dias de estudo.
           </p>
         </div>
       )}
 
-      {/* KPIs */}
       {stats && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <Card><CardContent className="p-4 text-center">
@@ -590,7 +572,6 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
         </div>
       )}
 
-      {/* Alerta de risco alto (somente cronograma IA) */}
       {!isProducerTemplate && stats?.abandonment_risk > 0.6 && (
         <div className="flex items-start gap-3 p-4 rounded-xl bg-destructive/10 border border-destructive/20">
           <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
@@ -603,7 +584,6 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
         </div>
       )}
 
-      {/* AI notes (somente cronograma IA) */}
       {!isProducerTemplate && stats?.ai_notes && (
         <div className="flex items-start gap-2 p-3 rounded-xl bg-primary/5 border border-primary/10">
           <Sparkles className="h-4 w-4 text-primary shrink-0 mt-0.5" />
@@ -611,7 +591,6 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
         </div>
       )}
 
-      {/* Lista de dias */}
       {days.length === 0 ? (
         <Card><CardContent className="py-12 text-center">
           <Calendar className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
@@ -684,7 +663,6 @@ export default function SchedulePage() {
 
   const courses = coursesData?.courses || [];
 
-  // Seleciona primeiro curso automaticamente
   if (courses.length > 0 && !courseId) setCourseId(courses[0].id);
 
   const { isLoading: checkLoading } = useQuery({
@@ -708,7 +686,6 @@ export default function SchedulePage() {
 
   return (
     <div className="space-y-4">
-      {/* Seletor de curso (se houver mais de 1) */}
       {courses.length > 1 && (
         <div className="flex gap-2 overflow-x-auto pb-1">
           {courses.map((c: any) => (
@@ -726,7 +703,6 @@ export default function SchedulePage() {
         </div>
       )}
 
-      {/* Sem cronograma → tela de escolha (professor ou IA) */}
       {!hasSchedule && (
         <ScheduleStartView
           courseId={courseId}
@@ -734,7 +710,6 @@ export default function SchedulePage() {
         />
       )}
 
-      {/* Com cronograma → visualização */}
       {hasSchedule && (
         <ScheduleView
           courseId={courseId}

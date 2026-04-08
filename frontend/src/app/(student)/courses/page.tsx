@@ -12,7 +12,13 @@ import { ROUTES } from "@/lib/constants/routes";
 import type { Course } from "@/types/api";
 
 export default function CoursesPage() {
-  const { data: courses, isLoading } = useCourses();
+  const { data: courses, isLoading, isFetching } = useCourses();
+
+  // isLoading → true só na primeira carga sem cache
+  // isFetching → true em qualquer refetch (inclusive background)
+  // Mostra skeleton se está buscando E ainda não tem dados para exibir,
+  // evitando o flash de "Nenhum curso encontrado" durante o refetch.
+  const showSkeleton = isLoading || (isFetching && !courses?.length);
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -25,7 +31,7 @@ export default function CoursesPage() {
         </p>
       </div>
 
-      {isLoading ? (
+      {showSkeleton ? (
         <div className="grid md:grid-cols-2 gap-4">
           {[...Array(2)].map((_, i) => (
             <Skeleton key={i} className="h-48 rounded-xl" />

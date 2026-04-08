@@ -1,15 +1,10 @@
 // frontend/src/app/(auth)/[tenant]/login/page.tsx
 //
-// FIX: A tela de login agora aguarda os dados frescos do servidor antes de
-// escolher o layout e renderizar o conteúdo. Isso elimina a causa raiz do bug:
+// FIX 1: fetchedBranding começa como null → exibe skeleton até dados chegarem.
+//         Layout nunca é escolhido com dado stale do Zustand/localStorage.
 //
-//   ANTES: branding vinha do Zustand (localStorage), que podia ter dados
-//          de outro tenant ou estar vazio. Layout era escolhido com dado stale.
-//
-//   DEPOIS: a página mostra um skeleton mínimo enquanto busca os dados do
-//           tenant pelo slug da URL. Só renderiza o layout correto quando os
-//           dados chegam. O Zustand é atualizado como efeito colateral,
-//           mas nunca é a fonte de verdade para este render.
+// FIX 2: fetch vai direto para /api/v1/tenants/by-slug/ (Flask).
+//         /api/tenant (proxy Next.js) era interceptado pelo ALB → 404.
 
 "use client";
 
@@ -55,8 +50,6 @@ function getContent(branding: Record<string, any>) {
 }
 
 // ── Skeleton de carregamento ──────────────────────────────────────────────────
-// Exibido enquanto os dados frescos do tenant ainda não chegaram do servidor.
-// Intencionalmente neutro para não "piscar" com o layout errado.
 
 function LoginSkeleton() {
     return (
@@ -108,7 +101,8 @@ function LoginFormBlock({ tenantSlug, formTitle, formSubtitle, logoUrl, platform
             <div>
                 {logoUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={logoUrl} alt={platformName} className="h-10 mb-5 object-contain" />
+                    <img src={logoUrl} alt={platformName}
+                        className="h-10 mb-5 object-contain lg:hidden" />
                 ) : (
                     <div className="flex items-center gap-2 mb-5 lg:hidden">
                         <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center">
@@ -220,9 +214,11 @@ function SplitLayout({ c, tenantSlug }: { c: ContentType; tenantSlug: string }) 
             </div>
             <div className="flex-1 flex items-center justify-center p-8 bg-background">
                 <div className="w-full max-w-sm">
+                    {/* Logo desktop — acima do formulário, apenas no layout split */}
                     {c.logoUrl && (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={c.logoUrl} alt={c.platformName} className="h-12 mb-8 object-contain hidden lg:block" />
+                        <img src={c.logoUrl} alt={c.platformName}
+                            className="h-12 mb-8 object-contain hidden lg:block" />
                     )}
                     <LoginFormBlock
                         tenantSlug={tenantSlug}
@@ -321,11 +317,7 @@ export default function TenantLoginPage() {
 
     const { setTenant } = useTenantStore();
 
-    // ── FIX PRINCIPAL ─────────────────────────────────────────────────────────
-    // `fetchedBranding` começa como `null` (estado de carregamento).
-    // Só recebe valor após o fetch completar — seja com dados reais ou {}.
-    // O layout/conteúdo da tela NUNCA é escolhido com base no Zustand/localStorage.
-    // Isso elimina o bug de "tela diferente a cada acesso".
+    // null = loading, {} = fallback, { ... } = dados reais do banco
     const [fetchedBranding, setFetchedBranding] = useState<Record<string, any> | null>(null);
 
     useEffect(() => {
@@ -334,41 +326,37 @@ export default function TenantLoginPage() {
             return;
         }
 
-        // Seta cookie para uso no formulário de login
+        // Cookie para uso no formulário de login
         Cookies.set("tenant_slug", tenantSlug, { sameSite: "lax", expires: 1 });
 
-        // Busca SEMPRE dados frescos pelo slug — ignora qualquer cache anterior
-        fetch(`/api/tenant?slug=${tenantSlug}&t=${Date.now()}`, {
-            headers: {
-                "x-tenant-slug": tenantSlug,
-                "Cache-Control": "no-cache",
-            },
+        // Chama o Flask diretamente via /api/v1/tenants/by-slug/.
+        // NÃO usar /api/tenant (proxy Next.js) — o ALB interceptava essa rota
+        // e mandava ao Flask como endpoint desconhecido, resultando em 404.
+        fetch(`/api/v1/tenants/by-slug/${tenantSlug}`, {
+            headers: { "x-tenant-slug": tenantSlug },
         })
             .then(r => r.ok ? r.json() : null)
             .then(data => {
-                if (data?.id) {
-                    // Atualiza o Zustand como efeito colateral (para o resto do app),
-                    // mas o `fetchedBranding` é a fonte de verdade desta página.
-                    setTenant(data);
-                    applyBrandingCssVars(data.branding ?? {});
-                    setFetchedBranding(data.branding ?? {});
+                // Flask retorna { tenant: { id, branding, ... } }
+                const tenantData = data?.tenant;
+                if (tenantData?.id) {
+                    setTenant(tenantData);
+                    applyBrandingCssVars(tenantData.branding ?? {});
+                    setFetchedBranding(tenantData.branding ?? {});
                 } else {
-                    // Tenant não encontrado — usa defaults silenciosamente
                     setFetchedBranding({});
                 }
             })
             .catch(() => {
-                // Falha de rede — usa defaults (melhor que tela quebrada)
                 setFetchedBranding({});
             });
     }, [tenantSlug]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // Enquanto os dados não chegaram: skeleton neutro, sem piscar layout errado
+    // Skeleton neutro enquanto aguarda dados do servidor
     if (fetchedBranding === null) {
         return <LoginSkeleton />;
     }
 
-    // A partir daqui, `fetchedBranding` tem dados reais (ou {} como fallback)
     const c = getContent(fetchedBranding);
     const loginLayout: string = fetchedBranding.login_layout ?? "split";
 

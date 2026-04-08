@@ -57,6 +57,12 @@ def _get_simulado_or_404(simulado_id: str, tenant_id: str):
     ).first()
 
 
+def _is_personalized(simulado: Simulado) -> bool:
+    """Retorna True se o simulado usa filtro de histórico (questões per-aluno)."""
+    settings = simulado.settings or {}
+    return settings.get("question_filter", "all") != "all"
+
+
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
 
@@ -66,18 +72,15 @@ class CreateSimuladoSchema(Schema):
     description = fields.Str(allow_none=True, load_default=None)
     time_limit_minutes = fields.Int(
         required=True,
-        validate=validate.Range(min=10, max=480),  # 10min a 8h
+        validate=validate.Range(min=10, max=480),
     )
     question_ids = fields.List(
         fields.Str(),
         load_default=None,
         allow_none=True,
     )
-    # Geração automática por filtros (alternativa ao question_ids manual)
     auto_generate = fields.Bool(load_default=False)
     auto_filters = fields.Dict(load_default=None, allow_none=True)
-    # Ex: {"discipline": "Direito Penal", "difficulty": "medium", "count": 20}
-
     settings = fields.Dict(load_default=None, allow_none=True)
 
     class Meta:
@@ -89,7 +92,7 @@ class AnswerQuestionSchema(Schema):
 
     question_id = fields.Str(required=True)
     chosen_alternative_key = fields.Str(
-        allow_none=True,  # None = pulou a questão
+        allow_none=True,
         load_default=None,
         validate=validate.OneOf(["a", "b", "c", "d", "e", "A", "B", "C", "D", "E"]),
     )
@@ -121,12 +124,6 @@ def before_request():
 @require_tenant
 @limiter.limit("20 per hour")
 def create_simulado():
-    """
-    Cria um simulado.
-    Modos:
-    A) Manual: produtor passa question_ids específicos
-    B) Auto: sistema seleciona questões por filtros (discipline, difficulty, count)
-    """
     claims = get_jwt()
     if not _is_producer_or_above(claims):
         return jsonify({"error": "forbidden"}), 403
@@ -159,7 +156,6 @@ def create_simulado():
     db.session.add(simulado)
     db.session.flush()
 
-    # ── Seleciona questões ────────────────────────────────────────────────────
     if data["auto_generate"] and data.get("auto_filters"):
         question_ids = _auto_select_questions(tenant.id, data["auto_filters"])
     elif data.get("question_ids"):
@@ -186,7 +182,6 @@ def create_simulado():
             400,
         )
 
-    # Valida que questões pertencem ao tenant e adiciona ao simulado
     added = 0
     for order, qid in enumerate(question_ids):
         from sqlalchemy import or_
@@ -194,19 +189,17 @@ def create_simulado():
         question = Question.query.filter(
             Question.id == qid,
             Question.is_active == True,
-            or_(
-                Question.tenant_id == tenant.id,
-                Question.tenant_id.is_(None),
-            ),
+            or_(Question.tenant_id == tenant.id, Question.tenant_id.is_(None)),
         ).first()
         if question:
-            sq = SimuladoQuestion(
-                tenant_id=tenant.id,
-                simulado_id=simulado.id,
-                question_id=question.id,
-                order=order,
+            db.session.add(
+                SimuladoQuestion(
+                    tenant_id=tenant.id,
+                    simulado_id=simulado.id,
+                    question_id=question.id,
+                    order=order,
+                )
             )
-            db.session.add(sq)
             added += 1
 
     if added == 0:
@@ -214,7 +207,6 @@ def create_simulado():
         return jsonify({"error": "no_valid_questions"}), 400
 
     db.session.commit()
-
     return (
         jsonify(
             {
@@ -254,17 +246,14 @@ def auto_generate_simulado():
     time_limit = body.get("time_limit_minutes", 60)
     difficulty = body.get("difficulty") or None
     question_filter = body.get("question_filter", "all")
-    disciplines_raw = body.get(
-        "disciplines"
-    )  # "all" | None | [{discipline,topic?,count}]
+    disciplines_raw = body.get("disciplines")
 
     VALID_FILTERS = {"all", "not_answered", "previously_correct", "previously_wrong"}
     if question_filter not in VALID_FILTERS:
         question_filter = "all"
 
-    # Normaliza disciplines
     if disciplines_raw == "all" or not disciplines_raw:
-        disciplines_list = None  # sem restrição → pool geral
+        disciplines_list = None
     elif isinstance(disciplines_raw, list):
         disciplines_list = [
             {
@@ -278,7 +267,6 @@ def auto_generate_simulado():
     else:
         disciplines_list = None
 
-    # Total de questões
     if disciplines_list:
         total_requested = sum(d["count"] for d in disciplines_list)
         if total_requested > 100:
@@ -422,38 +410,31 @@ def auto_generate_simulado():
 @jwt_required()
 @require_tenant
 def list_simulados():
-    """
-    Lista simulados disponíveis.
-    Produtor: todos do tenant.
-    Aluno: apenas ativos do(s) curso(s) em que está matriculado.
-    """
     tenant = get_current_tenant()
     claims = get_jwt()
     user_id = get_jwt_identity()
 
     course_id = request.args.get("course_id")
 
-    query = Simulado.query.filter_by(
-        tenant_id=tenant.id,
-        is_deleted=False,
-    )
-
+    query = Simulado.query.filter_by(tenant_id=tenant.id, is_deleted=False)
     if course_id:
         query = query.filter_by(course_id=course_id)
-
     if not _is_producer_or_above(claims):
-        # Aluno: apenas simulados ativos
         query = query.filter_by(is_active=True)
 
     simulados = query.order_by(Simulado.created_at.desc()).all()
 
     result = []
     for sim in simulados:
-        total_q = SimuladoQuestion.query.filter_by(
-            simulado_id=sim.id, is_deleted=False
-        ).count()
+        # ── FIX 1: simulados personalizados não têm SimuladoQuestion ─────────
+        sim_settings = sim.settings or {}
+        if sim_settings.get("question_filter", "all") != "all":
+            total_q = sim_settings.get("total_questions", 0)
+        else:
+            total_q = SimuladoQuestion.query.filter_by(
+                simulado_id=sim.id, is_deleted=False
+            ).count()
 
-        # Status da tentativa do aluno neste simulado
         last_attempt = None
         if not _is_producer_or_above(claims):
             last_attempt = (
@@ -485,7 +466,6 @@ def get_simulado(simulado_id: str):
     """Detalhes do simulado. Aluno não vê gabarito antes de iniciar."""
     tenant = get_current_tenant()
     claims = get_jwt()
-    user_id = get_jwt_identity()
 
     simulado = _get_simulado_or_404(simulado_id, tenant.id)
     if not simulado:
@@ -493,11 +473,28 @@ def get_simulado(simulado_id: str):
 
     is_producer = _is_producer_or_above(claims)
 
-    sim_questions = (
-        SimuladoQuestion.query.filter_by(
-            simulado_id=simulado.id,
-            is_deleted=False,
+    # ── FIX 2: simulados personalizados não têm questões no template ──────────
+    sim_settings = simulado.settings or {}
+    if sim_settings.get("question_filter", "all") != "all":
+        total_for_display = sim_settings.get("total_questions", 0)
+        return (
+            jsonify(
+                {
+                    "simulado": {
+                        **_serialize_simulado(
+                            simulado, total_questions=total_for_display
+                        ),
+                        "questions": [],
+                        "is_personalized": True,
+                        "question_filter": sim_settings.get("question_filter"),
+                    }
+                }
+            ),
+            200,
         )
+
+    sim_questions = (
+        SimuladoQuestion.query.filter_by(simulado_id=simulado.id, is_deleted=False)
         .order_by(SimuladoQuestion.order)
         .all()
     )
@@ -518,7 +515,6 @@ def get_simulado(simulado_id: str):
                 for a in sorted(q.alternatives, key=lambda x: x.key)
             ],
         }
-        # Produtor vê gabarito; aluno não
         if is_producer:
             q_data["correct_alternative_key"] = q.correct_alternative_key
         questions_data.append(q_data)
@@ -560,7 +556,6 @@ def start_attempt(simulado_id: str):
     if not simulado or not simulado.is_active:
         return jsonify({"error": "not_found"}), 404
 
-    # Retoma tentativa em andamento
     in_progress = SimuladoAttempt.query.filter_by(
         simulado_id=simulado.id,
         user_id=user_id,
@@ -596,7 +591,6 @@ def start_attempt(simulado_id: str):
         difficulty = settings.get("difficulty")
         disciplines_config = settings.get("disciplines")
 
-        # Histórico do aluno
         correct_ids = set(
             row[0]
             for row in db.session.query(QuestionAttempt.question_id)
@@ -624,7 +618,6 @@ def start_attempt(simulado_id: str):
         answered_ids = correct_ids | wrong_and_never_correct_ids
 
         def _select_with_filter(count: int, discipline=None, topic=None) -> list:
-            """Busca questões e filtra por histórico, com fallback aleatório."""
             import random as _random
 
             candidates = _auto_select_questions(
@@ -654,8 +647,7 @@ def start_attempt(simulado_id: str):
 
             _random.shuffle(preferred)
             _random.shuffle(fallback)
-            combined = preferred + fallback
-            return combined[:count]
+            return (preferred + fallback)[:count]
 
         question_ids: list = []
 
@@ -688,7 +680,6 @@ def start_attempt(simulado_id: str):
             started_at=now.isoformat(),
             status="in_progress",
             total_questions=len(question_ids),
-            # Armazena IDs personalizados — lidos por _serialize e _finalize
             subject_performance={"_question_ids": question_ids},
         )
         db.session.add(attempt)
@@ -706,7 +697,7 @@ def start_attempt(simulado_id: str):
             201,
         )
 
-    # ── Simulado FIXO: comportamento original ─────────────────────────────────
+    # ── Simulado FIXO ─────────────────────────────────────────────────────────
     attempt = SimuladoAttempt(
         tenant_id=tenant.id,
         simulado_id=simulado.id,
@@ -714,8 +705,7 @@ def start_attempt(simulado_id: str):
         started_at=now.isoformat(),
         status="in_progress",
         total_questions=SimuladoQuestion.query.filter_by(
-            simulado_id=simulado.id,
-            is_deleted=False,
+            simulado_id=simulado.id, is_deleted=False
         ).count(),
     )
     db.session.add(attempt)
@@ -738,15 +728,6 @@ def start_attempt(simulado_id: str):
 @require_tenant
 @limiter.limit("500 per hour")
 def answer_question(attempt_id: str):
-    """
-    Aluno responde (ou atualiza resposta) de uma questão durante o simulado.
-    Salva parcialmente — permite retomar se cair a conexão.
-
-    SEGURANÇA:
-    - Valida que tentativa pertence ao usuário
-    - Valida que o timer não expirou
-    - Não revela se acertou (feedback apenas no final)
-    """
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
@@ -773,7 +754,6 @@ def answer_question(attempt_id: str):
 
     simulado = _get_simulado_or_404(attempt.simulado_id, tenant.id)
 
-    # SEGURANÇA: Valida timer server-side
     if _is_attempt_expired(attempt, simulado):
         _finalize_attempt(attempt, simulado, timed_out=True)
         db.session.commit()
@@ -793,21 +773,26 @@ def answer_question(attempt_id: str):
     except ValidationError as e:
         return jsonify({"error": "validation_error", "details": e.messages}), 400
 
-    # Normaliza para maiúsculo — banco global usa A-E, questões antigas usam a-e
     chosen_key = data.get("chosen_alternative_key")
     if chosen_key:
         data["chosen_alternative_key"] = chosen_key.upper()
 
-    # Valida que a questão pertence ao simulado
-    sim_question = SimuladoQuestion.query.filter_by(
-        simulado_id=simulado.id,
-        question_id=data["question_id"],
-        is_deleted=False,
-    ).first()
-    if not sim_question:
-        return jsonify({"error": "question_not_in_simulado"}), 400
+    # ── FIX 3: valida questão para fixos E personalizados ─────────────────────
+    perf = attempt.subject_performance or {}
+    personalized_ids = perf.get("_question_ids")
 
-    # Atualiza ou cria resposta
+    if personalized_ids:
+        if data["question_id"] not in personalized_ids:
+            return jsonify({"error": "question_not_in_simulado"}), 400
+    else:
+        sim_question = SimuladoQuestion.query.filter_by(
+            simulado_id=simulado.id,
+            question_id=data["question_id"],
+            is_deleted=False,
+        ).first()
+        if not sim_question:
+            return jsonify({"error": "question_not_in_simulado"}), 400
+
     answer = SimuladoAnswer.query.filter_by(
         attempt_id=attempt.id,
         question_id=data["question_id"],
@@ -830,10 +815,7 @@ def answer_question(attempt_id: str):
     db.session.commit()
 
     answered_count = (
-        SimuladoAnswer.query.filter_by(
-            attempt_id=attempt.id,
-            is_deleted=False,
-        )
+        SimuladoAnswer.query.filter_by(attempt_id=attempt.id, is_deleted=False)
         .filter(SimuladoAnswer.chosen_alternative_key.isnot(None))
         .count()
     )
@@ -855,16 +837,6 @@ def answer_question(attempt_id: str):
 @jwt_required()
 @require_tenant
 def finish_attempt(attempt_id: str):
-    """
-    Aluno finaliza o simulado.
-
-    O sistema:
-    1. Valida timer server-side
-    2. Corrige todas as respostas
-    3. Calcula score geral e por disciplina
-    4. Registra QuestionAttempt para cada resposta (alimenta analytics)
-    5. Retorna feedback completo com gabarito e justificativas
-    """
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
@@ -891,10 +863,7 @@ def finish_attempt(attempt_id: str):
         )
 
     simulado = _get_simulado_or_404(attempt.simulado_id, tenant.id)
-
-    # Timer: valida se ainda estava dentro do prazo
     timed_out = _is_attempt_expired(attempt, simulado)
-
     result = _finalize_attempt(attempt, simulado, timed_out=timed_out)
     db.session.commit()
 
@@ -918,10 +887,6 @@ def finish_attempt(attempt_id: str):
 @jwt_required()
 @require_tenant
 def get_attempt_result(attempt_id: str):
-    """
-    Retorna resultado detalhado de uma tentativa finalizada.
-    Inclui gabarito completo e justificativas questão por questão.
-    """
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
     claims = get_jwt()
@@ -934,7 +899,6 @@ def get_attempt_result(attempt_id: str):
     if not attempt:
         return jsonify({"error": "not_found"}), 404
 
-    # SEGURANÇA: Aluno só vê sua própria tentativa
     if not _is_producer_or_above(claims) and attempt.user_id != user_id:
         return jsonify({"error": "forbidden"}), 403
 
@@ -951,27 +915,38 @@ def get_attempt_result(attempt_id: str):
 
     simulado = _get_simulado_or_404(attempt.simulado_id, tenant.id)
     answers = SimuladoAnswer.query.filter_by(
-        attempt_id=attempt.id,
-        is_deleted=False,
+        attempt_id=attempt.id, is_deleted=False
     ).all()
-
-    # Monta gabarito detalhado
     answers_map = {a.question_id: a for a in answers}
-    sim_questions = (
-        SimuladoQuestion.query.filter_by(
-            simulado_id=simulado.id,
-            is_deleted=False,
+
+    # ── FIX 4: suporta gabarito de simulados personalizados ───────────────────
+    from sqlalchemy import or_
+
+    perf = attempt.subject_performance or {}
+    personalized_ids = perf.get("_question_ids")
+
+    if personalized_ids:
+        questions_list = []
+        for qid in personalized_ids:
+            q = Question.query.filter(
+                Question.id == qid,
+                or_(
+                    Question.tenant_id == tenant.id,
+                    Question.tenant_id.is_(None),
+                ),
+            ).first()
+            if q:
+                questions_list.append(q)
+    else:
+        sim_questions = (
+            SimuladoQuestion.query.filter_by(simulado_id=simulado.id, is_deleted=False)
+            .order_by(SimuladoQuestion.order)
+            .all()
         )
-        .order_by(SimuladoQuestion.order)
-        .all()
-    )
+        questions_list = [sq.question for sq in sim_questions if sq.question]
 
     detailed_answers = []
-    for sq in sim_questions:
-        q = sq.question
-        if not q:
-            continue
-
+    for q in questions_list:
         answer = answers_map.get(q.id)
         chosen_key = answer.chosen_alternative_key if answer else None
         is_correct = (
@@ -980,11 +955,8 @@ def get_attempt_result(attempt_id: str):
             else False
         )
 
-        # Justificativa do distrator (erro cometido)
         distractor_just = None
         if not is_correct and chosen_key:
-            from sqlalchemy import or_
-
             chosen_alt = Alternative.query.filter(
                 Alternative.question_id == q.id,
                 Alternative.key == chosen_key,
@@ -1013,13 +985,11 @@ def get_attempt_result(attempt_id: str):
                     {"key": a.key, "text": a.text}
                     for a in sorted(q.alternatives, key=lambda x: x.key)
                 ],
-                # Feedback pedagógico
                 "correct_justification": q.correct_justification,
                 "distractor_justification": distractor_just,
             }
         )
 
-    # Percentual por disciplina
     by_discipline = {}
     for item in detailed_answers:
         disc = item["discipline"] or "Sem disciplina"
@@ -1071,8 +1041,7 @@ def get_attempt_result(attempt_id: str):
                     "time_limit_minutes": simulado.time_limit_minutes,
                 },
                 "by_discipline": sorted(
-                    discipline_results,
-                    key=lambda x: x["accuracy_rate"],
+                    discipline_results, key=lambda x: x["accuracy_rate"]
                 ),
                 "answers": detailed_answers,
             }
@@ -1085,15 +1054,12 @@ def get_attempt_result(attempt_id: str):
 @jwt_required()
 @require_tenant
 def my_attempts():
-    """Histórico de tentativas do aluno em todos os simulados."""
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
     attempts = (
         SimuladoAttempt.query.filter_by(
-            user_id=user_id,
-            tenant_id=tenant.id,
-            is_deleted=False,
+            user_id=user_id, tenant_id=tenant.id, is_deleted=False
         )
         .order_by(SimuladoAttempt.created_at.desc())
         .all()
@@ -1117,23 +1083,17 @@ def my_attempts():
 
 
 def _is_attempt_expired(attempt: SimuladoAttempt, simulado: Simulado) -> bool:
-    """
-    Verifica server-side se o tempo do simulado expirou.
-    SEGURANÇA: Nunca confiar no timer do cliente.
-    """
     if not attempt.started_at:
         return False
     try:
         started = datetime.fromisoformat(attempt.started_at)
         limit = timedelta(minutes=simulado.time_limit_minutes)
-        # Adiciona 30s de tolerância para latência de rede
         return datetime.now(timezone.utc) > started + limit + timedelta(seconds=30)
     except (ValueError, TypeError):
         return False
 
 
 def _get_time_remaining(attempt: SimuladoAttempt, simulado: Simulado) -> int:
-    """Retorna segundos restantes do simulado (mínimo 0)."""
     if not attempt.started_at:
         return simulado.time_limit_minutes * 60
     try:
@@ -1148,20 +1108,15 @@ def _get_time_remaining(attempt: SimuladoAttempt, simulado: Simulado) -> int:
 def _finalize_attempt(
     attempt: "SimuladoAttempt", simulado: "Simulado", timed_out: bool = False
 ) -> dict:
-    """
-    Finaliza a tentativa. Suporta simulados fixos e personalizados.
-    """
+    """Finaliza a tentativa. Suporta simulados fixos e personalizados."""
     from sqlalchemy import or_
 
     now = datetime.now(timezone.utc)
-
     answers = SimuladoAnswer.query.filter_by(
-        attempt_id=attempt.id,
-        is_deleted=False,
+        attempt_id=attempt.id, is_deleted=False
     ).all()
     answers_map = {a.question_id: a for a in answers}
 
-    # Determina lista de questões (fixas ou personalizadas)
     perf = attempt.subject_performance or {}
     personalized_ids = perf.get("_question_ids")
 
@@ -1180,8 +1135,7 @@ def _finalize_attempt(
                 questions.append(q)
     else:
         sim_questions = SimuladoQuestion.query.filter_by(
-            simulado_id=simulado.id,
-            is_deleted=False,
+            simulado_id=simulado.id, is_deleted=False
         ).all()
         questions = [sq.question for sq in sim_questions if sq.question]
 
@@ -1199,7 +1153,6 @@ def _finalize_attempt(
 
         if is_correct:
             correct_count += 1
-
         if answer:
             answer.is_correct = is_correct
 
@@ -1256,7 +1209,6 @@ def _finalize_attempt(
         }
         for disc, stats in by_discipline.items()
     }
-    # Preserva _question_ids se era personalizado
     if personalized_ids:
         subject_perf["_question_ids"] = personalized_ids
 
@@ -1339,7 +1291,7 @@ def _auto_select_questions(tenant_id: str, filters: dict) -> list:
     if filters.get("exam_board"):
         query = query.filter(Question.exam_board.ilike(f"%{filters['exam_board']}%"))
 
-    # ── Com disciplina específica: comportamento direto ───────────────────────
+    # Com disciplina específica: seleção direta
     if filters.get("discipline"):
         query = query.filter(Question.discipline.ilike(f"%{filters['discipline']}%"))
         questions = (
@@ -1350,8 +1302,7 @@ def _auto_select_questions(tenant_id: str, filters: dict) -> list:
         random.shuffle(questions)
         return [q.id for q in questions[:count]]
 
-    # ── Sem disciplina: distribui proporcionalmente entre todas ───────────────
-    # Busca as disciplinas disponíveis e quantas questões cada uma tem
+    # Sem disciplina: distribui proporcionalmente entre todas
     from sqlalchemy import func as sqlfunc
 
     discipline_counts = (
@@ -1362,28 +1313,21 @@ def _auto_select_questions(tenant_id: str, filters: dict) -> list:
     )
 
     if not discipline_counts:
-        # Fallback: sem disciplinas cadastradas, pega aleatório
         questions = query.limit(count * 2).all()
         random.shuffle(questions)
         return [q.id for q in questions[:count]]
 
-    # Distribui igualmente: count ÷ nº de disciplinas (arredonda para cima)
     num_disciplines = len(discipline_counts)
     per_discipline = max(1, -(-count // num_disciplines))  # ceil division
 
     result_ids: list = []
-
-    # Embaralha a ordem das disciplinas para evitar viés
     random.shuffle(discipline_counts)
 
     for discipline, available in discipline_counts:
         if len(result_ids) >= count:
             break
-
-        # Quantas questões ainda faltam no total
         still_needed = count - len(result_ids)
         take = min(per_discipline, still_needed)
-
         disc_questions = (
             query.filter(Question.discipline == discipline)
             .order_by(Question.correct_attempts / (Question.total_attempts + 1))
@@ -1395,8 +1339,6 @@ def _auto_select_questions(tenant_id: str, filters: dict) -> list:
             if q.id not in result_ids:
                 result_ids.append(q.id)
 
-    # Se sobrou espaço (alguma disciplina tinha menos questões que o per_discipline),
-    # complementa com questões de qualquer disciplina
     if len(result_ids) < count:
         remaining = count - len(result_ids)
         extra = query.filter(Question.id.notin_(result_ids)).limit(remaining * 3).all()
@@ -1460,7 +1402,6 @@ def _serialize_attempt_detail(attempt: "SimuladoAttempt", simulado: "Simulado") 
     questions_data = []
 
     if personalized_ids:
-        # Questões personalizadas — lê pelos IDs salvos no attempt
         for qid in personalized_ids:
             q = Question.query.filter(
                 Question.id == qid,
@@ -1487,12 +1428,8 @@ def _serialize_attempt_detail(attempt: "SimuladoAttempt", simulado: "Simulado") 
                 }
             )
     else:
-        # Questões fixas — lê de SimuladoQuestion
         sim_questions = (
-            SimuladoQuestion.query.filter_by(
-                simulado_id=simulado.id,
-                is_deleted=False,
-            )
+            SimuladoQuestion.query.filter_by(simulado_id=simulado.id, is_deleted=False)
             .order_by(SimuladoQuestion.order)
             .all()
         )

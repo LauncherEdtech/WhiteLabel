@@ -1,10 +1,16 @@
 # api/app/routes/schedule.py
 # Rotas do cronograma inteligente e adaptativo.
+#
+# OTIMIZAÇÕES (v2):
+#   - get_schedule: 3 queries COUNT separadas → 1 query com CASE WHEN
+#     + pending_today calculado dos items já em memória (sem query extra)
+#   - checkin_item: invalida cache Redis do dashboard após commit
 
 from datetime import datetime, timezone, date, timedelta
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from marshmallow import Schema, fields, validate, ValidationError, EXCLUDE
+from sqlalchemy import func, case
 
 from app.extensions import db, limiter
 from app.models.user import User, UserRole
@@ -137,6 +143,9 @@ def get_schedule():
     Query params:
       course_id — obrigatório
       days      — quantos dias retornar (default: 14)
+
+    OTIMIZAÇÃO: stats calculados com 1 query CASE WHEN + pending_today
+    em memória (antes eram 3 queries COUNT separadas).
     """
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
@@ -145,7 +154,7 @@ def get_schedule():
     if not course_id:
         return jsonify({"error": "course_id obrigatório"}), 400
 
-    days = int(request.args.get("days", 14))
+    days_param = int(request.args.get("days", 14))
 
     schedule = StudySchedule.query.filter_by(
         user_id=user_id,
@@ -158,10 +167,11 @@ def get_schedule():
         return jsonify({"schedule": None, "days": [], "stats": None}), 200
 
     today = date.today()
-    end_date = today + timedelta(days=days)
+    end_date = today + timedelta(days=days_param)
     today_str = today.isoformat()
     end_str = end_date.isoformat()
 
+    # ── Itens da janela de exibição ───────────────────────────────────────────
     items = (
         ScheduleItem.query.filter(
             ScheduleItem.schedule_id == schedule.id,
@@ -173,7 +183,7 @@ def get_schedule():
         .all()
     )
 
-    # Agrupa por data
+    # ── Agrupa por data ───────────────────────────────────────────────────────
     days_map = {}
     for item in items:
         d = item.scheduled_date
@@ -185,22 +195,26 @@ def get_schedule():
         {"date": d, "items": day_items} for d, day_items in sorted(days_map.items())
     ]
 
-    # Stats
-    total_items = ScheduleItem.query.filter_by(
-        schedule_id=schedule.id,
-        is_deleted=False,
-    ).count()
-    done_items = ScheduleItem.query.filter_by(
-        schedule_id=schedule.id,
-        status="done",
-        is_deleted=False,
-    ).count()
-    pending_today = ScheduleItem.query.filter_by(
-        schedule_id=schedule.id,
-        scheduled_date=today_str,
-        status="pending",
-        is_deleted=False,
-    ).count()
+    # ── pending_today: calculado dos items já em memória (sem query extra) ────
+    pending_today = sum(
+        1 for i in items if i.scheduled_date == today_str and i.status == "pending"
+    )
+
+    # ── total e done: 1 query com CASE WHEN (era 2 queries COUNT separadas) ───
+    counts_row = (
+        db.session.query(
+            func.count(ScheduleItem.id).label("total"),
+            func.sum(case((ScheduleItem.status == "done", 1), else_=0)).label("done"),
+        )
+        .filter(
+            ScheduleItem.schedule_id == schedule.id,
+            ScheduleItem.is_deleted == False,
+        )
+        .one()
+    )
+
+    total_items = counts_row.total or 0
+    done_items = counts_row.done or 0
 
     stats = {
         "completion_rate": (
@@ -239,6 +253,7 @@ def checkin_item(item_id: str):
     """
     Aluno faz check-in num item do cronograma.
     Dispara adaptação assíncrona via Celery.
+    Invalida o cache do dashboard após commit.
     """
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
@@ -312,6 +327,14 @@ def checkin_item(item_id: str):
             progress.watch_percentage = 1.0
 
     db.session.commit()
+
+    # ── Invalida cache do dashboard após commit ───────────────────────────────
+    try:
+        from app.routes.analytics import _cache_delete, _dashboard_cache_key
+
+        _cache_delete(_dashboard_cache_key(user_id, tenant.id))
+    except Exception:
+        pass  # Nunca falha o check-in por causa do cache
 
     # Dispara adaptação assíncrona via Celery
     try:

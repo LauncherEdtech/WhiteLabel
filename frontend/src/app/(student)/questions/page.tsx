@@ -1,7 +1,8 @@
-// frontend/src/app/(student)/questions/page.tsx
 "use client";
+// frontend/src/app/(student)/questions/page.tsx
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { questionsApi } from "@/lib/api/questions";
 import { apiClient } from "@/lib/api/client";
@@ -55,19 +56,32 @@ const HISTORY_FILTERS = [
 
 const PER_PAGE = 20;
 
-// ── Page ──────────────────────────────────────────────────────────────────────
+// ── Inner Page (usa useSearchParams) ─────────────────────────────────────────
 
-export default function QuestionsPage() {
-    const [filters, setFilters] = useState<Filters>({
-        difficulty: "", discipline: "", topic: "", historyFilter: "", page: 1,
+function QuestionsContent() {
+    const searchParams = useSearchParams();
+
+    // Inicializa filtros a partir dos query params (vindo do cronograma)
+    const initDiscipline = searchParams.get("discipline") ?? "";
+    const initNotAnsw = searchParams.get("not_answered") === "true";
+    const initPrevWrong = searchParams.get("previously_wrong") === "true";
+    const initDifficulty = (searchParams.get("difficulty") ?? "") as DifficultyLevel | "";
+
+    const blankFilters = (): Filters => ({
+        difficulty: initDifficulty,
+        discipline: initDiscipline,
+        topic: "",
+        historyFilter: initNotAnsw ? "not_answered" : initPrevWrong ? "previously_wrong" : "",
+        page: 1,
     });
+
+    const [filters, setFilters] = useState<Filters>(blankFilters);
     const [viewMode, setViewMode] = useState<ViewMode>("block");
     const [currentIndex, setCurrentIndex] = useState(0);
     const [answerResult, setAnswerResult] = useState<AnswerResult | null>(null);
     const [startTime, setStartTime] = useState<number>(Date.now());
     const [showFilters, setShowFilters] = useState(false);
     const [showTip, setShowTip] = useState(false);
-    // In list mode: map of questionId → AnswerResult
     const [listAnswers, setListAnswers] = useState<Record<string, AnswerResult>>({});
     const [listTips, setListTips] = useState<Record<string, boolean>>({});
 
@@ -120,7 +134,6 @@ export default function QuestionsPage() {
         setStartTime(Date.now());
     }, [currentIndex]);
 
-    // Block mode answer mutation
     const answerMutation = useMutation({
         mutationFn: ({ questionId, key }: { questionId: string; key: string }) =>
             questionsApi.answer(questionId, {
@@ -131,7 +144,6 @@ export default function QuestionsPage() {
         onSuccess: (result) => setAnswerResult(result),
     });
 
-    // List mode answer mutation
     const listAnswerMutation = useMutation({
         mutationFn: ({ questionId, key }: { questionId: string; key: string }) =>
             questionsApi.answer(questionId, {
@@ -252,7 +264,7 @@ export default function QuestionsPage() {
 
                     {activeFilterCount > 0 && (
                         <button
-                            onClick={() => setFilters({ difficulty: "", discipline: "", topic: "", historyFilter: "", page: 1 })}
+                            onClick={() => setFilters(blankFilters())}
                             className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
                         >
                             <RotateCcw className="h-3 w-3" /> Limpar filtros
@@ -275,7 +287,6 @@ export default function QuestionsPage() {
                         </p>
                     </div>
                     <div className="flex items-center gap-2">
-                        {/* Toggle de visualização */}
                         <div className="flex items-center border border-border rounded-lg p-0.5 gap-0.5">
                             <button
                                 onClick={() => setViewMode("block")}
@@ -322,7 +333,7 @@ export default function QuestionsPage() {
                 </div>
 
                 {/* Chips filtros ativos */}
-                {(filters.discipline || filters.topic || filters.difficulty) && (
+                {(filters.discipline || filters.topic || filters.difficulty || filters.historyFilter) && (
                     <div className="flex flex-wrap gap-2">
                         {filters.discipline && (
                             <span className="inline-flex items-center gap-1 text-xs bg-primary/10 text-primary px-2.5 py-1 rounded-full border border-primary/20">
@@ -340,6 +351,11 @@ export default function QuestionsPage() {
                                 {DIFFICULTY_CONFIG[filters.difficulty]?.label}
                             </span>
                         )}
+                        {filters.historyFilter && (
+                            <span className="inline-flex items-center gap-1 text-xs bg-muted text-muted-foreground px-2.5 py-1 rounded-full border border-border">
+                                {HISTORY_FILTERS.find(h => h.key === filters.historyFilter)?.label}
+                            </span>
+                        )}
                     </div>
                 )}
 
@@ -347,9 +363,8 @@ export default function QuestionsPage() {
                 {isLoading ? (
                     <QuestionSkeleton />
                 ) : questions.length === 0 ? (
-                    <EmptyQuestions onReset={() => setFilters({ difficulty: "", discipline: "", topic: "", historyFilter: "", page: 1 })} />
+                    <EmptyQuestions onReset={() => setFilters(blankFilters())} />
                 ) : viewMode === "block" ? (
-                    /* ── MODO BLOCO ── */
                     <>
                         <div className="flex items-center gap-3">
                             <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
@@ -411,7 +426,6 @@ export default function QuestionsPage() {
                         )}
                     </>
                 ) : (
-                    /* ── MODO LISTA ── */
                     <>
                         <div className="space-y-4">
                             {questions.map((q, idx) => (
@@ -431,7 +445,6 @@ export default function QuestionsPage() {
                             ))}
                         </div>
 
-                        {/* Paginação lista */}
                         {totalPages > 1 && (
                             <div className="flex items-center justify-between pt-2">
                                 <Button variant="outline" size="sm" onClick={() => setFilters(f => ({ ...f, page: Math.max(1, f.page - 1) }))} disabled={filters.page === 1}>
@@ -460,6 +473,16 @@ export default function QuestionsPage() {
                 )}
             </div>
         </div>
+    );
+}
+
+// ── Page export com Suspense (obrigatório para useSearchParams no App Router) ─
+
+export default function QuestionsPage() {
+    return (
+        <Suspense>
+            <QuestionsContent />
+        </Suspense>
     );
 }
 
@@ -596,7 +619,6 @@ function ListQuestionCard({ question, index, result, onSelect, isLoading, tipVis
 }) {
     const diff = question.difficulty ? DIFFICULTY_CONFIG[question.difficulty] : null;
 
-    // Justificativas do resultado
     const chosenAlt = result?.alternatives.find(a => a.key.toUpperCase() === result.chosen_key?.toUpperCase());
     const correctAlt = result?.alternatives.find(a => a.is_correct);
     const distractorJ = result && !result.is_correct ? chosenAlt?.justification : null;
@@ -608,7 +630,6 @@ function ListQuestionCard({ question, index, result, onSelect, isLoading, tipVis
             result && (result.is_correct ? "border-l-4 border-l-success" : "border-l-4 border-l-destructive")
         )}>
             <CardContent className="p-5 space-y-4">
-                {/* Header da questão */}
                 <div className="flex items-start justify-between gap-2">
                     <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-xs font-mono text-muted-foreground font-semibold">#{index}</span>
@@ -648,7 +669,6 @@ function ListQuestionCard({ question, index, result, onSelect, isLoading, tipVis
                     </div>
                 </div>
 
-                {/* Dica */}
                 {tipVisible && question.tip && !result && (
                     <div className="p-3 rounded-lg bg-amber-500/8 border border-amber-500/20">
                         <div className="flex items-start gap-2">
@@ -658,17 +678,14 @@ function ListQuestionCard({ question, index, result, onSelect, isLoading, tipVis
                     </div>
                 )}
 
-                {/* Contexto */}
                 {question.context && (
                     <div className="p-3 rounded-lg bg-muted text-xs text-muted-foreground leading-relaxed border-l-2 border-primary/30 whitespace-pre-wrap">
                         {question.context}
                     </div>
                 )}
 
-                {/* Enunciado */}
                 <p className="text-sm text-foreground leading-relaxed">{question.statement}</p>
 
-                {/* Alternativas — compactas */}
                 <div className="space-y-1.5">
                     {question.alternatives.map((alt) => {
                         const altKey = alt.key.toUpperCase();
@@ -713,7 +730,6 @@ function ListQuestionCard({ question, index, result, onSelect, isLoading, tipVis
                     })}
                 </div>
 
-                {/* Feedback inline no modo lista */}
                 {result && (
                     <div className="space-y-2 pt-1 border-t border-border">
                         {!result.is_correct && distractorJ && (
