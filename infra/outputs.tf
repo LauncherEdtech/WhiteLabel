@@ -1,17 +1,18 @@
 # infra/outputs.tf
+
 output "alb_dns_name" {
-  description = "DNS do Load Balancer"
+  description = "DNS do Load Balancer (usar como INTERNAL_API_URL no Vercel)"
   value       = aws_lb.main.dns_name
+}
+
+output "api_url" {
+  description = "URL pública da API"
+  value       = "https://api.launcheredu.com.br/api/v1"
 }
 
 output "ecr_api_url" {
   description = "URL do repositório ECR da API"
   value       = aws_ecr_repository.api.repository_url
-}
-
-output "ecr_frontend_url" {
-  description = "URL do repositório ECR do Frontend"
-  value       = aws_ecr_repository.frontend.repository_url
 }
 
 output "rds_endpoint" {
@@ -30,13 +31,3 @@ output "ecs_cluster_name" {
   description = "Nome do cluster ECS"
   value       = aws_ecs_cluster.main.name
 }
-output "api_url" {
-  description = "URL pública da API via ALB"
-  value       = "http://${aws_lb.main.dns_name}"
-}
-
-output "frontend_url" {
-  description = "URL do frontend"
-  value       = "http://${aws_lb.main.dns_name}"
-}
-

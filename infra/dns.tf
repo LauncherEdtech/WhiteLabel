@@ -1,38 +1,27 @@
 # infra/dns.tf
-# DNS + SSL para launcheredu.com.br
-# Gerencia: Route53 hosted zone, ACM wildcard cert, registros A para o ALB.
+# DNS para launcheredu.com.br após migração Vercel
 #
-# APÓS APLICAR: copie os nameservers do output "route53_nameservers"
-# e atualize no painel da Wix em Domínios → Nameservers.
-
-# ── Route53 Hosted Zone ───────────────────────────────────────────────────────
+# ARQUITETURA:
+#   launcheredu.com.br      → Vercel (landing + admin)
+#   *.launcheredu.com.br    → Vercel (tenants: qg-concursos.launcheredu.com.br etc.)
+#   api.launcheredu.com.br  → ALB   (Flask API — direto, sem passar pelo Vercel)
 
 resource "aws_route53_zone" "main" {
   name = "launcheredu.com.br"
-
   tags = { Name = "${var.project_name}-zone" }
 }
 
 # ── ACM Certificate (wildcard + apex) ─────────────────────────────────────────
-# Cobre: launcheredu.com.br E *.launcheredu.com.br
-# Região: sa-east-1 (mesma região do ALB — obrigatório para ALB)
 
 resource "aws_acm_certificate" "wildcard" {
   domain_name               = "launcheredu.com.br"
   subject_alternative_names = ["*.launcheredu.com.br"]
   validation_method         = "DNS"
 
-  # SEGURANÇA: create_before_destroy garante zero downtime em renovações
-  lifecycle {
-    create_before_destroy = true
-  }
+  lifecycle { create_before_destroy = true }
 
   tags = { Name = "${var.project_name}-wildcard-cert" }
 }
-
-# ── Registros DNS para validação do ACM ───────────────────────────────────────
-# O ACM gera CNAMEs de verificação. Terraform os cria automaticamente no Route53.
-# Não é necessário nenhuma ação manual.
 
 resource "aws_route53_record" "cert_validation" {
   for_each = {
@@ -51,52 +40,52 @@ resource "aws_route53_record" "cert_validation" {
   zone_id         = aws_route53_zone.main.zone_id
 }
 
-# Aguarda a validação DNS do certificado antes de prosseguir
-# Pode levar alguns minutos após a propagação dos nameservers na Wix.
-
 resource "aws_acm_certificate_validation" "wildcard" {
   certificate_arn         = aws_acm_certificate.wildcard.arn
   validation_record_fqdns = [for r in aws_route53_record.cert_validation : r.fqdn]
+  timeouts { create = "30m" }
+}
 
-  timeouts {
-    create = "30m"
+# ── api.launcheredu.com.br → ALB ──────────────────────────────────────────────
+# Único ponto de entrada da Flask API. Vercel usa esse subdomínio.
+
+resource "aws_route53_record" "api" {
+  zone_id = aws_route53_zone.main.zone_id
+  name    = "api.launcheredu.com.br"
+  type    = "A"
+
+  alias {
+    name                   = aws_lb.main.dns_name
+    zone_id                = aws_lb.main.zone_id
+    evaluate_target_health = true
   }
 }
 
-# ── Registro A: apex → ALB ────────────────────────────────────────────────────
-# launcheredu.com.br → ALB (ALIAS record — necessário para apex sem CNAME)
+# ── launcheredu.com.br (apex) → Vercel ────────────────────────────────────────
+# Apex não suporta CNAME — usa A record com IP anycast do Vercel.
+# 76.76.21.21 é o anycast estável do Vercel (não muda).
 
 resource "aws_route53_record" "apex" {
   zone_id = aws_route53_zone.main.zone_id
   name    = "launcheredu.com.br"
   type    = "A"
-
-  alias {
-    name                   = aws_lb.main.dns_name
-    zone_id                = aws_lb.main.zone_id
-    evaluate_target_health = true
-  }
+  ttl     = 300
+  records = ["76.76.21.21"]
 }
 
-# ── Registro A: wildcard → ALB ────────────────────────────────────────────────
-# *.launcheredu.com.br → ALB
-# Cobre: quarteconcurso.launcheredu.com.br, juridico.launcheredu.com.br, etc.
+# ── *.launcheredu.com.br → Vercel ─────────────────────────────────────────────
+# Todos os tenants vão para o Vercel.
+# proxy.ts resolve o tenant pelo subdomínio via Edge Middleware.
 
 resource "aws_route53_record" "wildcard" {
   zone_id = aws_route53_zone.main.zone_id
   name    = "*.launcheredu.com.br"
-  type    = "A"
-
-  alias {
-    name                   = aws_lb.main.dns_name
-    zone_id                = aws_lb.main.zone_id
-    evaluate_target_health = true
-  }
+  type    = "CNAME"
+  ttl     = 300
+  records = ["cname.vercel-dns.com"]
 }
 
-# ── Registro CNAME: www → apex ────────────────────────────────────────────────
-# www.launcheredu.com.br → launcheredu.com.br
-# Mantém www funcionando mesmo após remover o site Wix do apex.
+# ── www → apex ────────────────────────────────────────────────────────────────
 
 resource "aws_route53_record" "www" {
   zone_id = aws_route53_zone.main.zone_id
@@ -106,16 +95,12 @@ resource "aws_route53_record" "www" {
   records = ["launcheredu.com.br"]
 }
 
-# ── Output: Nameservers ────────────────────────────────────────────────────────
-# IMPORTANTE: Após o terraform apply, copie esses 4 valores e atualize
-# no painel da Wix em: Domínios → launcheredu.com.br → Nameservers → Customizados
-
 output "route53_nameservers" {
-  description = "Nameservers para configurar na Wix (substituir os nameservers Wix por estes)"
+  description = "Nameservers para configurar no registro.br"
   value       = aws_route53_zone.main.name_servers
 }
 
 output "acm_certificate_arn" {
-  description = "ARN do certificado ACM wildcard (usado pelo HTTPS listener)"
+  description = "ARN do certificado ACM wildcard"
   value       = aws_acm_certificate.wildcard.arn
 }

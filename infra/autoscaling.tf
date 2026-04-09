@@ -1,5 +1,6 @@
 # infra/autoscaling.tf
-# FinOps + Auto Scaling — Fase 1 (Scheduled + CPU) + Fase 2 (Custom Metric Redis)
+# FinOps + Auto Scaling — API Flask apenas.
+# Frontend removido (Vercel escala automaticamente).
 #
 # ARQUITETURA DE SCALING:
 #
@@ -11,21 +12,12 @@
 #                          │ define teto
 #   ┌──────────────────────▼──────────────────────────────┐
 #   │  Reactive Scaling (dois gatilhos independentes)     │
-#   │                                                     │
-#   │  Gatilho 1 — CPU/Memória (Fase 1):                 │
-#   │  CPU > 70% por 3min  → +1 task                     │
-#   │  CPU < 70% por 15min → -1 task                     │
-#   │                                                     │
-#   │  Gatilho 2 — ActiveUsers Redis (Fase 2):           │
-#   │  0–5   usuários → 1 task                           │
-#   │  6–30  usuários → 2 tasks                          │
-#   │  31–80 usuários → 3 tasks                          │
-#   │  81+   usuários → 4 tasks                          │
+#   │  Gatilho 1 — CPU/Memória                           │
+#   │  Gatilho 2 — ActiveUsers Redis (CloudWatch)        │
+#   │  0–5 users → 1 task | 6–30 → 2 | 31–80 → 3 | 81+ → 4 │
 #   └─────────────────────────────────────────────────────┘
-#
-# ══════════════════════════════════════════════════════════════════════════════
-# 0. IAM — PERMISSÃO PARA PUBLICAR MÉTRICAS NO CLOUDWATCH (Fase 2)
-# ══════════════════════════════════════════════════════════════════════════════
+
+# ── IAM — CloudWatch metrics ──────────────────────────────────────────────────
 
 resource "aws_iam_role_policy" "ecs_cloudwatch_metrics" {
   name = "${var.project_name}-cloudwatch-metrics"
@@ -35,18 +27,14 @@ resource "aws_iam_role_policy" "ecs_cloudwatch_metrics" {
     Version = "2012-10-17"
     Statement = [
       {
-        # Publicar métricas customizadas (ActiveUsers)
         Effect   = "Allow"
         Action   = ["cloudwatch:PutMetricData"]
         Resource = "*"
         Condition = {
-          StringEquals = {
-            "cloudwatch:namespace" = "ConcursoPlataforma"
-          }
+          StringEquals = { "cloudwatch:namespace" = "ConcursoPlataforma" }
         }
       },
       {
-        # Leitura de métricas e alarmes (dashboard + auto scaling)
         Effect = "Allow"
         Action = [
           "cloudwatch:DescribeAlarms",
@@ -56,62 +44,38 @@ resource "aws_iam_role_policy" "ecs_cloudwatch_metrics" {
         Resource = "*"
       },
       {
-        # Dashboard: listar e descrever serviços ECS
         Effect = "Allow"
         Action = [
-          "ecs:DescribeServices",
-          "ecs:DescribeClusters",
-          "ecs:ListServices",
-          "ecs:ListTasks",
-          "ecs:DescribeTasks",
-          "ecs:UpdateService",
+          "ecs:DescribeServices", "ecs:DescribeClusters", "ecs:ListServices",
+          "ecs:ListTasks", "ecs:DescribeTasks", "ecs:UpdateService",
         ]
         Resource = "*"
       },
       {
-        # Dashboard: status do RDS
-        Effect = "Allow"
-        Action = [
-          "rds:DescribeDBInstances",
-          "rds:DescribeDBClusters",
-        ]
+        Effect   = "Allow"
+        Action   = ["rds:DescribeDBInstances", "rds:DescribeDBClusters"]
         Resource = "*"
       },
       {
-        # Dashboard: status do ElastiCache Redis
-        Effect = "Allow"
-        Action = [
-          "elasticache:DescribeReplicationGroups",
-          "elasticache:DescribeCacheClusters",
-        ]
+        Effect   = "Allow"
+        Action   = ["elasticache:DescribeReplicationGroups", "elasticache:DescribeCacheClusters"]
         Resource = "*"
       },
       {
-        # Dashboard: custos via Cost Explorer
-        Effect = "Allow"
-        Action = [
-          "ce:GetCostAndUsage",
-          "ce:GetCostForecast",
-        ]
+        Effect   = "Allow"
+        Action   = ["ce:GetCostAndUsage", "ce:GetCostForecast"]
         Resource = "*"
       },
       {
-        # Dashboard: logs do CloudWatch
-        Effect = "Allow"
-        Action = [
-          "logs:DescribeLogGroups",
-          "logs:GetLogEvents",
-          "logs:FilterLogEvents",
-        ]
+        Effect   = "Allow"
+        Action   = ["logs:DescribeLogGroups", "logs:GetLogEvents", "logs:FilterLogEvents"]
         Resource = "*"
       }
     ]
   })
 }
-# ══════════════════════════════════════════════════════════════════════════════
-# 1. ECS — CELERY WORKER (GAP CORRIGIDO)
-#    Existia no docker-compose mas estava ausente do Terraform.
-# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Celery Worker + Beat ──────────────────────────────────────────────────────
 
 resource "aws_cloudwatch_log_group" "celery" {
   name              = "/ecs/${var.project_name}/celery"
@@ -176,16 +140,12 @@ resource "aws_ecs_service" "celery" {
     assign_public_ip = true
   }
 
-  lifecycle {
-    ignore_changes = [task_definition]
-  }
-
+  lifecycle { ignore_changes = [task_definition] }
   depends_on = [aws_ecs_service.api]
 }
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 2. AUTO SCALING TARGETS
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Auto Scaling Target — somente API ────────────────────────────────────────
+# Frontend removido — Vercel escala automaticamente.
 
 resource "aws_appautoscaling_target" "api" {
   max_capacity       = 4
@@ -196,18 +156,7 @@ resource "aws_appautoscaling_target" "api" {
   depends_on         = [aws_ecs_service.api]
 }
 
-resource "aws_appautoscaling_target" "frontend" {
-  max_capacity       = 2
-  min_capacity       = 1
-  resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.frontend.name}"
-  scalable_dimension = "ecs:service:DesiredCount"
-  service_namespace  = "ecs"
-  depends_on         = [aws_ecs_service.frontend]
-}
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 3. FASE 1 — REACTIVE POR CPU E MEMÓRIA
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Fase 1 — CPU e Memória ────────────────────────────────────────────────────
 
 resource "aws_appautoscaling_policy" "api_cpu" {
   name               = "${var.project_name}-api-cpu"
@@ -243,33 +192,7 @@ resource "aws_appautoscaling_policy" "api_memory" {
   }
 }
 
-resource "aws_appautoscaling_policy" "frontend_cpu" {
-  name               = "${var.project_name}-frontend-cpu"
-  policy_type        = "TargetTrackingScaling"
-  resource_id        = aws_appautoscaling_target.frontend.resource_id
-  scalable_dimension = aws_appautoscaling_target.frontend.scalable_dimension
-  service_namespace  = aws_appautoscaling_target.frontend.service_namespace
-
-  target_tracking_scaling_policy_configuration {
-    predefined_metric_specification {
-      predefined_metric_type = "ECSServiceAverageCPUUtilization"
-    }
-    target_value       = 70.0
-    scale_in_cooldown  = 900
-    scale_out_cooldown = 120
-  }
-}
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 4. FASE 2 — STEP SCALING POR USUÁRIOS ATIVOS (CUSTOM METRIC CLOUDWATCH)
-#
-#    A task Celery (cloudwatch_metrics.py) publica ActiveUsers a cada 60s.
-#    Alarmes do CloudWatch disparam as scaling policies abaixo.
-#
-#    Thresholds baseados em: 1 task Flask/Gunicorn (2 workers) ≈ 25 usuários
-# ══════════════════════════════════════════════════════════════════════════════
-
-# ── Alarmes de Scale Out ──────────────────────────────────────────────────────
+# ── Fase 2 — ActiveUsers (CloudWatch custom metric) ───────────────────────────
 
 resource "aws_cloudwatch_metric_alarm" "users_scale_out" {
   alarm_name          = "${var.project_name}-users-high"
@@ -282,15 +205,9 @@ resource "aws_cloudwatch_metric_alarm" "users_scale_out" {
   threshold           = 6
   treat_missing_data  = "notBreaching"
   alarm_description   = "6+ usuários ativos → escala API"
-
-  dimensions = {
-    Environment = "production"
-  }
-
-  alarm_actions = [aws_appautoscaling_policy.api_users_scale_out.arn]
+  dimensions          = { Environment = "production" }
+  alarm_actions       = [aws_appautoscaling_policy.api_users_scale_out.arn]
 }
-
-# ── Alarme de Scale In ────────────────────────────────────────────────────────
 
 resource "aws_cloudwatch_metric_alarm" "users_scale_in" {
   alarm_name          = "${var.project_name}-users-low"
@@ -303,15 +220,9 @@ resource "aws_cloudwatch_metric_alarm" "users_scale_in" {
   threshold           = 6
   treat_missing_data  = "notBreaching"
   alarm_description   = "< 6 usuários por 10min → reduz API para 1 task"
-
-  dimensions = {
-    Environment = "production"
-  }
-
-  alarm_actions = [aws_appautoscaling_policy.api_users_scale_in.arn]
+  dimensions          = { Environment = "production" }
+  alarm_actions       = [aws_appautoscaling_policy.api_users_scale_in.arn]
 }
-
-# ── Step Scaling Policies ─────────────────────────────────────────────────────
 
 resource "aws_appautoscaling_policy" "api_users_scale_out" {
   name               = "${var.project_name}-api-users-out"
@@ -325,21 +236,16 @@ resource "aws_appautoscaling_policy" "api_users_scale_out" {
     cooldown                = 120
     metric_aggregation_type = "Maximum"
 
-    # 6–30 usuários → 2 tasks
     step_adjustment {
       metric_interval_lower_bound = 0
       metric_interval_upper_bound = 25
       scaling_adjustment          = 2
     }
-
-    # 31–80 usuários → 3 tasks
     step_adjustment {
       metric_interval_lower_bound = 25
       metric_interval_upper_bound = 75
       scaling_adjustment          = 3
     }
-
-    # 81+ usuários → 4 tasks
     step_adjustment {
       metric_interval_lower_bound = 75
       scaling_adjustment          = 4
@@ -366,11 +272,8 @@ resource "aws_appautoscaling_policy" "api_users_scale_in" {
   }
 }
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 5. SCHEDULED SCALING — HORÁRIOS BRT (todos em UTC)
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Scheduled Scaling ─────────────────────────────────────────────────────────
 
-# 23:00 BRT (02:00 UTC) → Modo noturno
 resource "aws_appautoscaling_scheduled_action" "api_night" {
   name               = "${var.project_name}-api-night"
   service_namespace  = aws_appautoscaling_target.api.service_namespace
@@ -383,7 +286,6 @@ resource "aws_appautoscaling_scheduled_action" "api_night" {
   }
 }
 
-# 07:00 BRT seg-sex (10:00 UTC) → Modo diurno
 resource "aws_appautoscaling_scheduled_action" "api_weekday" {
   name               = "${var.project_name}-api-weekday"
   service_namespace  = aws_appautoscaling_target.api.service_namespace
@@ -396,7 +298,6 @@ resource "aws_appautoscaling_scheduled_action" "api_weekday" {
   }
 }
 
-# 06:00 BRT sábado (09:00 UTC) → Alunos estudam cedo
 resource "aws_appautoscaling_scheduled_action" "api_saturday" {
   name               = "${var.project_name}-api-saturday"
   service_namespace  = aws_appautoscaling_target.api.service_namespace
@@ -409,75 +310,32 @@ resource "aws_appautoscaling_scheduled_action" "api_saturday" {
   }
 }
 
-resource "aws_appautoscaling_scheduled_action" "frontend_night" {
-  name               = "${var.project_name}-frontend-night"
-  service_namespace  = aws_appautoscaling_target.frontend.service_namespace
-  resource_id        = aws_appautoscaling_target.frontend.resource_id
-  scalable_dimension = aws_appautoscaling_target.frontend.scalable_dimension
-  schedule           = "cron(0 2 * * ? *)"
-  scalable_target_action {
-    min_capacity = 1
-    max_capacity = 1
-  }
-}
+# Frontend scheduled scaling removido — Vercel gerencia escala automaticamente
 
-resource "aws_appautoscaling_scheduled_action" "frontend_morning" {
-  name               = "${var.project_name}-frontend-morning"
-  service_namespace  = aws_appautoscaling_target.frontend.service_namespace
-  resource_id        = aws_appautoscaling_target.frontend.resource_id
-  scalable_dimension = aws_appautoscaling_target.frontend.scalable_dimension
-  schedule           = "cron(0 10 ? * MON-FRI *)"
-  scalable_target_action {
-    min_capacity = 1
-    max_capacity = 2
-  }
-}
+# ── ECR Lifecycle — somente API ───────────────────────────────────────────────
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 6. ECR LIFECYCLE POLICIES
-# ══════════════════════════════════════════════════════════════════════════════
+resource "aws_ecr_lifecycle_policy" "api" {
+  repository = aws_ecr_repository.api.name
 
-locals {
-  ecr_lifecycle = jsonencode({
+  policy = jsonencode({
     rules = [
       {
         rulePriority = 1
         description  = "Remove imagens sem tag além de 5"
-        selection = {
-          tagStatus   = "untagged"
-          countType   = "imageCountMoreThan"
-          countNumber = 5
-        }
-        action = { type = "expire" }
+        selection    = { tagStatus = "untagged", countType = "imageCountMoreThan", countNumber = 5 }
+        action       = { type = "expire" }
       },
       {
         rulePriority = 2
         description  = "Mantém últimas 15 imagens com tag"
-        selection = {
-          tagStatus     = "tagged"
-          tagPrefixList = ["sha-", "v", "main"]
-          countType     = "imageCountMoreThan"
-          countNumber   = 15
-        }
-        action = { type = "expire" }
+        selection    = { tagStatus = "tagged", tagPrefixList = ["sha-", "v", "main"], countType = "imageCountMoreThan", countNumber = 15 }
+        action       = { type = "expire" }
       }
     ]
   })
 }
 
-resource "aws_ecr_lifecycle_policy" "api" {
-  repository = aws_ecr_repository.api.name
-  policy     = local.ecr_lifecycle
-}
-
-resource "aws_ecr_lifecycle_policy" "frontend" {
-  repository = aws_ecr_repository.frontend.name
-  policy     = local.ecr_lifecycle
-}
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 7. CLOUDWATCH ALARMS DE SAÚDE
-# ══════════════════════════════════════════════════════════════════════════════
+# ── CloudWatch Alarms de saúde ────────────────────────────────────────────────
 
 resource "aws_cloudwatch_metric_alarm" "api_cpu_high" {
   alarm_name          = "${var.project_name}-api-cpu-high"
@@ -488,7 +346,7 @@ resource "aws_cloudwatch_metric_alarm" "api_cpu_high" {
   period              = 300
   statistic           = "Average"
   threshold           = 85.0
-  alarm_description   = "API CPU > 85% por 15min — auto scaling pode estar com problema"
+  alarm_description   = "API CPU > 85% por 15min"
   treat_missing_data  = "notBreaching"
   dimensions = {
     ClusterName = aws_ecs_cluster.main.name
@@ -505,7 +363,7 @@ resource "aws_cloudwatch_metric_alarm" "api_cpu_idle" {
   period              = 300
   statistic           = "Average"
   threshold           = 3.0
-  alarm_description   = "API CPU < 3% por 1h — tasks possivelmente ociosas"
+  alarm_description   = "API CPU < 3% por 1h — tasks ociosas"
   treat_missing_data  = "notBreaching"
   dimensions = {
     ClusterName = aws_ecs_cluster.main.name
