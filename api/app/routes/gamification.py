@@ -1,6 +1,4 @@
 # api/app/routes/gamification.py
-# Rotas para avaliação de aulas e mural de honra (gamificação).
-
 from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
@@ -10,7 +8,13 @@ from app.extensions import db, limiter
 from app.models.user import User, UserRole
 from app.models.course import Lesson, Module, Subject
 from app.models.gamification import LessonRating, StudentBadge
-from app.services.badge_engine import BadgeEngine, BADGES, RANKS
+from app.services.badge_engine import (
+    BadgeEngine,
+    BADGES,
+    RANKS_BY_THEME,
+    VALID_THEMES,
+    get_ranks_for_theme,
+)
 from app.middleware.tenant import resolve_tenant, require_tenant, get_current_tenant
 
 gamification_bp = Blueprint("gamification", __name__)
@@ -28,9 +32,6 @@ def _is_student(claims: dict) -> bool:
     return claims.get("role") == UserRole.STUDENT.value
 
 
-# ── Schemas ───────────────────────────────────────────────────────────────────
-
-
 class RatingSchema(Schema):
     rating = fields.Int(required=True, validate=validate.Range(min=1, max=5))
     comment = fields.Str(
@@ -43,8 +44,6 @@ class RatingSchema(Schema):
 
 @gamification_bp.before_request
 def before_request():
-    from app.middleware.tenant import resolve_tenant
-
     resolve_tenant()
 
 
@@ -58,35 +57,24 @@ def before_request():
 @require_tenant
 @limiter.limit("20 per hour")
 def rate_lesson(lesson_id: str):
-    """Aluno avalia uma aula (1-5 estrelas + comentário opcional)."""
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
     claims = get_jwt()
-
     if not _is_student(claims):
         return jsonify({"error": "forbidden"}), 403
-
     lesson = Lesson.query.filter_by(
         id=lesson_id, tenant_id=tenant.id, is_deleted=False
     ).first()
     if not lesson:
         return jsonify({"error": "not_found"}), 404
-
     schema = RatingSchema()
     try:
         data = schema.load(request.get_json(force=True) or {})
     except ValidationError as e:
         return jsonify({"error": "validation_error", "details": e.messages}), 400
-
-    now = datetime.now(timezone.utc).isoformat()
-
-    # Cria ou atualiza avaliação
     existing = LessonRating.query.filter_by(
-        lesson_id=lesson_id,
-        user_id=user_id,
-        is_deleted=False,
+        lesson_id=lesson_id, user_id=user_id, is_deleted=False
     ).first()
-
     if existing:
         existing.rating = data["rating"]
         existing.comment = data.get("comment", existing.comment)
@@ -99,12 +87,8 @@ def rate_lesson(lesson_id: str):
             comment=data.get("comment"),
         )
         db.session.add(existing)
-
     db.session.commit()
-
-    # Verifica se deve gerar insight via Gemini (3+ avaliações ruins)
     _maybe_generate_insight(lesson_id, tenant.id)
-
     return jsonify({"message": "Avaliação registrada.", "rating": data["rating"]}), 200
 
 
@@ -112,19 +96,12 @@ def rate_lesson(lesson_id: str):
 @jwt_required()
 @require_tenant
 def get_my_rating(lesson_id: str):
-    """Retorna a avaliação do aluno logado para uma aula."""
-    tenant = get_current_tenant()
     user_id = get_jwt_identity()
-
     rating = LessonRating.query.filter_by(
-        lesson_id=lesson_id,
-        user_id=user_id,
-        is_deleted=False,
+        lesson_id=lesson_id, user_id=user_id, is_deleted=False
     ).first()
-
     if not rating:
         return jsonify({"rating": None}), 200
-
     return jsonify({"rating": {"stars": rating.rating, "comment": rating.comment}}), 200
 
 
@@ -132,47 +109,28 @@ def get_my_rating(lesson_id: str):
 @jwt_required()
 @require_tenant
 def get_lesson_ratings(lesson_id: str):
-    """
-    Produtor vê todas as avaliações de uma aula, com comentários e alunos.
-    FIX: Retorna lesson_title, module_name, subject_name para o frontend saber
-         a qual aula aquela avaliação pertence.
-    """
     tenant = get_current_tenant()
     claims = get_jwt()
-
     if not _is_producer_or_above(claims):
         return jsonify({"error": "forbidden"}), 403
-
     lesson = Lesson.query.filter_by(
         id=lesson_id, tenant_id=tenant.id, is_deleted=False
     ).first()
     if not lesson:
         return jsonify({"error": "not_found"}), 404
-
-    # FIX: Busca metadados de localização da aula
     module = Module.query.get(lesson.module_id) if lesson.module_id else None
     subject = Subject.query.get(module.subject_id) if module else None
-
     ratings = (
-        LessonRating.query.filter_by(
-            lesson_id=lesson_id,
-            is_deleted=False,
-        )
+        LessonRating.query.filter_by(lesson_id=lesson_id, is_deleted=False)
         .order_by(LessonRating.created_at.desc())
         .all()
     )
-
     total = len(ratings)
     avg = round(sum(r.rating for r in ratings) / total, 2) if total else 0
-
-    # Distribuição por estrela
     distribution = {i: 0 for i in range(1, 6)}
     for r in ratings:
         distribution[r.rating] += 1
-
-    # AI insight (se gerado)
     ai_insight = next((r.ai_insight for r in ratings if r.ai_insight), None)
-
     return (
         jsonify(
             {
@@ -209,24 +167,13 @@ def get_lesson_ratings(lesson_id: str):
 @jwt_required()
 @require_tenant
 def producer_ratings_overview():
-    """
-    Produtor vê ranking de aulas por avaliação média.
-    FIX: Retorna module_name e subject_name para contextualizar cada aula
-         na interface do produtor.
-    """
     tenant = get_current_tenant()
     claims = get_jwt()
-
     if not _is_producer_or_above(claims):
         return jsonify({"error": "forbidden"}), 403
-
-    # Busca todas as ratings do tenant
     all_ratings = LessonRating.query.filter_by(
-        tenant_id=tenant.id,
-        is_deleted=False,
+        tenant_id=tenant.id, is_deleted=False
     ).all()
-
-    # Agrupa por aula
     by_lesson: dict = {}
     for r in all_ratings:
         lid = r.lesson_id
@@ -235,17 +182,13 @@ def producer_ratings_overview():
         by_lesson[lid]["ratings"].append(r.rating)
         if r.ai_insight:
             by_lesson[lid]["ai_insight"] = r.ai_insight
-
     result = []
     for lesson_id, data in by_lesson.items():
         lesson = Lesson.query.get(lesson_id)
         if not lesson or lesson.is_deleted:
             continue
-
-        # FIX: Busca módulo e disciplina para contextualizar a aula
         module = Module.query.get(lesson.module_id) if lesson.module_id else None
         subject = Subject.query.get(module.subject_id) if module else None
-
         ratings = data["ratings"]
         avg = round(sum(ratings) / len(ratings), 2)
         low_count = sum(1 for r in ratings if r <= 2)
@@ -262,9 +205,7 @@ def producer_ratings_overview():
                 "ai_insight": data["ai_insight"],
             }
         )
-
     result.sort(key=lambda x: x["avg_rating"])
-
     return (
         jsonify(
             {
@@ -277,39 +218,22 @@ def producer_ratings_overview():
     )
 
 
-# ── Geração de insight via Gemini ─────────────────────────────────────────────
-
-
 def _maybe_generate_insight(lesson_id: str, tenant_id: str):
-    """
-    Se a aula tiver 3+ avaliações baixas (≤2 estrelas),
-    gera insight via Gemini com base nos comentários.
-    """
-    ratings = LessonRating.query.filter_by(
-        lesson_id=lesson_id,
-        is_deleted=False,
-    ).all()
-
+    ratings = LessonRating.query.filter_by(lesson_id=lesson_id, is_deleted=False).all()
     low_ratings = [r for r in ratings if r.rating <= 2]
-
     if len(low_ratings) < 3:
         return
-
-    # Só gera se ainda não tem insight ou última versão é antiga
     latest_insight_version = max((r.ai_insight_version for r in ratings), default=0)
     if latest_insight_version >= len(low_ratings):
         return
-
     try:
         from app.services.gemini_service import GeminiService
 
         lesson = Lesson.query.get(lesson_id)
         if not lesson:
             return
-
         comments = [r.comment for r in low_ratings if r.comment]
         avg = round(sum(r.rating for r in ratings) / len(ratings), 2)
-
         svc = GeminiService()
         insight = svc.analyze_lesson_ratings(
             lesson_title=lesson.title,
@@ -318,18 +242,16 @@ def _maybe_generate_insight(lesson_id: str, tenant_id: str):
             total_count=len(ratings),
             comments=comments,
         )
-
         if insight:
-            # Salva no primeiro registro de avaliação baixa
             low_ratings[0].ai_insight = insight
             low_ratings[0].ai_insight_version = len(low_ratings)
             db.session.commit()
     except Exception:
-        pass  # Não falha o fluxo principal se Gemini falhar
+        pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MURAL DE HONRA — GAMIFICAÇÃO
+# MURAL DE HONRA
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -337,23 +259,17 @@ def _maybe_generate_insight(lesson_id: str, tenant_id: str):
 @jwt_required()
 @require_tenant
 def hall_of_fame():
-    """
-    Retorna o perfil de gamificação do aluno logado:
-    - Patente atual e progresso para a próxima
-    - Pontos totais
-    - Badges conquistadas e não conquistadas
-    - Novas badges (recém desbloqueadas)
-    """
+    """Retorna perfil de gamificação com patentes do tema do tenant."""
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
+    gamification_theme = (tenant.settings or {}).get("gamification_theme", "militar")
+    if gamification_theme not in VALID_THEMES:
+        gamification_theme = "militar"
+
     engine = BadgeEngine(user_id=user_id, tenant_id=tenant.id)
-
-    # Verifica novas conquistas
     new_badges = engine.check_and_award()
-
-    # Perfil completo
-    profile = engine.get_profile()
+    profile = engine.get_profile(theme=gamification_theme)
     profile["new_badges"] = [
         {**BADGES[key], "key": key} for key in new_badges if key in BADGES
     ]
@@ -365,16 +281,10 @@ def hall_of_fame():
 @jwt_required()
 @require_tenant
 def check_badges():
-    """
-    Dispara verificação de badges após uma ação do aluno.
-    Retorna lista de novas badges conquistadas.
-    """
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
-
     engine = BadgeEngine(user_id=user_id, tenant_id=tenant.id)
     new_badges = engine.check_and_award()
-
     return (
         jsonify(
             {
@@ -385,3 +295,29 @@ def check_badges():
         ),
         200,
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TEMAS DISPONÍVEIS (para settings do produtor)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@gamification_bp.route("/themes", methods=["GET"])
+@jwt_required()
+@require_tenant
+def list_themes():
+    """Lista todos os temas com suas patentes. Usado pela settings page do produtor."""
+    claims = get_jwt()
+    if not _is_producer_or_above(claims):
+        return jsonify({"error": "forbidden"}), 403
+    themes_data = []
+    for theme_key, ranks in RANKS_BY_THEME.items():
+        themes_data.append(
+            {
+                "key": theme_key,
+                "ranks": ranks,
+                "top_rank": ranks[-1]["name"],
+                "entry_rank": ranks[0]["name"],
+            }
+        )
+    return jsonify({"themes": themes_data, "valid_themes": VALID_THEMES}), 200

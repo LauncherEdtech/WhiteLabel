@@ -16,7 +16,7 @@ export function useStudentDashboard(userId?: string) {
     return useQuery({
         queryKey: ANALYTICS_KEYS.studentDashboard(userId),
         queryFn: () => analyticsApi.studentDashboard(userId),
-        staleTime: 2 * 60 * 1000, // 2 minutos
+        staleTime: 0,
         refetchOnWindowFocus: true,
     });
 }

@@ -82,6 +82,27 @@ def _dashboard_cache_key(user_id: str, tenant_id: str) -> str:
     return f"analytics:dashboard:{tenant_id}:{user_id}"
 
 
+# ── Cache específico de insights (TTL 2h, separado do dashboard) ──────────────
+
+
+def _insights_cache_key(user_id: str, tenant_id: str) -> str:
+    return f"analytics:insights:{tenant_id}:{user_id}"
+
+
+def _get_cached_insights(user_id: str, tenant_id: str):
+    return _cache_get(_insights_cache_key(user_id, tenant_id))
+
+
+def _set_cached_insights(user_id: str, tenant_id: str, insights: list):
+    _cache_set(
+        _insights_cache_key(user_id, tenant_id), insights, ttl_seconds=7200
+    )  # 2h
+
+
+def _delete_cached_insights(user_id: str, tenant_id: str):
+    _cache_delete(_insights_cache_key(user_id, tenant_id))
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPERS DE AUTORIZAÇÃO
 # ══════════════════════════════════════════════════════════════════════════════
@@ -284,13 +305,17 @@ def student_dashboard():
     lesson_progress = _get_lesson_progress_stats(target_user_id, tenant.id)
     todays_pending = _get_todays_pending(target_user_id, tenant.id, today_start)
     time_stats = _get_time_stats(target_user_id, tenant.id, today_start, week_start)
-    insights = _generate_insights(
-        user=target_user,
-        questions_stats=questions_stats,
-        discipline_stats=discipline_stats,
-        lesson_progress=lesson_progress,
-        time_stats=time_stats,
-    )
+    insights = _get_cached_insights(target_user_id, tenant.id)
+    if not insights:
+        insights = _generate_insights(
+            user=target_user,
+            tenant=tenant,
+            questions_stats=questions_stats,
+            discipline_stats=discipline_stats,
+            lesson_progress=lesson_progress,
+            time_stats=time_stats,
+        )
+        _set_cached_insights(target_user_id, tenant.id, insights)
 
     payload = {
         "student": {
@@ -634,7 +659,8 @@ def student_study_capsule():
         ).all()
         if b.badge_key in BADGES
     )
-    current_rank = get_rank(_earned_points)
+    _gamification_theme = (tenant.settings or {}).get("gamification_theme", "militar")
+    current_rank = get_rank(_earned_points, theme=_gamification_theme)
 
     period_badges = (
         StudentBadge.query.filter(
@@ -750,29 +776,30 @@ def _get_capsule_phrase(
     api_key = current_app.config.get("GEMINI_API_KEY", "")
     if api_key:
         try:
-            import google.generativeai as genai
-
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel("gemini-2.5-flash-lite")
+            from google import genai
 
             top_disc_str = (
                 ", ".join(d["discipline"] for d in top_disciplines[:2]) or "sem dados"
             )
             prompt = f"""
-Crie uma frase motivacional personalizada para um aluno de concursos públicos.
-MÁXIMO 120 caracteres. Em português. Tom encorajador e direto.
-Mencione a patente "{rank_name}" e pelo menos um dado real abaixo.
+    Crie uma frase motivacional personalizada para um aluno de concursos públicos.
+    MÁXIMO 120 caracteres. Em português. Tom encorajador e direto.
+    Mencione a patente "{rank_name}" e pelo menos um dado real abaixo.
 
-Dados do aluno em {month}/{year}:
-- Minutos estudados: {total_minutes}
-- Questões respondidas: {questions_answered}
-- Taxa de acerto: {accuracy_rate}%
-- Melhores disciplinas: {top_disc_str}
-- Patente: {rank_name}
+    Dados do aluno em {month}/{year}:
+    - Minutos estudados: {total_minutes}
+    - Questões respondidas: {questions_answered}
+    - Taxa de acerto: {accuracy_rate}%
+    - Melhores disciplinas: {top_disc_str}
+    - Patente: {rank_name}
 
-Responda APENAS com a frase, sem aspas, sem explicação."""
+    Responda APENAS com a frase, sem aspas, sem explicação."""
 
-            response = model.generate_content(prompt)
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model="gemini-2.5-flash-lite",
+                contents=prompt,
+            )
             phrase = response.text.strip()[:150]
         except Exception as e:
             current_app.logger.warning(f"Gemini capsule phrase falhou: {e}")
@@ -1565,8 +1592,68 @@ def _get_student_quick_stats(user_id: str, tenant_id: str) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+# Usado para personalizar o prompt do Gemini sem mudar a estrutura do JSON.
+_INSIGHT_THEME_VOICE = {
+    "militar": {
+        "persona": "instrutor militar experiente preparando candidatos a concursos das Forças Armadas e Polícias Militares",
+        "meta": "missão semanal",
+        "estudo": "instrução",
+        "fraqueza": "vulnerabilidade tática",
+        "proximo": "próxima ordem do dia",
+        "chamada": "Soldado",
+        "tom": "Direto, objetivo, sem rodeios. Use termos militares de forma natural (missão, instrução, posição, combate ao edital).",
+    },
+    "policial": {
+        "persona": "delegado experiente preparando candidatos a concursos da Polícia Civil, Federal e PRF",
+        "meta": "ocorrência semanal",
+        "estudo": "diligência",
+        "fraqueza": "pista não elucidada",
+        "proximo": "próxima diligência",
+        "chamada": "Investigador",
+        "tom": "Investigativo e metódico. Use termos policiais naturalmente (caso, inquérito, diligência, evidência).",
+    },
+    "juridico": {
+        "persona": "advogado sênior orientando candidatos à Magistratura, Ministério Público e OAB",
+        "meta": "processo semanal",
+        "estudo": "sustentação oral",
+        "fraqueza": "tese não consolidada",
+        "proximo": "próximo fundamento jurídico",
+        "chamada": "Bacharel",
+        "tom": "Formal e preciso. Use termos jurídicos naturalmente (tese, fundamentação, jurisprudência, doutrina).",
+    },
+    "fiscal": {
+        "persona": "auditor-fiscal da Receita Federal orientando candidatos a concursos fiscais e de controle",
+        "meta": "relatório semanal",
+        "estudo": "análise fiscal",
+        "fraqueza": "inconsistência detectada",
+        "proximo": "próximo lançamento",
+        "chamada": "Analista",
+        "tom": "Técnico e orientado a conformidade. Use termos fiscais (auditoria, lançamento, conformidade, auto de infração).",
+    },
+    "administrativo": {
+        "persona": "gestor público experiente orientando candidatos a concursos administrativos gerais",
+        "meta": "meta semanal",
+        "estudo": "desenvolvimento profissional",
+        "fraqueza": "gap identificado",
+        "proximo": "próxima entrega",
+        "chamada": "Analista",
+        "tom": "Corporativo e orientado a resultado. Use termos de gestão (produtividade, entrega, desenvolvimento, metas).",
+    },
+    "saude": {
+        "persona": "coordenador de saúde pública orientando candidatos a concursos da área de saúde",
+        "meta": "protocolo semanal",
+        "estudo": "capacitação",
+        "fraqueza": "indicador abaixo do esperado",
+        "proximo": "próxima prescrição de estudos",
+        "chamada": "Especialista",
+        "tom": "Cuidadoso e baseado em evidência. Use termos de saúde (protocolo, diagnóstico, indicador, prescrição de estudos).",
+    },
+}
+
+
 def _generate_insights(
     user,
+    tenant,
     questions_stats: dict,
     discipline_stats: list,
     lesson_progress: dict,
@@ -1576,15 +1663,14 @@ def _generate_insights(
 
     if api_key:
         try:
-            import google.generativeai as genai  # noqa
-
             return _gemini_student_insights(
-                api_key,
-                user,
-                questions_stats,
-                discipline_stats,
-                lesson_progress,
-                time_stats,
+                api_key=api_key,
+                user=user,
+                tenant=tenant,
+                questions_stats=questions_stats,
+                discipline_stats=discipline_stats,
+                lesson_progress=lesson_progress,
+                time_stats=time_stats,
             )
         except Exception as e:
             current_app.logger.warning(f"Gemini insights falhou, usando fallback: {e}")
@@ -1597,44 +1683,56 @@ def _generate_insights(
 def _gemini_student_insights(
     api_key: str,
     user,
+    tenant,
     questions_stats: dict,
     discipline_stats: list,
     lesson_progress: dict,
     time_stats: dict,
 ) -> list:
-    import google.generativeai as genai
+    from google import genai  # SDK correto: google-genai
 
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.5-flash-lite")
+    # Lê tema do tenant — fallback "militar"
+    insight_theme = (tenant.settings or {}).get("insight_theme", "militar")
+    voice = _INSIGHT_THEME_VOICE.get(insight_theme, _INSIGHT_THEME_VOICE["militar"])
 
     weak = [d for d in discipline_stats if d["performance_label"] == "fraco"]
     strong = [d for d in discipline_stats if d["performance_label"] == "forte"]
 
-    prompt = f"""
-Você é um tutor especialista em concursos públicos. Analise os dados de estudo do aluno
-e gere EXATAMENTE 3 insights práticos e motivadores em português.
+    weak_str = [f"{d['discipline']} ({d['accuracy_rate']}%)" for d in weak[:3]]
+    strong_str = [f"{d['discipline']} ({d['accuracy_rate']}%)" for d in strong[:3]]
 
-DADOS DO ALUNO:
+    prompt = f"""Você é um {voice['persona']}.
+Analise os dados de estudo do candidato e gere EXATAMENTE 3 insights em português.
+ 
+DADOS DO CANDIDATO:
 - Nome: {user.name}
 - Questões respondidas hoje: {questions_stats['today']['answered']}
 - Taxa de acerto geral: {questions_stats['overall_accuracy']}%
 - Tempo estudado esta semana: {time_stats['week_minutes']} minutos
-- Meta semanal: {time_stats['weekly_goal_minutes']} minutos ({time_stats['weekly_progress_percent']}% concluído)
+- {voice['meta'].capitalize()}: {time_stats['weekly_goal_minutes']} minutos ({time_stats['weekly_progress_percent']}% concluído)
 - Aulas assistidas: {lesson_progress['total_watched']} de {lesson_progress['total_available']}
-- Disciplinas fracas: {[d['discipline'] + ' (' + str(d['accuracy_rate']) + '%)' for d in weak[:3]]}
-- Disciplinas fortes: {[d['discipline'] + ' (' + str(d['accuracy_rate']) + '%)' for d in strong[:3]]}
-
+- Pontos fracos ({voice['fraqueza']}): {weak_str}
+- Pontos fortes: {strong_str}
+ 
+TOM OBRIGATÓRIO: {voice['tom']}
+- No insight motivacional, chame o candidato de "{voice['chamada']}" uma vez.
+- Substitua "meta" por "{voice['meta']}", "estudo" por "{voice['estudo']}", "ponto fraco" por "{voice['fraqueza']}".
+- Seja direto e específico. Máximo 2 frases por insight. Use os dados reais acima.
+ 
 REGRAS:
-1. Seja direto e específico (máximo 2 frases por insight)
-2. Use dados reais do aluno nos insights
-3. Um insight deve ser motivacional, um deve ser sobre ponto fraco, um deve ser sobre próximo passo
-4. Responda APENAS com JSON válido, sem markdown, sem explicações
-
+1. Um insight: motivacional (type=motivation)
+2. Um insight: ponto fraco (type=weakness)
+3. Um insight: próximo passo (type=next_step)
+4. Responda APENAS com JSON válido, sem markdown, sem explicações.
+ 
 FORMATO OBRIGATÓRIO:
-{{"insights": [{{"type": "motivation"|"weakness"|"next_step", "icon": "🎯"|"⚠️"|"📌", "title": "título curto", "message": "mensagem prática"}}]}}
-"""
+{{"insights": [{{"type": "motivation"|"weakness"|"next_step", "icon": "🎯"|"⚠️"|"📌", "title": "título curto", "message": "mensagem prática"}}]}}"""
 
-    response = model.generate_content(prompt)
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model="gemini-2.5-flash-lite",
+        contents=prompt,
+    )
     text = response.text.strip()
 
     if text.startswith("```"):
