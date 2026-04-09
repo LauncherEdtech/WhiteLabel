@@ -3,10 +3,10 @@
 # SEGURANÇA: Padrão factory evita estado global e facilita testes isolados.
 
 import os
-import re
 import logging
 
 from flask import Flask, jsonify
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .config import config_by_name
 from .extensions import db, migrate, jwt, limiter, cors, mail, celery_app
@@ -25,6 +25,12 @@ def create_app(config_name: str = None) -> Flask:
     # ── 1. Configuração ───────────────────────────────────────────────────────
     env = config_name or os.environ.get("FLASK_ENV", "development")
     app.config.from_object(config_by_name[env])
+
+    # ProxyFix: confia no X-Forwarded-Proto do ALB para gerar URLs HTTPS.
+    # Sem isso, redirects de strict_slashes (ex: /tenants → /tenants/)
+    # geram http:// no Location header → Mixed Content no browser.
+    if env == "production":
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1, x_for=1)
 
     # ── 2. Logging estruturado ────────────────────────────────────────────────
     _configure_logging(app)
@@ -66,33 +72,15 @@ def _init_extensions(app: Flask) -> None:
     limiter.init_app(app)
 
     # ── CORS ──────────────────────────────────────────────────────────────────
-    # SEGURANÇA: Nunca usar "*" com supports_credentials=True (browsers rejeitam).
-    # Lista explícita de origens permitidas:
-    #   - Qualquer subdomínio de launcheredu.com.br (tenants)
-    #   - O apex (admin, landing)
-    #   - Localhost para desenvolvimento
-    #
-    # IMPORTANTE: ao adicionar um novo ambiente (staging, etc.),
-    # adicione a origem aqui E na variável CORS_ORIGINS do ECS.
-
-    allowed_origins = [
-        # Subdomínios de produção: *.launcheredu.com.br
-        re.compile(r"https://[a-z0-9\-]+\.launcheredu\.com\.br$"),
-        # Apex
-        "https://launcheredu.com.br",
-        "https://www.launcheredu.com.br",
-        # Desenvolvimento local
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        # ALB direto (útil para health checks e testes internos)
-        re.compile(r"http://.*\.elb\.amazonaws\.com$"),
-    ]
-
+    # JWT vai no header Authorization (não em cookie), então não precisamos
+    # de supports_credentials=True nem lista explícita de origens.
+    # origins="*" funciona corretamente com Authorization header e é compatível
+    # com qualquer domínio de tenant (subdomínios, Vercel, domínios customizados).
     cors.init_app(
         app,
         resources={
             r"/*": {
-                "origins": allowed_origins,
+                "origins": "*",
                 "allow_headers": [
                     "Content-Type",
                     "Authorization",
@@ -100,9 +88,7 @@ def _init_extensions(app: Flask) -> None:
                     "X-Requested-With",
                 ],
                 "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-                # supports_credentials=True permite enviar JWT no header Authorization
-                # a partir de origens específicas (não funciona com "*")
-                "supports_credentials": True,
+                "supports_credentials": False,
                 "max_age": 3600,
             }
         },
