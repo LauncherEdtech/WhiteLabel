@@ -2,15 +2,12 @@ import type { NextConfig } from "next";
 
 // API_URL: base sem /api/v1
 // Em produção: https://launcheredu.com.br (via NEXT_PUBLIC_API_URL)
-// Em dev/ALB: http://localhost:5000
+// Em dev:      http://localhost:5000
 const API_URL =
     process.env.NEXT_PUBLIC_API_URL?.replace("/api/v1", "") ||
     "http://localhost:5000";
 
 const nextConfig: NextConfig = {
-    output: "standalone",
-    turbopack: { root: __dirname },
-
     images: {
         remotePatterns: [
             { protocol: "https", hostname: "**.amazonaws.com" },

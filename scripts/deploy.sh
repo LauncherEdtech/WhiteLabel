@@ -1,35 +1,45 @@
 #!/bin/bash
 # deploy.sh — LauncherEdu Platform
-# Uso: ./deploy.sh [api|frontend|all]
+# Uso: ./deploy.sh [api|all]
+#
 # Exemplos:
-#   ./deploy.sh all       → builda e deploya API + Frontend
-#   ./deploy.sh frontend  → só o frontend (mais comum)
-#   ./deploy.sh api       → só a API + Celery
+#   ./deploy.sh api   → builda e deploya API + Celery
+#   ./deploy.sh all   → igual a api (mantido para compatibilidade)
+#
+# NOTA: Frontend foi migrado para Vercel.
+#       Deploy do frontend é automático via git push para main.
 
 set -e
 
 # ── Configurações ─────────────────────────────────────────────────────────────
 AWS_REGION="sa-east-1"
-AWS_ACCOUNT="853696859705"
-ECR_BASE="${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 CLUSTER="concurso-platform-cluster"
-NEXT_PUBLIC_API_URL="https://launcheredu.com.br/api/v1"
+GHCR_BASE="ghcr.io/launcheredtech/whitelabel"
+GITHUB_ACTOR="${GITHUB_ACTOR:-launcheredtech}"
 
-TARGET="${1:-all}"
+TARGET="${1:-api}"
 
-# ── Login ECR ─────────────────────────────────────────────────────────────────
-echo "→ Login no ECR..."
-aws ecr get-login-password --region $AWS_REGION | \
-  docker login --username AWS --password-stdin $ECR_BASE
-echo "✓ Login OK"
+# ── Login GHCR ────────────────────────────────────────────────────────────────
+# Em CI usa GITHUB_TOKEN (nativo, sem criar secrets extras).
+# Localmente usa CR_PAT (Personal Access Token com escopo write:packages).
+echo "→ Login no GHCR..."
+if [ -n "$GITHUB_TOKEN" ]; then
+  echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+elif [ -n "$CR_PAT" ]; then
+  echo "$CR_PAT" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+else
+  echo "❌ Defina CR_PAT para uso local:"
+  echo "   export CR_PAT=ghp_..."
+  exit 1
+fi
+echo "✓ Login GHCR OK"
 
-# ── Função: build + push + deploy de um serviço ───────────────────────────────
+# ── Função: registra nova task definition e faz deploy ────────────────────────
 deploy_service() {
-  local SERVICE=$1   # ex: concurso-platform-api
+  local SERVICE=$1
   echo ""
   echo "→ Deployando $SERVICE..."
 
-  # Pega task definition atual, remove campos read-only e registra nova revisão
   TASK_DEF=$(aws ecs describe-task-definition \
     --task-definition $SERVICE \
     --region $AWS_REGION \
@@ -62,49 +72,36 @@ print(json.dumps(td))")
   echo "✓ $SERVICE deployado (task: $ARN)"
 }
 
-# ── API ───────────────────────────────────────────────────────────────────────
+# ── API + CELERY ──────────────────────────────────────────────────────────────
 if [[ "$TARGET" == "api" || "$TARGET" == "all" ]]; then
   echo ""
   echo "═══ BUILD API ═══"
+
+  GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "local")
+
   docker build -f api/Dockerfile --target production \
     --no-cache \
-    -t ${ECR_BASE}/concurso-platform-api:latest \
+    -t ${GHCR_BASE}/api:latest \
+    -t ${GHCR_BASE}/api:${GIT_SHA} \
     api/
-  docker push ${ECR_BASE}/concurso-platform-api:latest
-  echo "✓ API image pushed"
+
+  docker push ${GHCR_BASE}/api:latest
+  docker push ${GHCR_BASE}/api:${GIT_SHA}
+  echo "✓ API image pushed → GHCR (sha: ${GIT_SHA})"
 
   deploy_service "concurso-platform-api"
   deploy_service "concurso-platform-celery"
 fi
 
-# ── FRONTEND ──────────────────────────────────────────────────────────────────
-if [[ "$TARGET" == "frontend" || "$TARGET" == "all" ]]; then
-  echo ""
-  echo "═══ BUILD FRONTEND ═══"
-
-  # TypeScript check antes do build (evita pushes com erro de tipo)
-  echo "→ Checando TypeScript..."
-  cd frontend && npx tsc --noEmit && cd ..
-  echo "✓ TypeScript OK"
-
-  docker build -f frontend/Dockerfile \
-    --no-cache \
-    --build-arg NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
-    -t ${ECR_BASE}/concurso-platform-frontend:latest \
-    frontend/
-  docker push ${ECR_BASE}/concurso-platform-frontend:latest
-  echo "✓ Frontend image pushed"
-
-  deploy_service "concurso-platform-frontend"
-fi
-
 # ── Resumo ────────────────────────────────────────────────────────────────────
 echo ""
-echo "════════════════════════════════════════"
+echo "════════════════════════════════════════════════════"
 echo "✓ Deploy iniciado com sucesso!"
-echo "  Aguarda 2-3 min para o ECS estabilizar"
+echo "  Aguarda 2-3 min para o ECS estabilizar."
 echo ""
-echo "  Admin:    https://launcheredu.com.br/admin-login"
-echo "  Demo:     https://concurso-demo.launcheredu.com.br"
-echo "  Landing:  https://launcheredu.com.br"
-echo "════════════════════════════════════════"
+echo "  API + Celery → ECS rolling deploy"
+echo "  Frontend     → Vercel (automático via git push)"
+echo ""
+echo "  Admin:  https://launcheredu.com.br/admin-login"
+echo "  Demo:   https://concurso-demo.launcheredu.com.br"
+echo "════════════════════════════════════════════════════"
