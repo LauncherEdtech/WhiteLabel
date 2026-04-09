@@ -4,7 +4,7 @@
 import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 import { useTenantStore } from "@/lib/stores/tenantStore";
-import { ChevronRight, Palette, Globe, Bell, Shield, Paintbrush, Share2 } from "lucide-react";
+import { ChevronRight, Palette, Globe, Bell, Shield, Paintbrush, Share2, Trophy } from "lucide-react";
 
 const SETTINGS_ITEMS = [
   {
@@ -31,7 +31,14 @@ const SETTINGS_ITEMS = [
     color: "text-emerald-500 bg-emerald-500/10",
     badge: "Novo",
   },
-
+  {
+  href: "/producer/settings/gamification",
+  icon: Trophy,
+  label: "Gamificação & Insights",
+  description: "Tema das patentes e linguagem dos insights da IA",
+  color: "text-amber-500 bg-amber-500/10",
+  badge: "Novo",
+  },
   {
     href: "/producer/settings/domain",
     icon: Globe,
