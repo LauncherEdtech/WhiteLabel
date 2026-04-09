@@ -1,7 +1,6 @@
 # infra/main.tf
-# Concurso Platform — Infraestrutura AWS (Free Tier)
-# Arquitetura: ECS Fargate (public subnets) + RDS + ElastiCache (private subnets)
-# Sem NAT Gateway (custo zero) — ECS usa subnets públicas com assignPublicIp=ENABLED
+# Concurso Platform — Infraestrutura AWS
+# Frontend migrado para Vercel. ALB serve somente a Flask API.
 
 terraform {
   required_version = ">= 1.6"
@@ -33,6 +32,8 @@ provider "aws" {
 }
 
 data "aws_availability_zones" "available" { state = "available" }
+
+# ── VPC ───────────────────────────────────────────────────────────────────────
 
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
@@ -78,6 +79,8 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
+# ── Security Groups ───────────────────────────────────────────────────────────
+
 resource "aws_security_group" "alb" {
   name        = "${var.project_name}-alb-sg"
   description = "ALB: aceita trafego HTTP/HTTPS publico"
@@ -120,13 +123,7 @@ resource "aws_security_group" "ecs_tasks" {
     security_groups = [aws_security_group.alb.id]
   }
 
-  ingress {
-    description     = "Frontend Next.js do ALB"
-    from_port       = 3000
-    to_port         = 3000
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
-  }
+  # Porta 3000 removida — frontend ECS não existe mais (migrado para Vercel)
 
   egress {
     description = "Saida irrestrita"
@@ -165,6 +162,8 @@ resource "aws_security_group" "redis" {
   }
 }
 
+# ── ECR — somente API (frontend usa GHCR via Vercel) ─────────────────────────
+
 resource "aws_ecr_repository" "api" {
   name                 = "${var.project_name}-api"
   image_tag_mutability = "MUTABLE"
@@ -172,12 +171,7 @@ resource "aws_ecr_repository" "api" {
   lifecycle { prevent_destroy = false }
 }
 
-resource "aws_ecr_repository" "frontend" {
-  name                 = "${var.project_name}-frontend"
-  image_tag_mutability = "MUTABLE"
-  image_scanning_configuration { scan_on_push = true }
-  lifecycle { prevent_destroy = false }
-}
+# ── RDS PostgreSQL ────────────────────────────────────────────────────────────
 
 resource "aws_db_subnet_group" "main" {
   name       = "${var.project_name}-db-subnet"
@@ -201,7 +195,7 @@ resource "aws_db_instance" "postgres" {
   vpc_security_group_ids = [aws_security_group.rds.id]
 
   storage_encrypted       = false
-  backup_retention_period = 1
+  backup_retention_period = 7
   multi_az                = false
   publicly_accessible     = false
   skip_final_snapshot     = true
@@ -209,6 +203,8 @@ resource "aws_db_instance" "postgres" {
 
   tags = { Name = "${var.project_name}-postgres" }
 }
+
+# ── ElastiCache Redis ─────────────────────────────────────────────────────────
 
 resource "aws_elasticache_subnet_group" "main" {
   name       = "${var.project_name}-redis-subnet"
@@ -234,6 +230,8 @@ resource "aws_elasticache_replication_group" "redis" {
   tags = { Name = "${var.project_name}-redis" }
 }
 
+# ── IAM ───────────────────────────────────────────────────────────────────────
+
 resource "aws_iam_role" "ecs_task_execution" {
   name = "${var.project_name}-ecs-execution-role"
 
@@ -257,15 +255,16 @@ resource "aws_iam_role_policy_attachment" "ecs_ecr" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
+# ── CloudWatch Logs ───────────────────────────────────────────────────────────
+
 resource "aws_cloudwatch_log_group" "api" {
   name              = "/ecs/${var.project_name}/api"
   retention_in_days = 7
 }
 
-resource "aws_cloudwatch_log_group" "frontend" {
-  name              = "/ecs/${var.project_name}/frontend"
-  retention_in_days = 7
-}
+# Log group do frontend removido — frontend está no Vercel
+
+# ── ECS Cluster ───────────────────────────────────────────────────────────────
 
 resource "aws_ecs_cluster" "main" {
   name = "${var.project_name}-cluster"
@@ -275,6 +274,8 @@ resource "aws_ecs_cluster" "main" {
     value = "disabled"
   }
 }
+
+# ── ECS Task Definition — API Flask ──────────────────────────────────────────
 
 resource "aws_ecs_task_definition" "api" {
   family                   = "${var.project_name}-api"
@@ -326,14 +327,15 @@ resource "aws_ecs_task_definition" "api" {
   }])
 }
 
+# ── ALB ───────────────────────────────────────────────────────────────────────
+
 resource "aws_lb" "main" {
   name               = "${var.project_name}-alb"
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
   subnets            = aws_subnet.public[*].id
-
-  tags = { Name = "${var.project_name}-alb" }
+  tags               = { Name = "${var.project_name}-alb" }
 }
 
 resource "aws_lb_target_group" "api" {
@@ -356,10 +358,6 @@ resource "aws_lb_target_group" "api" {
   tags = { Name = "${var.project_name}-api-tg" }
 }
 
-# ── HTTP Listener — redireciona TUDO para HTTPS ───────────────────────────────
-# ANTES: encaminhava para o target group da API (incorreto como default)
-# AGORA: redireciona 301 para HTTPS — nenhum tráfego HTTP chega aos containers
-
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.main.arn
   port              = 80
@@ -377,9 +375,7 @@ resource "aws_lb_listener" "http" {
   tags = { Name = "${var.project_name}-http-redirect" }
 }
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ECS SERVICE — API
-# ══════════════════════════════════════════════════════════════════════════════
+# ── ECS Service — API ─────────────────────────────────────────────────────────
 
 resource "aws_ecs_service" "api" {
   name            = "${var.project_name}-api"
@@ -400,7 +396,6 @@ resource "aws_ecs_service" "api" {
     container_port   = 5000
   }
 
-  # Depende do HTTPS listener agora (não mais do HTTP)
   depends_on = [aws_lb_listener.https]
 
   lifecycle {
@@ -408,107 +403,4 @@ resource "aws_ecs_service" "api" {
   }
 }
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ECS TASK DEFINITION — Frontend Next.js
-# ══════════════════════════════════════════════════════════════════════════════
-
-resource "aws_ecs_task_definition" "frontend" {
-  family                   = "${var.project_name}-frontend"
-  requires_compatibilities = ["FARGATE"]
-  network_mode             = "awsvpc"
-  cpu                      = "256"
-  memory                   = "512"
-  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
-
-  container_definitions = jsonencode([{
-    name      = "frontend"
-    image     = var.frontend_image
-    essential = true
-
-    portMappings = [{
-      containerPort = 3000
-      protocol      = "tcp"
-    }]
-
-    environment = [
-      { name = "NODE_ENV",            value = "production" },
-      # URL pública HTTPS — usada pelo browser (client-side)
-      { name = "NEXT_PUBLIC_API_URL", value = "https://launcheredu.com.br/api/v1" },
-      # URL interna HTTP — usada pelo Next.js server-side (SSR/RSC) sem passar pelo DNS público
-      # Mais rápido e sem custo de DNS resolution dentro da VPC
-      { name = "INTERNAL_API_URL",    value = "http://${aws_lb.main.dns_name}/api/v1" },
-      { name = "PORT",                value = "3000" },
-      { name = "HOSTNAME",            value = "0.0.0.0" },
-    ]
-
-    logConfiguration = {
-      logDriver = "awslogs"
-      options = {
-        "awslogs-group"         = "/ecs/${var.project_name}/frontend"
-        "awslogs-region"        = var.aws_region
-        "awslogs-stream-prefix" = "frontend"
-      }
-    }
-
-    healthCheck = {
-      command     = ["CMD-SHELL", "wget -qO- http://localhost:3000/ || exit 1"]
-      interval    = 30
-      timeout     = 10
-      retries     = 3
-      startPeriod = 60
-    }
-  }])
-}
-
-# ── Target Group Frontend ──────────────────────────────────────────────────
-
-resource "aws_lb_target_group" "frontend" {
-  name        = "${var.project_name}-fe-tg"
-  port        = 3000
-  protocol    = "HTTP"
-  vpc_id      = aws_vpc.main.id
-  target_type = "ip"
-
-  health_check {
-    enabled             = true
-    path                = "/"
-    healthy_threshold   = 2
-    unhealthy_threshold = 3
-    timeout             = 10
-    interval            = 30
-    matcher             = "200-399"
-  }
-
-  tags = { Name = "${var.project_name}-frontend-tg" }
-}
-
-# ── ECS Service Frontend ───────────────────────────────────────────────────
-# NOTA: As regras de listener (api, frontend) estão agora em https.tf
-# referenciando aws_lb_listener.https — não mais o listener HTTP.
-
-resource "aws_ecs_service" "frontend" {
-  name            = "${var.project_name}-frontend"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.frontend.arn
-  desired_count   = 1
-  launch_type     = "FARGATE"
-
-  network_configuration {
-    subnets          = aws_subnet.public[*].id
-    security_groups  = [aws_security_group.ecs_tasks.id]
-    assign_public_ip = true
-  }
-
-  load_balancer {
-    target_group_arn = aws_lb_target_group.frontend.arn
-    container_name   = "frontend"
-    container_port   = 3000
-  }
-
-  # Depende da regra HTTPS do frontend (movida para https.tf)
-  depends_on = [aws_lb_listener_rule.https_frontend]
-
-  lifecycle {
-    ignore_changes = [task_definition, desired_count]
-  }
-}
+# ECS Task Definition e Service do frontend removidos — migrado para Vercel
