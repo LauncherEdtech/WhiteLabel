@@ -2,12 +2,9 @@
 import axios, { AxiosError, AxiosInstance } from "axios";
 import Cookies from "js-cookie";
 
-// URL relativa no browser → Next.js proxia via rewrite /api/* → Flask
-// URL absoluta no servidor (SSR) → direto para o Flask
-const isServer = typeof window === "undefined";
-const API_URL = isServer
-    ? (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api/v1")
-    : "/api/v1";
+// Usa NEXT_PUBLIC_API_URL diretamente — browser e servidor chamam a API em
+// https://api.launcheredu.com.br/api/v1 sem depender do rewrite do Next.js.
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api/v1";
 
 const DEFAULT_TENANT = "concurso-demo";
 const PLATFORM_DOMAIN = "launcheredu.com.br";
@@ -97,7 +94,7 @@ apiClient.interceptors.response.use(
             if (refreshToken) {
                 try {
                     const res = await axios.post(
-                        `/api/v1/auth/refresh`,
+                        `${API_URL}/auth/refresh`,
                         {},
                         {
                             headers: {

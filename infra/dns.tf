@@ -70,7 +70,8 @@ resource "aws_route53_record" "apex" {
   name    = "launcheredu.com.br"
   type    = "A"
   ttl     = 300
-  records = ["76.76.21.21"]
+  records = ["216.198.79.1"]
+
 }
 
 # ── *.launcheredu.com.br → Vercel ─────────────────────────────────────────────
