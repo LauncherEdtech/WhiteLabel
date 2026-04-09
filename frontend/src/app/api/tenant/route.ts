@@ -48,13 +48,18 @@ export async function GET(request: NextRequest) {
   };
 
   try {
-    // INTERNAL_API_URL pode vir com ou sem /api/v1 no final — normaliza.
-    // NEXT_PUBLIC_API_URL: remove /api/v1 para obter a base.
+    // Prioridade de URL para chamada server-side:
+    // 1. INTERNAL_API_URL (ex: https://api.launcheredu.com.br — sem /api/v1)
+    // 2. NEXT_PUBLIC_API_URL sem /api/v1 (ex: https://api.launcheredu.com.br)
+    // 3. localhost (dev)
+    //
+    // IMPORTANTE: remove /api/v1 do final se presente (evita URL duplicada).
+    // Garante que sempre use HTTPS — nunca HTTP — para evitar Mixed Content
+    // e falha de SSL ao redirecionar via ALB.
     const rawUrl =
       process.env.INTERNAL_API_URL ||
       process.env.NEXT_PUBLIC_API_URL?.replace("/api/v1", "") ||
       "http://localhost:5000";
-    // Remove /api/v1 do final se presente (evita URL duplicada)
     const apiUrl = rawUrl.replace(/\/api\/v1\/?$/, "");
 
     const res = await fetch(`${apiUrl}/api/v1/tenants/by-slug/${slug}`, {

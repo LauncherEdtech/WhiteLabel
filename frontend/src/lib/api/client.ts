@@ -2,9 +2,15 @@
 import axios, { AxiosError, AxiosInstance } from "axios";
 import Cookies from "js-cookie";
 
-// Usa NEXT_PUBLIC_API_URL diretamente — browser e servidor chamam a API em
-// https://api.launcheredu.com.br/api/v1 sem depender do rewrite do Next.js.
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api/v1";
+// URL da API:
+// - Servidor (SSR/RSC): usa NEXT_PUBLIC_API_URL diretamente (HTTPS absoluto)
+// - Cliente (browser): usa NEXT_PUBLIC_API_URL se disponível (Vercel, produção)
+//   OU usa "/api/v1" relativo (dev local com rewrite do next.config.ts)
+// Isso elimina a dependência de rewrites em produção e evita Mixed Content.
+const isServer = typeof window === "undefined";
+const API_URL =
+    process.env.NEXT_PUBLIC_API_URL ||
+    (isServer ? "http://localhost:5000/api/v1" : "/api/v1");
 
 const DEFAULT_TENANT = "concurso-demo";
 const PLATFORM_DOMAIN = "launcheredu.com.br";
@@ -94,7 +100,7 @@ apiClient.interceptors.response.use(
             if (refreshToken) {
                 try {
                     const res = await axios.post(
-                        `${API_URL}/auth/refresh`,
+                        `/api/v1/auth/refresh`,
                         {},
                         {
                             headers: {
