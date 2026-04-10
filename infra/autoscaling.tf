@@ -1,21 +1,7 @@
 # infra/autoscaling.tf
-# FinOps + Auto Scaling — API Flask apenas.
-# Frontend removido (Vercel escala automaticamente).
-#
-# ARQUITETURA DE SCALING:
-#
-#   ┌─────────────────────────────────────────────────────┐
-#   │  Scheduled Scaling (Relógio)                        │
-#   │  23:00–07:00 BRT → max 1 task (modo noturno)       │
-#   │  07:00–23:00 BRT → max 4 tasks (modo diurno)       │
-#   └──────────────────────┬──────────────────────────────┘
-#                          │ define teto
-#   ┌──────────────────────▼──────────────────────────────┐
-#   │  Reactive Scaling (dois gatilhos independentes)     │
-#   │  Gatilho 1 — CPU/Memória                           │
-#   │  Gatilho 2 — ActiveUsers Redis (CloudWatch)        │
-#   │  0–5 users → 1 task | 6–30 → 2 | 31–80 → 3 | 81+ → 4 │
-#   └─────────────────────────────────────────────────────┘
+# FinOps + Auto Scaling — API Flask.
+# Redis: Upstash (externo, não gerenciado pelo Terraform).
+# ElastiCache removido.
 
 # ── IAM — CloudWatch metrics ──────────────────────────────────────────────────
 
@@ -54,11 +40,6 @@ resource "aws_iam_role_policy" "ecs_cloudwatch_metrics" {
       {
         Effect   = "Allow"
         Action   = ["rds:DescribeDBInstances", "rds:DescribeDBClusters"]
-        Resource = "*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["elasticache:DescribeReplicationGroups", "elasticache:DescribeCacheClusters"]
         Resource = "*"
       },
       {
@@ -107,9 +88,9 @@ resource "aws_ecs_task_definition" "celery" {
     environment = [
       { name = "FLASK_ENV",             value = "production" },
       { name = "DATABASE_URL",          value = "postgresql://concurso_user:${var.db_password}@${aws_db_instance.postgres.endpoint}/concurso_platform" },
-      { name = "REDIS_URL",             value = "rediss://:${var.redis_auth_token}@${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379/0?ssl_cert_reqs=CERT_NONE" },
-      { name = "CELERY_BROKER_URL",     value = "rediss://:${var.redis_auth_token}@${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379/0?ssl_cert_reqs=CERT_NONE" },
-      { name = "CELERY_RESULT_BACKEND", value = "rediss://:${var.redis_auth_token}@${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379/0?ssl_cert_reqs=CERT_NONE" },
+      { name = "REDIS_URL",             value = var.redis_url },
+      { name = "CELERY_BROKER_URL",     value = var.redis_url },
+      { name = "CELERY_RESULT_BACKEND", value = var.redis_url },
       { name = "SECRET_KEY",            value = var.secret_key },
       { name = "JWT_SECRET_KEY",        value = var.jwt_secret_key },
       { name = "GEMINI_API_KEY",        value = var.gemini_api_key },
@@ -144,8 +125,7 @@ resource "aws_ecs_service" "celery" {
   depends_on = [aws_ecs_service.api]
 }
 
-# ── Auto Scaling Target — somente API ────────────────────────────────────────
-# Frontend removido — Vercel escala automaticamente.
+# ── Auto Scaling Target ───────────────────────────────────────────────────────
 
 resource "aws_appautoscaling_target" "api" {
   max_capacity       = 4
@@ -156,7 +136,7 @@ resource "aws_appautoscaling_target" "api" {
   depends_on         = [aws_ecs_service.api]
 }
 
-# ── Fase 1 — CPU e Memória ────────────────────────────────────────────────────
+# ── CPU e Memória ─────────────────────────────────────────────────────────────
 
 resource "aws_appautoscaling_policy" "api_cpu" {
   name               = "${var.project_name}-api-cpu"
@@ -192,7 +172,7 @@ resource "aws_appautoscaling_policy" "api_memory" {
   }
 }
 
-# ── Fase 2 — ActiveUsers (CloudWatch custom metric) ───────────────────────────
+# ── ActiveUsers (CloudWatch custom metric) ────────────────────────────────────
 
 resource "aws_cloudwatch_metric_alarm" "users_scale_out" {
   alarm_name          = "${var.project_name}-users-high"
@@ -241,11 +221,13 @@ resource "aws_appautoscaling_policy" "api_users_scale_out" {
       metric_interval_upper_bound = 25
       scaling_adjustment          = 2
     }
+
     step_adjustment {
       metric_interval_lower_bound = 25
       metric_interval_upper_bound = 75
       scaling_adjustment          = 3
     }
+
     step_adjustment {
       metric_interval_lower_bound = 75
       scaling_adjustment          = 4
@@ -280,6 +262,7 @@ resource "aws_appautoscaling_scheduled_action" "api_night" {
   resource_id        = aws_appautoscaling_target.api.resource_id
   scalable_dimension = aws_appautoscaling_target.api.scalable_dimension
   schedule           = "cron(0 2 * * ? *)"
+
   scalable_target_action {
     min_capacity = 1
     max_capacity = 1
@@ -292,6 +275,7 @@ resource "aws_appautoscaling_scheduled_action" "api_weekday" {
   resource_id        = aws_appautoscaling_target.api.resource_id
   scalable_dimension = aws_appautoscaling_target.api.scalable_dimension
   schedule           = "cron(0 10 ? * MON-FRI *)"
+
   scalable_target_action {
     min_capacity = 1
     max_capacity = 4
@@ -304,15 +288,14 @@ resource "aws_appautoscaling_scheduled_action" "api_saturday" {
   resource_id        = aws_appautoscaling_target.api.resource_id
   scalable_dimension = aws_appautoscaling_target.api.scalable_dimension
   schedule           = "cron(0 9 ? * SAT *)"
+
   scalable_target_action {
     min_capacity = 1
     max_capacity = 3
   }
 }
 
-# Frontend scheduled scaling removido — Vercel gerencia escala automaticamente
-
-# ── ECR Lifecycle — somente API ───────────────────────────────────────────────
+# ── ECR Lifecycle ─────────────────────────────────────────────────────────────
 
 resource "aws_ecr_lifecycle_policy" "api" {
   repository = aws_ecr_repository.api.name

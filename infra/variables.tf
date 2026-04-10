@@ -24,8 +24,13 @@ variable "db_password" {
   sensitive   = true
 }
 
-variable "redis_auth_token" {
-  description = "Token de autenticação Redis"
+variable "redis_url" {
+  description = "URL completa do Redis (Upstash rediss://...)"
+  sensitive   = true
+}
+
+variable "cloudflare_tunnel_token" {
+  description = "Token do Cloudflare Tunnel para o sidecar cloudflared"
   sensitive   = true
 }
 
@@ -46,17 +51,10 @@ variable "gemini_api_key" {
 }
 
 variable "api_image" {
-  description = "URI da imagem Docker da API (ECR ou GHCR)"
+  description = "URI da imagem Docker da API (ECR)"
 }
-
-# frontend_image removido — frontend está no Vercel
 
 variable "api_desired_count" {
   description = "Número de tarefas ECS da API"
   default     = 1
-}
-
-variable "db_instance_class" {
-  description = "Classe da instância RDS"
-  default     = "db.t3.micro"
 }
