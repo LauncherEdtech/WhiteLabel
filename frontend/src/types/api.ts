@@ -99,7 +99,7 @@ export interface Question {
     exam_year: number | null;
     exam_name: string | null;
     competency: string | null;
-    tip: string | null;                      // Dica/macete gerado pelo Gemini
+    tip: string | null;
     alternatives: Alternative[];
     correct_alternative_key?: string;
     correct_justification?: string | null;
@@ -140,12 +140,45 @@ export interface Insight {
 export interface DisciplinePerformance {
     discipline: string;
     total_answered: number;
+    total_attempts: number;  // alias do backend — mesmo valor que total_answered
     correct: number;
     wrong: number;
     accuracy_rate: number;
     avg_response_time_seconds: number;
     performance_label: "forte" | "regular" | "fraco";
 }
+
+// ── Missão Semanal ────────────────────────────────────────────────────────────
+
+export type WeeklyMissionItemType = "schedule" | "discipline_accuracy";
+
+export interface WeeklyMissionItem {
+    type: WeeklyMissionItemType;
+    title: string;
+    done: boolean;
+    // schedule
+    total?: number;
+    completed?: number;
+    progress_pct?: number;
+    // discipline_accuracy
+    discipline?: string;
+    current_accuracy?: number;
+    target_accuracy?: number;
+    total_attempts?: number;
+    /** true = abaixo de 40% (crítico/vermelho), false = 40-59% (melhorando/amarelo) */
+    urgent?: boolean;
+}
+
+export interface WeeklyMission {
+    has_schedule: boolean;
+    week_start: string;
+    week_end: string;
+    items: WeeklyMissionItem[];
+    total_items: number;
+    completed_items: number;
+}
+
+// ── Student Dashboard ─────────────────────────────────────────────────────────
 
 export interface StudentDashboard {
     student: { id: string; name: string };
@@ -170,6 +203,7 @@ export interface StudentDashboard {
         weekly_progress_percent: number;
     };
     todays_pending: ScheduleItem[];
+    weekly_mission: WeeklyMission;
     insights: Insight[];
     generated_at: string;
 }
@@ -240,7 +274,6 @@ export interface SimuladoAttemptSummary {
     finished_at: string | null;
 }
 
-
 // ── Cápsula de Estudos ────────────────────────────────────────────────────────
 
 export interface CapsuleDiscipline {
@@ -269,4 +302,3 @@ export interface StudyCapsule {
     capsule_style: "operativo" | "campeao" | "relatorio";
     generated_at: string;
 }
-

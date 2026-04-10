@@ -317,6 +317,8 @@ def student_dashboard():
         )
         _set_cached_insights(target_user_id, tenant.id, insights)
 
+    weekly_mission = _get_weekly_mission(target_user_id, tenant.id, discipline_stats)
+
     payload = {
         "student": {
             "id": target_user.id,
@@ -327,6 +329,7 @@ def student_dashboard():
         "lesson_progress": lesson_progress,
         "time_studied": time_stats,
         "todays_pending": todays_pending,
+        "weekly_mission": weekly_mission,
         "insights": insights,
         "generated_at": now.isoformat(),
     }
@@ -336,6 +339,101 @@ def student_dashboard():
         _cache_set(cache_key, payload, ttl_seconds=180)
 
     return jsonify(payload), 200
+
+
+def _get_weekly_mission(user_id: str, tenant_id: str, discipline_stats: list) -> dict:
+    """
+    Monta a missão semanal baseada em tarefas.
+
+    Retorna:
+        {
+            "has_schedule": bool,
+            "week_start": "YYYY-MM-DD",
+            "week_end":   "YYYY-MM-DD",
+            "items": [...],
+            "total_items": int,
+            "completed_items": int,
+        }
+    """
+    from datetime import date
+
+    today = date.today()
+    week_start = today - timedelta(days=today.weekday())  # segunda-feira
+    week_end = week_start + timedelta(days=6)  # domingo
+    week_start_str = week_start.isoformat()
+    week_end_str = week_end.isoformat()
+
+    # ── Cronograma ativo do aluno ─────────────────────────────────────────────
+    schedule = (
+        StudySchedule.query.filter_by(
+            user_id=user_id, tenant_id=tenant_id, is_deleted=False
+        )
+        .filter(StudySchedule.status == "active")
+        .first()
+    )
+
+    has_schedule = schedule is not None
+    items = []
+
+    if has_schedule:
+        week_items = ScheduleItem.query.filter(
+            ScheduleItem.schedule_id == schedule.id,
+            ScheduleItem.scheduled_date >= week_start_str,
+            ScheduleItem.scheduled_date <= week_end_str,
+            ScheduleItem.is_deleted == False,
+        ).all()
+
+        total = len(week_items)
+        completed = sum(1 for i in week_items if i.status == "done")
+
+        if total > 0:
+            items.append(
+                {
+                    "type": "schedule",
+                    "title": "Seguir o cronograma da semana",
+                    "total": total,
+                    "completed": completed,
+                    "progress_pct": round((completed / total) * 100, 1) if total else 0,
+                    "done": completed >= total,
+                }
+            )
+
+    # ── Alertas de disciplina ─────────────────────────────────────────────────
+    # Entra na missão: accuracy < 40%  e  total_attempts >= 5
+    # Sai da missão:   accuracy >= 60%
+    # Entre 40-59%:    permanece (urgent=False → cor amarela)
+    for disc in discipline_stats:
+        accuracy = disc.get("accuracy_rate", 0)
+        total_attempts = disc.get("total_attempts", 0)
+
+        if total_attempts < 5:
+            continue  # poucos dados → não gera ruído
+
+        if accuracy < 60:  # não saiu da missão
+            items.append(
+                {
+                    "type": "discipline_accuracy",
+                    "title": f"Melhorar acerto em {disc['discipline']}",
+                    "discipline": disc["discipline"],
+                    "current_accuracy": accuracy,
+                    "target_accuracy": 60.0,
+                    "total_attempts": total_attempts,
+                    "urgent": accuracy
+                    < 40,  # True=crítico (vermelho), False=melhorando (amarelo)
+                    "done": False,
+                }
+            )
+
+    completed_items = sum(1 for i in items if i.get("done", False))
+
+    return {
+        "has_schedule": has_schedule,
+        "week_start": week_start_str,
+        "week_end": week_end_str,
+        "items": items,
+        "total_items": len(items),
+        "completed_items": completed_items,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
