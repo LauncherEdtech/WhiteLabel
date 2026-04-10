@@ -74,7 +74,7 @@ def before_request():
 @schedule_bp.route("/generate", methods=["POST"])
 @jwt_required()
 @require_tenant
-@limiter.limit("10 per hour")
+@limiter.limit("30 per hour")
 def generate_schedule():
     """
     Gera ou reorganiza o cronograma inteligente.
