@@ -52,8 +52,13 @@ def _cache_get(key: str):
         from app.extensions import redis_client
 
         raw = redis_client.get(key)
-        return json.loads(raw) if raw else None
-    except Exception:
+        if raw:
+            current_app.logger.debug(f"[CACHE HIT] {key}")
+            return json.loads(raw)
+        current_app.logger.debug(f"[CACHE MISS] {key}")
+        return None
+    except Exception as e:
+        current_app.logger.warning(f"[CACHE ERROR] Redis get falhou: {e}")
         return None
 
 
@@ -63,8 +68,9 @@ def _cache_set(key: str, value, ttl_seconds: int = 180):
         from app.extensions import redis_client
 
         redis_client.setex(key, ttl_seconds, json.dumps(value, default=str))
-    except Exception:
-        pass
+        current_app.logger.debug(f"[CACHE SET] {key} TTL={ttl_seconds}s")
+    except Exception as e:
+        current_app.logger.warning(f"[CACHE ERROR] Redis set falhou: {e}")
 
 
 def _cache_delete(key: str):
@@ -95,7 +101,7 @@ def _get_cached_insights(user_id: str, tenant_id: str):
 
 def _set_cached_insights(user_id: str, tenant_id: str, insights: list):
     _cache_set(
-        _insights_cache_key(user_id, tenant_id), insights, ttl_seconds=7200
+        _insights_cache_key(user_id, tenant_id), insights, ttl_seconds=43200
     )  # 2h
 
 
@@ -336,7 +342,7 @@ def student_dashboard():
 
     # Grava no cache apenas para alunos
     if not _is_producer_or_above(claims):
-        _cache_set(cache_key, payload, ttl_seconds=180)
+        _cache_set(cache_key, payload, ttl_seconds=3600)
 
     return jsonify(payload), 200
 
@@ -884,15 +890,12 @@ def _get_capsule_phrase(
     """Gera frase motivacional via Gemini, cached Redis 24h."""
     cache_key = f"capsule_phrase:{tenant_id}:{user.id}:{year}:{month}"
 
-    try:
-        from app.extensions import redis_client
+    # Tenta cache — usa helper padronizado com logging
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached  # já é string (json.loads retorna str)
 
-        cached = redis_client.get(cache_key)
-        if cached:
-            return cached.decode("utf-8")
-    except Exception:
-        pass
-
+    # Fallback inicial caso Gemini falhe
     phrase = _fallback_capsule_phrase(
         rank_name, total_minutes, questions_answered, accuracy_rate
     )
@@ -906,19 +909,19 @@ def _get_capsule_phrase(
                 ", ".join(d["discipline"] for d in top_disciplines[:2]) or "sem dados"
             )
             prompt = f"""
-    Crie uma frase motivacional personalizada para um aluno de concursos públicos.
-    MÁXIMO 90 caracteres. Em português. Tom encorajador e direto.
-    Exemplos do tom desejado: "Seu sonho de passar está cada vez mais próximo." ou "Cada questão te aproxima da aprovação, continue!"
-    Mencione a patente "{rank_name}" e pelo menos um dado real abaixo.
+Crie uma frase motivacional personalizada para um aluno de concursos públicos.
+MÁXIMO 90 caracteres. Em português. Tom encorajador e direto.
+Exemplos do tom desejado: "Seu sonho de passar está cada vez mais próximo." ou "Cada questão te aproxima da aprovação, continue!"
+Mencione a patente "{rank_name}" e pelo menos um dado real abaixo.
 
-    Dados do aluno em {month}/{year}:
-    - Minutos estudados: {total_minutes}
-    - Questões respondidas: {questions_answered}
-    - Taxa de acerto: {accuracy_rate}%
-    - Melhores disciplinas: {top_disc_str}
-    - Patente: {rank_name}
+Dados do aluno em {month}/{year}:
+- Minutos estudados: {total_minutes}
+- Questões respondidas: {questions_answered}
+- Taxa de acerto: {accuracy_rate}%
+- Melhores disciplinas: {top_disc_str}
+- Patente: {rank_name}
 
-    Responda APENAS com a frase, sem aspas, sem explicação."""
+Responda APENAS com a frase, sem aspas, sem explicação."""
 
             client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
@@ -926,15 +929,16 @@ def _get_capsule_phrase(
                 contents=prompt,
             )
             phrase = response.text.strip()[:100]
+            current_app.logger.info(
+                f"[GEMINI] Frase gerada para {user.id} {month}/{year}"
+            )
         except Exception as e:
-            current_app.logger.warning(f"Gemini capsule phrase falhou: {e}")
+            current_app.logger.warning(
+                f"[GEMINI] Capsule phrase falhou, usando fallback: {e}"
+            )
 
-    try:
-        from app.extensions import redis_client
-
-        redis_client.setex(cache_key, 86400, phrase.encode("utf-8"))
-    except Exception:
-        pass
+    # Salva no cache — usa helper padronizado com logging
+    _cache_set(cache_key, phrase, ttl_seconds=86400)  # 24h
 
     return phrase
 
