@@ -1,6 +1,7 @@
 // frontend/src/app/layout.tsx
 
 import { TenantBrandingLoader } from "@/components/TenantBrandingLoader";
+import { Analytics } from "@vercel/analytics/next";
 import type { Metadata } from "next";
 import { DM_Sans, Sora } from "next/font/google";
 import "./globals.css";
@@ -36,6 +37,7 @@ export default function RootLayout({
           <TenantBrandingLoader />
           {children}
         </Providers>
+        <Analytics />
       </body>
     </html>
   );
