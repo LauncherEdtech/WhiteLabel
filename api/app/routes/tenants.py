@@ -243,7 +243,7 @@ def update_branding(tenant_id):
     data = request.get_json() or {}
     current_branding = dict(tenant.branding or {})
     allowed = ["primary_color","secondary_color","platform_name","support_email","logo_url","favicon_url",
-               "color_palette","custom_vars","layout_student","layout_producer","login_layout","login_bg_url","login_bg_color"]
+               "color_palette","custom_vars","layout_student","layout_producer","login_layout","login_bg_url","login_bg_color","instagram_handle"]
     for field in allowed:
         if field in data: current_branding[field] = data[field]
     tenant.branding = current_branding

@@ -836,6 +836,7 @@ def student_study_capsule():
                 "tenant_name": branding.get("platform_name", tenant.name),
                 "tenant_logo_url": branding.get("logo_url"),
                 "tenant_primary_color": branding.get("primary_color", "#6366f1"),
+                "tenant_instagram": branding.get("instagram_handle"),
                 "capsule_style": branding.get("capsule_style", "operativo"),
                 "generated_at": now.isoformat(),
             }
@@ -881,7 +882,8 @@ def _get_capsule_phrase(
             )
             prompt = f"""
     Crie uma frase motivacional personalizada para um aluno de concursos públicos.
-    MÁXIMO 120 caracteres. Em português. Tom encorajador e direto.
+    MÁXIMO 90 caracteres. Em português. Tom encorajador e direto.
+    Exemplos do tom desejado: "Seu sonho de passar está cada vez mais próximo." ou "Cada questão te aproxima da aprovação, continue!"
     Mencione a patente "{rank_name}" e pelo menos um dado real abaixo.
 
     Dados do aluno em {month}/{year}:
@@ -898,7 +900,7 @@ def _get_capsule_phrase(
                 model="gemini-2.5-flash-lite",
                 contents=prompt,
             )
-            phrase = response.text.strip()[:150]
+            phrase = response.text.strip()[:100]
         except Exception as e:
             current_app.logger.warning(f"Gemini capsule phrase falhou: {e}")
 

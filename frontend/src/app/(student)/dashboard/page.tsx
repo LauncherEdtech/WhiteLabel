@@ -185,7 +185,7 @@ function WeeklyMissionCard({
     const allDone = total_items > 0 && completed_items >= total_items;
 
     // Cada item tem ~52px de altura. 5 itens = 260px + espaçamentos
-    const SCROLL_HEIGHT = 280;
+    const SCROLL_HEIGHT = 224;
 
     return (
         <Card className={cn(
@@ -293,14 +293,14 @@ function ScheduleMissionItem({
     todaysPending: ScheduleItem[];
 }) {
     const [open, setOpen] = useState(false);
-    const pct  = item.progress_pct ?? 0;
+    const pct = item.progress_pct ?? 0;
     const done = item.done ?? false;
 
     const typeIcon: Record<string, React.ReactNode> = {
-        lesson:    <Play className="h-3 w-3 text-primary" />,
+        lesson: <Play className="h-3 w-3 text-primary" />,
         questions: <HelpCircle className="h-3 w-3 text-secondary" />,
-        review:    <RotateCcw className="h-3 w-3 text-warning" />,
-        simulado:  <FileText className="h-3 w-3 text-destructive" />,
+        review: <RotateCcw className="h-3 w-3 text-warning" />,
+        simulado: <FileText className="h-3 w-3 text-destructive" />,
     };
     const typeLabel: Record<string, string> = {
         lesson: "Aula", questions: "Questões", review: "Revisão", simulado: "Simulado",
@@ -399,9 +399,9 @@ function ScheduleMissionItem({
 
 function DisciplineMissionItem({ item }: { item: WeeklyMissionItem }) {
     const current = item.current_accuracy ?? 0;
-    const target  = item.target_accuracy  ?? 60;
-    const urgent  = item.urgent ?? false;
-    const pct     = Math.min(Math.round((current / target) * 100), 100);
+    const target = item.target_accuracy ?? 60;
+    const urgent = item.urgent ?? false;
+    const pct = Math.min(Math.round((current / target) * 100), 100);
 
     return (
         <Link href="/questions" className="block group">
@@ -478,10 +478,10 @@ function MetricCard({ icon, label, value, sub, color }: {
     color: "primary" | "secondary" | "success" | "warning";
 }) {
     const colors = {
-        primary:   "bg-primary/10 text-primary",
+        primary: "bg-primary/10 text-primary",
         secondary: "bg-secondary/10 text-secondary",
-        success:   "bg-success/10 text-success",
-        warning:   "bg-warning/10 text-warning",
+        success: "bg-success/10 text-success",
+        warning: "bg-warning/10 text-warning",
     };
     return (
         <Card className="hover:shadow-md transition-shadow">
@@ -551,11 +551,11 @@ function DisciplineBar({ discipline }: { discipline: DisciplinePerformance }) {
 function InsightCard({ insight }: { insight: Insight }) {
     const borderColor: Record<string, string> = {
         motivation: "border-l-primary",
-        weakness:   "border-l-destructive",
-        next_step:  "border-l-warning",
-        alert:      "border-l-destructive",
-        warning:    "border-l-warning",
-        positive:   "border-l-success",
+        weakness: "border-l-destructive",
+        next_step: "border-l-warning",
+        alert: "border-l-destructive",
+        warning: "border-l-warning",
+        positive: "border-l-success",
         suggestion: "border-l-secondary",
     };
     return (
