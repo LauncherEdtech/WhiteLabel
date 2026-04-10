@@ -58,3 +58,4 @@ curl -s localhost:5000/users
 - Validamos endpoints com `curl`
 - Criamos ambiente local rodando com Docker Compose
 
+# Deploy automático testado em Fri Apr 10 02:38:37 UTC 2026
