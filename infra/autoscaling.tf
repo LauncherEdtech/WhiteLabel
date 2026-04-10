@@ -14,31 +14,26 @@ resource "aws_sqs_queue" "celery" {
 }
 
 # ── IAM — SQS permissions para ECS tasks ─────────────────────────────────────
-
 resource "aws_iam_role_policy" "ecs_sqs" {
   name = "${var.project_name}-sqs"
   role = aws_iam_role.ecs_task_execution.id
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "sqs:SendMessage",
-          "sqs:ReceiveMessage",
-          "sqs:DeleteMessage",
-          "sqs:GetQueueAttributes",
-          "sqs:GetQueueUrl",
-        ]
-        Resource = aws_sqs_queue.celery.arn
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["sqs:ListQueues", "sqs:CreateQueue"]
-        Resource = "*"
-      }
-    ]
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "sqs:SendMessage",
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:GetQueueAttributes",
+        "sqs:GetQueueUrl",
+        "sqs:ListQueues",
+        "sqs:CreateQueue",
+        "sqs:ChangeMessageVisibility",
+      ]
+      Resource = "*"
+    }]
   })
 }
 

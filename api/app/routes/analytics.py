@@ -375,7 +375,12 @@ def _get_weekly_mission(user_id: str, tenant_id: str, discipline_stats: list) ->
 
         total = len(week_items)
         completed = sum(1 for i in week_items if i.status == "done")
-        pending = [i for i in week_items if i.status == "pending"]
+        today_str = today.isoformat()
+        pending = [
+            i
+            for i in week_items
+            if i.status == "pending" and i.scheduled_date >= today_str
+        ]
 
         if total > 0:
             # Serializa até 10 itens pendentes da semana para exibição no card
@@ -853,6 +858,10 @@ def student_study_capsule():
                 "tenant_logo_url": branding.get("logo_url"),
                 "tenant_primary_color": branding.get("primary_color", "#6366f1"),
                 "tenant_instagram": branding.get("instagram_handle"),
+                "user_since": {
+                    "month": user.created_at.month,
+                    "year": user.created_at.year,
+                },
                 "capsule_style": branding.get("capsule_style", "operativo"),
                 "generated_at": now.isoformat(),
             }
