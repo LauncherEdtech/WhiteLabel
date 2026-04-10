@@ -91,7 +91,7 @@ resource "aws_route_table_association" "public" {
 
 resource "aws_security_group" "ecs_tasks" {
   name        = "${var.project_name}-ecs-sg"
-  description = "ECS tasks: saida irrestrita para Cloudflare Tunnel, ECR, RDS, Upstash"
+  description = "ECS tasks: aceita do ALB, sai para internet (ECR, RDS, Redis)"
   vpc_id      = aws_vpc.main.id
 
   # Sem ingress — cloudflared usa conexão de saída para receber tráfego
