@@ -72,11 +72,11 @@ def _seed_test_data():
     _db.session.add(subject)
     _db.session.flush()
 
-    module = Module(subject_id=subject.id, name="Teoria Geral", order=1)
+    module = Module(subject_id=subject.id, tenant_id=tenant.id, name="Teoria Geral", order=1)
     _db.session.add(module)
     _db.session.flush()
 
-    lesson = Lesson(
+    lesson = Lesson(tenant_id=tenant.id, 
         module_id=module.id, title="Introdução ao Direito Penal",
         duration_minutes=45, order=1, is_published=True,
     )
