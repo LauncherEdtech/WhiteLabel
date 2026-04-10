@@ -57,6 +57,7 @@ jobs:
           SECRET_KEY: test-secret-for-ci
           JWT_SECRET_KEY: test-jwt-for-ci
           DATABASE_URL: postgresql://test_user:test_pass@localhost:5432/test_db
+          PYTHONPATH: ${{ github.workspace }}/api
         run: cd api && pytest tests/ -x -q --tb=short
 
       - name: Setup Node.js 20
