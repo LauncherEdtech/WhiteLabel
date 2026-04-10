@@ -199,7 +199,7 @@ class ScheduleEngine:
         if not last_attempt:
             risk += 0.4
         else:
-            days_inactive = (datetime.now(timezone.utc) - last_attempt.created_at).days
+            days_inactive = (datetime.utcnow() - last_attempt.created_at).days
             risk += (
                 0.4
                 if days_inactive >= 14
