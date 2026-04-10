@@ -404,7 +404,7 @@ def _get_weekly_mission(user_id: str, tenant_id: str, discipline_stats: list) ->
     # Entre 40-59%:    permanece (urgent=False → cor amarela)
     for disc in discipline_stats:
         accuracy = disc.get("accuracy_rate", 0)
-        total_attempts = disc.get("total_attempts", 0)
+        total_attempts = disc.get("total_answered") or disc.get("total_attempts", 0)
 
         if total_attempts < 5:
             continue  # poucos dados → não gera ruído
