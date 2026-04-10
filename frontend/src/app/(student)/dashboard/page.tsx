@@ -6,6 +6,8 @@ import { useStudentDashboard } from "@/lib/hooks/useAnalytics";
 import { useAuthStore } from "@/lib/stores/authStore";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { useQueryClient } from "@tanstack/react-query";
+import { Brain } from "lucide-react";
 import {
     Target, BookOpen, Clock, TrendingUp,
     CheckCircle2, AlertCircle, Lightbulb,
@@ -15,7 +17,6 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/utils/cn";
-import { NextActionWidget } from "@/components/student/NextActionWidget";
 import type {
     Insight, ScheduleItem, DisciplinePerformance,
     WeeklyMission, WeeklyMissionItem, WeeklyMissionPendingItem,
@@ -25,6 +26,12 @@ export default function DashboardPage() {
     const { user } = useAuthStore();
     const { data, isLoading, error } = useStudentDashboard();
 
+    const queryClient = useQueryClient();
+
+    const showCoach = () => {
+        localStorage.removeItem("coach_widget_dismiss");
+        queryClient.invalidateQueries({ queryKey: ["next-action"] });
+    };
     if (isLoading) return <DashboardSkeleton />;
     if (error || !data) return <DashboardError />;
 
@@ -41,13 +48,23 @@ export default function DashboardPage() {
     return (
         <div className="space-y-6 animate-fade-in">
             {/* Header */}
-            <div>
-                <h1 className="font-display text-2xl font-bold text-foreground">
-                    Dashboard
-                </h1>
-                <p className="text-sm text-muted-foreground mt-1">
-                    Acompanhe seu progresso de hoje
-                </p>
+            <div className="flex items-start justify-between">
+                <div>
+                    <h1 className="font-display text-2xl font-bold text-foreground">
+                        Dashboard
+                    </h1>
+                    <p className="text-sm text-muted-foreground mt-1">
+                        Acompanhe seu progresso de hoje
+                    </p>
+                </div>
+                <button
+                    onClick={showCoach}
+                    title="Ver sugestão do assistente"
+                    className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground border border-border hover:border-primary/40 px-2.5 py-1.5 rounded-lg transition-colors"
+                >
+                    <Brain className="h-3.5 w-3.5" />
+                    Assistente
+                </button>
             </div>
 
             {/* Cards de métricas */}
