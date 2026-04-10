@@ -1,7 +1,4 @@
 # api/app/__init__.py
-# Application Factory: cria e configura o app Flask.
-# SEGURANÇA: Padrão factory evita estado global e facilita testes isolados.
-
 import os
 import logging
 
@@ -13,38 +10,18 @@ from .extensions import db, migrate, jwt, limiter, cors, mail, celery_app
 
 
 def create_app(config_name: str = None) -> Flask:
-    """
-    Cria e retorna a instância configurada do Flask.
-
-    Args:
-        config_name: 'development' | 'production' | 'testing'
-                     Se None, lê FLASK_ENV do ambiente.
-    """
     app = Flask(__name__)
 
-    # ── 1. Configuração ───────────────────────────────────────────────────────
     env = config_name or os.environ.get("FLASK_ENV", "development")
     app.config.from_object(config_by_name[env])
 
-    # ProxyFix: confia no X-Forwarded-Proto do ALB para gerar URLs HTTPS.
-    # Sem isso, redirects de strict_slashes (ex: /tenants → /tenants/)
-    # geram http:// no Location header → Mixed Content no browser.
     if env == "production":
         app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1, x_for=1)
 
-    # ── 2. Logging estruturado ────────────────────────────────────────────────
     _configure_logging(app)
-
-    # ── 3. Extensões ──────────────────────────────────────────────────────────
     _init_extensions(app)
-
-    # ── 4. Registro de Blueprints (rotas) ─────────────────────────────────────
     _register_blueprints(app)
-
-    # ── 5. Handlers de erro globais ───────────────────────────────────────────
     _register_error_handlers(app)
-
-    # ── 6. Configuração Celery com contexto Flask ─────────────────────────────
     _configure_celery(app)
 
     app.logger.info(f"App iniciado em modo: {env}")
@@ -52,10 +29,6 @@ def create_app(config_name: str = None) -> Flask:
 
 
 def _configure_logging(app: Flask) -> None:
-    """
-    Configura logging estruturado.
-    SEGURANÇA: Em produção, logs devem ir para CloudWatch (sem dados sensíveis).
-    """
     log_level = logging.DEBUG if app.config.get("DEBUG") else logging.INFO
     logging.basicConfig(
         level=log_level,
@@ -71,11 +44,6 @@ def _init_extensions(app: Flask) -> None:
     mail.init_app(app)
     limiter.init_app(app)
 
-    # ── CORS ──────────────────────────────────────────────────────────────────
-    # JWT vai no header Authorization (não em cookie), então não precisamos
-    # de supports_credentials=True nem lista explícita de origens.
-    # origins="*" funciona corretamente com Authorization header e é compatível
-    # com qualquer domínio de tenant (subdomínios, Vercel, domínios customizados).
     cors.init_app(
         app,
         resources={
@@ -120,10 +88,6 @@ def _init_extensions(app: Flask) -> None:
 
 
 def _register_blueprints(app: Flask) -> None:
-    """
-    Registra todos os blueprints da API.
-    Prefixo /api/v1 permite versionamento futuro sem breaking changes.
-    """
     from .routes.health import health_bp
     from .routes.auth import auth_bp
     from .routes.tenants import tenants_bp
@@ -160,11 +124,6 @@ def _register_blueprints(app: Flask) -> None:
 
 
 def _register_error_handlers(app: Flask) -> None:
-    """
-    Handlers globais de erro.
-    SEGURANÇA: Respostas genéricas evitam vazamento de stack traces em produção.
-    """
-
     @app.errorhandler(400)
     def bad_request(e):
         return jsonify({"error": "bad_request", "message": str(e)}), 400
@@ -208,10 +167,6 @@ def _register_error_handlers(app: Flask) -> None:
 
 
 def _configure_celery(app: Flask) -> None:
-    """
-    Configura Celery para rodar com contexto Flask.
-    Necessário para tasks acessarem db, config, etc.
-    """
     celery_app.conf.update(
         broker_url=app.config["CELERY_BROKER_URL"],
         result_backend=app.config["CELERY_RESULT_BACKEND"],
@@ -221,16 +176,32 @@ def _configure_celery(app: Flask) -> None:
         timezone="America/Sao_Paulo",
         enable_utc=True,
         include=["app.tasks"],
+        # ── OTIMIZAÇÃO UPSTASH: reduz BRPOP agressivo ────────────────────────
+        # Sem isso, o worker faz polling contínuo gerando milhões de ops/dia.
+        broker_transport_options={
+            # Tempo máximo bloqueado no BRPOP antes de tentar novamente (s)
+            "visibility_timeout": 3600,
+            # Timeout do socket Redis — evita conexões presas
+            "socket_timeout": 30,
+            # Intervalo entre tentativas de polling quando fila está vazia
+            "interval": 5,
+        },
+        # Worker verifica tarefas a cada 5s em vez de continuamente
+        broker_connection_retry_on_startup=True,
+        # Limita prefetch para não sobrecarregar Redis
+        worker_prefetch_multiplier=1,
+        # Descarta resultados de tasks mais rápido (economiza SET/GET)
+        result_expires=300,  # 5 minutos
     )
 
     celery_app.conf.beat_schedule = {
         "nightly-schedule-check": {
             "task": "app.tasks.schedule_tasks.nightly_schedule_check",
-            "schedule": 3 * 3600,
+            "schedule": 3 * 3600,  # a cada 3h
         },
         "publish-cloudwatch-metrics": {
             "task": "app.tasks.cloudwatch_metrics.publish_active_users_metric",
-            "schedule": 60,
+            "schedule": 300,  # a cada 5min (era 60s) — economiza 80% das ops
         },
     }
 
