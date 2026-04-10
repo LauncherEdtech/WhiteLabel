@@ -1,7 +1,39 @@
 # infra/autoscaling.tf
 # FinOps + Auto Scaling — API Flask.
-# Redis: Upstash (externo, não gerenciado pelo Terraform).
-# ElastiCache removido.
+# Redis: Upstash (externo) — cache, rate limiting, activity tracker.
+# Celery broker: AWS SQS (long polling 20s) — elimina BRPOP do Upstash.
+
+# ── SQS — Celery Broker ───────────────────────────────────────────────────────
+
+resource "aws_sqs_queue" "celery" {
+  name                       = "${var.project_name}-celery"
+  visibility_timeout_seconds = 3600
+  message_retention_seconds  = 86400
+  receive_wait_time_seconds  = 20
+  tags = { Project = var.project_name }
+}
+
+# ── IAM — SQS permissions para ECS tasks ─────────────────────────────────────
+
+resource "aws_iam_role_policy" "ecs_sqs" {
+  name = "${var.project_name}-sqs"
+  role = aws_iam_role.ecs_task_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "sqs:SendMessage",
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:GetQueueAttributes",
+        "sqs:GetQueueUrl",
+      ]
+      Resource = aws_sqs_queue.celery.arn
+    }]
+  })
+}
 
 # ── IAM — CloudWatch metrics ──────────────────────────────────────────────────
 
@@ -82,15 +114,16 @@ resource "aws_ecs_task_definition" "celery" {
       "--beat",
       "--schedule=/tmp/celerybeat-schedule",
       "--loglevel=info",
-      "--concurrency=2"
+      "--concurrency=1"
     ]
 
     environment = [
       { name = "FLASK_ENV",             value = "production" },
       { name = "DATABASE_URL",          value = "postgresql://concurso_user:${var.db_password}@${aws_db_instance.postgres.endpoint}/concurso_platform" },
       { name = "REDIS_URL",             value = var.redis_url },
-      { name = "CELERY_BROKER_URL",     value = "${var.redis_url}?ssl_cert_reqs=CERT_NONE" },
+      { name = "CELERY_BROKER_URL",     value = "sqs://" },
       { name = "CELERY_RESULT_BACKEND", value = "${var.redis_url}?ssl_cert_reqs=CERT_NONE" },
+      { name = "CELERY_DEFAULT_QUEUE",  value = aws_sqs_queue.celery.name },
       { name = "SECRET_KEY",            value = var.secret_key },
       { name = "JWT_SECRET_KEY",        value = var.jwt_secret_key },
       { name = "GEMINI_API_KEY",        value = var.gemini_api_key },
@@ -352,4 +385,11 @@ resource "aws_cloudwatch_metric_alarm" "api_cpu_idle" {
     ClusterName = aws_ecs_cluster.main.name
     ServiceName = aws_ecs_service.api.name
   }
+}
+
+# ── Outputs ───────────────────────────────────────────────────────────────────
+
+output "sqs_celery_queue_url" {
+  description = "URL da fila SQS do Celery"
+  value       = aws_sqs_queue.celery.url
 }

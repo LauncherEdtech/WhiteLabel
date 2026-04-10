@@ -22,6 +22,7 @@ marshmallow==3.23.1           # Validação e serialização de entrada
 celery==5.4.0
 redis==5.2.1
 flower==2.0.1                 # Monitor Celery
+kombu[sqs]
 
 # ── IA ──────────────────────────────────────────────────────────────────────
 google-genai>=1.0.0   # Gemini API (novo SDK - tasks)

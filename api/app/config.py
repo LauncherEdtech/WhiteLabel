@@ -1,6 +1,11 @@
 # api/app/config.py
 # Configurações centralizadas da aplicação.
 # SEGURANÇA: Todos os valores sensíveis vêm de variáveis de ambiente, nunca hardcoded.
+#
+# BROKER CELERY:
+#   Produção (ECS): CELERY_BROKER_URL=sqs:// → usa AWS SQS via IAM role
+#   Dev (docker-compose): CELERY_BROKER_URL=redis://... → usa Redis local
+#   A env var tem prioridade. Se não definida, constrói a partir de REDIS_URL.
 
 import os
 from datetime import timedelta
@@ -36,13 +41,29 @@ class Config:
     JWT_HEADER_NAME = "Authorization"
     JWT_HEADER_TYPE = "Bearer"
 
-    # ── Redis / Celery ───────────────────────────────────────────────────────
+    # ── Redis ────────────────────────────────────────────────────────────────
+    # Usado para: rate limiting, cache dashboard/insights, activity tracker,
+    # celery result backend. NÃO mais usado como Celery broker em produção.
     REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-    _ssl_suffix = (
+    _redis_ssl_suffix = (
         "?ssl_cert_reqs=CERT_NONE" if REDIS_URL.startswith("rediss://") else ""
     )
-    CELERY_BROKER_URL = REDIS_URL + _ssl_suffix
-    CELERY_RESULT_BACKEND = REDIS_URL + _ssl_suffix
+
+    # ── Celery Broker ────────────────────────────────────────────────────────
+    # Produção: CELERY_BROKER_URL=sqs:// (definido na ECS task definition)
+    # Dev local: CELERY_BROKER_URL=redis://... (definido no docker-compose)
+    # Fallback: constrói a partir de REDIS_URL (compatibilidade)
+    CELERY_BROKER_URL = os.environ.get(
+        "CELERY_BROKER_URL",
+        REDIS_URL + _redis_ssl_suffix,
+    )
+
+    # Result backend sempre no Redis (SQS não suporta result backend)
+    CELERY_RESULT_BACKEND = os.environ.get(
+        "CELERY_RESULT_BACKEND",
+        REDIS_URL + _redis_ssl_suffix,
+    )
+
     CELERY_TASK_SERIALIZER = "json"
     CELERY_RESULT_SERIALIZER = "json"
     CELERY_ACCEPT_CONTENT = ["json"]
@@ -96,7 +117,6 @@ class TestingConfig(Config):
     TESTING = True
     DEBUG = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
-    # SQLite não suporta pool_size/max_overflow — override obrigatório
     SQLALCHEMY_ENGINE_OPTIONS = {
         "pool_pre_ping": False,
     }
