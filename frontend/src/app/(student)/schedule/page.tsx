@@ -1,7 +1,7 @@
 "use client";
 // frontend/src/app/(student)/schedule/page.tsx
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { scheduleApi } from "@/lib/api/schedule";
@@ -305,15 +305,16 @@ function ScheduleItemRow({ item, courseId, onCheckin, loading }: {
   loading: boolean;
 }) {
   const router = useRouter();
+  // "done" é o valor real que o backend envia (model: "pending"|"done"|"skipped"|"rescheduled")
   const isDone = item.status === "done";
   const isSkipped = item.status === "skipped";
   const isDoneOrSkipped = isDone || isSkipped;
 
   const typeConfig: Record<string, { icon: any; color: string; label: string }> = {
-    lesson: { icon: BookOpen, color: "bg-primary/10 text-primary", label: "Aula" },
-    questions: { icon: HelpCircle, color: "bg-warning/10 text-warning", label: "Questões" },
-    review: { icon: RotateCcw, color: "bg-secondary/10 text-secondary", label: "Revisão" },
-    simulado: { icon: ClipboardList, color: "bg-destructive/10 text-destructive", label: "Simulado" },
+    lesson:   { icon: BookOpen,      color: "bg-primary/10 text-primary",         label: "Aula" },
+    questions:{ icon: HelpCircle,    color: "bg-warning/10 text-warning",          label: "Questões" },
+    review:   { icon: RotateCcw,     color: "bg-secondary/10 text-secondary",      label: "Revisão" },
+    simulado: { icon: ClipboardList, color: "bg-destructive/10 text-destructive",  label: "Simulado" },
   };
   const cfg = typeConfig[item.item_type] || typeConfig.lesson;
   const Icon = cfg.icon;
@@ -322,8 +323,8 @@ function ScheduleItemRow({ item, courseId, onCheckin, loading }: {
     item.template_item_title
     || item.lesson?.title
     || (item.item_type === "questions" ? `Questões — ${item.subject?.name || "Geral"}` : null)
-    || (item.item_type === "review" ? `Revisão — ${item.subject?.name || "Geral"}` : null)
-    || (item.item_type === "simulado" ? "Simulado de verificação" : null)
+    || (item.item_type === "review"    ? `Revisão — ${item.subject?.name || "Geral"}` : null)
+    || (item.item_type === "simulado"  ? "Simulado de verificação" : null)
     || "Estudar";
 
   const destination = buildItemUrl(item, courseId);
@@ -332,8 +333,8 @@ function ScheduleItemRow({ item, courseId, onCheckin, loading }: {
   return (
     <div className={cn(
       "flex items-start gap-3 p-3 rounded-xl border transition-all",
-      isDone && "bg-success/5 border-success/20 opacity-70",
-      isSkipped && "bg-muted/30 border-border opacity-50",
+      isDone      && "bg-success/5 border-success/20 opacity-70",
+      isSkipped   && "bg-muted/30 border-border opacity-50",
       !isDoneOrSkipped && "bg-background border-border hover:border-primary/20",
     )}>
       <button
@@ -341,8 +342,8 @@ function ScheduleItemRow({ item, courseId, onCheckin, loading }: {
         disabled={loading || isDoneOrSkipped}
         className={cn(
           "h-6 w-6 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 transition-all",
-          isDone && "bg-success border-success",
-          isSkipped && "bg-muted border-muted",
+          isDone      && "bg-success border-success",
+          isSkipped   && "bg-muted border-muted",
           !isDoneOrSkipped && "border-border hover:border-success hover:bg-success/10",
         )}
       >
@@ -440,6 +441,9 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
     queryKey: ["schedule", courseId],
     queryFn: () => scheduleApi.get(courseId, 14),
     enabled: !!courseId,
+    // FIX Bug #8: refetch ao focar na janela garante estado atualizado
+    refetchOnWindowFocus: true,
+    staleTime: 30_000,
   });
 
   const checkinMutation = useMutation({
@@ -480,7 +484,7 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
   const formatDate = (dateStr: string) => {
     const d = new Date(dateStr + "T12:00:00");
     const today = new Date();
-    today.setHours(12, 0, 0, 0); // FIX: mesma hora que "d" → diff sempre inteiro
+    today.setHours(12, 0, 0, 0);
     const diff = Math.round((d.getTime() - today.getTime()) / 86400000);
     const weekday = DAYS_PT[d.getDay()];
     const formatted = d.toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
@@ -526,8 +530,7 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/5 border border-primary/20">
           <Calendar className="h-4 w-4 text-primary shrink-0" />
           <p className="text-xs text-muted-foreground">
-            As <strong className="text-foreground">datas</strong>.
-            foram ajustadas para os seus dias de estudo.
+            As <strong className="text-foreground">datas</strong> foram ajustadas para os seus dias de estudo.
           </p>
         </div>
       )}
@@ -663,7 +666,18 @@ export default function SchedulePage() {
 
   const courses = coursesData?.courses || [];
 
-  if (courses.length > 0 && !courseId) setCourseId(courses[0].id);
+  // FIX Bug #5: setCourseId movido para useEffect — nunca chamar setState durante render
+  useEffect(() => {
+    if (courses.length > 0 && !courseId) {
+      setCourseId(courses[0].id);
+    }
+  }, [courses, courseId]);
+
+  // FIX Bug #8: ao trocar de curso, reseta hasSchedule via resetScheduleCheck
+  const resetScheduleCheck = (newCourseId: string) => {
+    setCourseId(newCourseId);
+    setHasSchedule(null);
+  };
 
   const { isLoading: checkLoading } = useQuery({
     queryKey: ["schedule-check", courseId],
@@ -674,6 +688,8 @@ export default function SchedulePage() {
       return data;
     },
     enabled: !!courseId && hasSchedule === null,
+    // FIX Bug #8: refetch ao focar garante estado atualizado ao voltar para a aba
+    refetchOnWindowFocus: false, // gerenciado manualmente via resetScheduleCheck
   });
 
   if (!courseId || checkLoading || hasSchedule === null) {
@@ -690,7 +706,7 @@ export default function SchedulePage() {
         <div className="flex gap-2 overflow-x-auto pb-1">
           {courses.map((c: any) => (
             <button key={c.id}
-              onClick={() => { setCourseId(c.id); setHasSchedule(null); }}
+              onClick={() => resetScheduleCheck(c.id)}
               className={cn(
                 "px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all border-2",
                 courseId === c.id

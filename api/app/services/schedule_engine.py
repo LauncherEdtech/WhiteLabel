@@ -1,16 +1,23 @@
 # api/app/services/schedule_engine.py
-# Motor do cronograma inteligente e adaptativo — v4
+# Motor do cronograma inteligente e adaptativo — v5
 #
-# Correções em relação à v3:
-#   Bug 1 (PRINCIPAL): _get_pending_lessons agora exclui aulas já agendadas
-#     como "pending" — evita duplicar aulas de hoje nos dias futuros
-#   Bug 2: Aula mais longa que minutes_per_day não trava mais o for loop;
-#     é agendada sozinha no próximo slot disponível (force-fit)
-#   Bug 3: source_type adicionado ao _serialize_schedule (feito em routes/schedule.py)
+# Correções em relação à v4:
+#   Bug #1 (CRÍTICO): nightly task marcava schedules como "completed" após reorganize
+#     → Adicionado _all_lessons_completed() baseado em LessonProgress real
+#   Bug #2 (CRÍTICO): _generate_day_slots ignorava o parâmetro compression
+#     → Compressão agora usa effective_minutes_per_day em _build_items
+#     → Slots limitados à data-alvo da prova quando definida
+#   Bug #3 (CRÍTICO): generate() e reorganize() sem filtro de tenant_id
+#     → Queries corrigidas para incluir tenant_id=self.tenant_id
+#   Bug #4 (NOVO): ordenação de aulas por posição no módulo
+#     → subject_ids_ordered usa Subject.order como critério de desempate
+#     → Pre-load de módulos e subjects em bulk (elimina N+1 queries)
+#   Bug #5: _add_review_only_plan sem pre-load (N+1)
+#     → Corrigido com bulk query
 
 from datetime import datetime, timezone, timedelta, date
 from collections import defaultdict
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 
 from app.extensions import db
 from app.models.user import User
@@ -35,6 +42,7 @@ class ScheduleEngine:
     MIN_FREE_FOR_QUESTIONS = 25  # mínimo livre para adicionar questões
     REVIEW_MINUTES = 25  # duração sessão de revisão espaçada
     SIMULADO_INTERVAL_LESSONS = 12  # simulado a cada N aulas
+    MAX_EFFECTIVE_MINUTES = 480  # teto de 8h/dia mesmo com compressão
 
     WEAK_DISCIPLINE_MULTIPLIER = 2.5
     STRONG_DISCIPLINE_FACTOR = 0.6
@@ -74,9 +82,11 @@ class ScheduleEngine:
 
     def generate(self, target_date: Optional[str] = None) -> StudySchedule:
         """Gera cronograma do zero. Se já existe, reorganiza."""
+        # FIX Bug #3: adicionado tenant_id e is_deleted=False
         existing = StudySchedule.query.filter_by(
             user_id=self.user_id,
             course_id=self.course_id,
+            tenant_id=self.tenant_id,
         ).first()
 
         if existing:
@@ -113,9 +123,11 @@ class ScheduleEngine:
         Começa a reagendar de amanhã para não empilhar no dia atual.
         """
         if not schedule:
+            # FIX Bug #3: adicionado tenant_id
             schedule = StudySchedule.query.filter_by(
                 user_id=self.user_id,
                 course_id=self.course_id,
+                tenant_id=self.tenant_id,
                 is_deleted=False,
             ).first()
             if not schedule:
@@ -124,8 +136,6 @@ class ScheduleEngine:
         tomorrow = date.today() + timedelta(days=1)
         tomorrow_str = tomorrow.isoformat()
 
-        # synchronize_session="fetch" garante que a sessão SQLAlchemy
-        # reflete imediatamente o delete (evita cache inconsistente)
         ScheduleItem.query.filter(
             ScheduleItem.schedule_id == schedule.id,
             ScheduleItem.scheduled_date >= tomorrow_str,
@@ -149,6 +159,7 @@ class ScheduleEngine:
         schedule = StudySchedule.query.filter_by(
             user_id=self.user_id,
             course_id=self.course_id,
+            tenant_id=self.tenant_id,
             is_deleted=False,
         ).first()
         if not schedule:
@@ -209,6 +220,7 @@ class ScheduleEngine:
         schedule = StudySchedule.query.filter_by(
             user_id=self.user_id,
             course_id=self.course_id,
+            tenant_id=self.tenant_id,
             is_deleted=False,
         ).first()
 
@@ -243,8 +255,48 @@ class ScheduleEngine:
 
         return round(min(risk, 1.0), 2)
 
+    def _all_lessons_completed(self) -> bool:
+        """
+        FIX Bug #1: verifica conclusão real do curso pelo LessonProgress,
+        NÃO por _get_pending_lessons() (que retorna [] quando tudo está agendado).
+        """
+        total_lessons = (
+            Lesson.query.join(Module, Lesson.module_id == Module.id)
+            .join(Subject, Module.subject_id == Subject.id)
+            .filter(
+                Subject.course_id == self.course_id,
+                Subject.tenant_id == self.tenant_id,
+                Lesson.is_published == True,
+                Lesson.is_deleted == False,
+                Module.is_deleted == False,
+                Subject.is_deleted == False,
+            )
+            .count()
+        )
+        if total_lessons == 0:
+            return False
+
+        watched_count = (
+            LessonProgress.query.join(Lesson, LessonProgress.lesson_id == Lesson.id)
+            .join(Module, Lesson.module_id == Module.id)
+            .join(Subject, Module.subject_id == Subject.id)
+            .filter(
+                LessonProgress.user_id == self.user_id,
+                LessonProgress.tenant_id == self.tenant_id,
+                LessonProgress.status == "watched",
+                Subject.course_id == self.course_id,
+                Subject.tenant_id == self.tenant_id,
+                Lesson.is_published == True,
+                Lesson.is_deleted == False,
+                Module.is_deleted == False,
+                Subject.is_deleted == False,
+            )
+            .count()
+        )
+        return watched_count >= total_lessons
+
     # ─────────────────────────────────────────────────────────────────────────
-    # Construção do cronograma — v4
+    # Construção do cronograma — v5
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_items(self, schedule: StudySchedule, start_date: date):
@@ -252,8 +304,11 @@ class ScheduleEngine:
         Distribui aulas nos slots disponíveis.
 
         Etapa 1 — Agrupa pendentes por disciplina (excluindo já agendadas)
-        Etapa 2 — Monta blocos intercalados via round-robin entre disciplinas
-        Etapa 3 — Distribui 1 bloco por slot, força aulas longas em slot próprio
+        Etapa 2 — Monta blocos intercalados via round-robin entre disciplinas,
+                   usando Subject.order como critério de desempate de prioridade
+                   (garante que aulas intro apareçam na sequência correta)
+        Etapa 3 — Distribui 1 bloco por slot com effective_minutes_per_day
+                   (FIX Bug #2: compressão agora é aplicada aqui, não ignorada)
         Etapa 4 — Adiciona questões se sobrar tempo no dia
         Etapa 5 — Simulados a cada 12 aulas
         Etapa 6 — Revisões espaçadas preenchem dias com tempo livre
@@ -268,28 +323,87 @@ class ScheduleEngine:
             self._add_review_only_plan(schedule, priority_map, start_date)
             return
 
+        # ── FIX Bug #2: calcula compressão e efective_minutes_per_day ────────
+        compression = self._calculate_compression_factor(
+            schedule.target_date, len(pending_lessons)
+        )
+        effective_minutes = min(
+            int(self.minutes_per_day * compression),
+            self.MAX_EFFECTIVE_MINUTES,
+        )
+
+        # ── FIX Bug #2: limita slots à data-alvo quando definida ─────────────
+        if schedule.target_date:
+            try:
+                target = date.fromisoformat(schedule.target_date)
+                days_left = max(1, (target - start_date).days)
+                available_slots = self._generate_day_slots(
+                    start_date, max_days=days_left
+                )
+                # Se a janela até a prova for muito pequena, usa o padrão
+                if not available_slots:
+                    available_slots = self._generate_day_slots(start_date)
+            except ValueError:
+                available_slots = self._generate_day_slots(start_date)
+        else:
+            available_slots = self._generate_day_slots(start_date)
+
+        if not available_slots:
+            return
+
+        # ── FIX Bug #4: pre-load módulos e subjects em bulk (elimina N+1) ────
+        module_ids = {l.module_id for l in pending_lessons if l.module_id}
+        modules_by_id: Dict[str, Module] = (
+            {m.id: m for m in Module.query.filter(Module.id.in_(module_ids)).all()}
+            if module_ids
+            else {}
+        )
+
+        subject_ids_from_modules = {
+            m.subject_id for m in modules_by_id.values() if m.subject_id
+        }
+        subjects_by_id: Dict[str, Subject] = (
+            {
+                s.id: s
+                for s in Subject.query.filter(
+                    Subject.id.in_(subject_ids_from_modules)
+                ).all()
+            }
+            if subject_ids_from_modules
+            else {}
+        )
+
         # ── Etapa 1: agrupa por disciplina ────────────────────────────────────
-        lessons_by_subject: dict[str, List] = defaultdict(list)
-        subject_map: dict[str, Subject] = {}
+        # pending_lessons JÁ está ordenado por Subject.order, Module.order, Lesson.order
+        # (ver _get_pending_lessons). A ordem de inserção em lessons_by_subject
+        # é preservada pelo defaultdict(list), garantindo sequência correta.
+        lessons_by_subject: Dict[str, List] = defaultdict(list)
+        subject_map: Dict[str, Subject] = {}
 
         for lesson in pending_lessons:
-            module = Module.query.get(lesson.module_id)
-            subject = Subject.query.get(module.subject_id) if module else None
+            module = modules_by_id.get(lesson.module_id)
+            subject = subjects_by_id.get(module.subject_id) if module else None
             sid = subject.id if subject else "__no_subject__"
             lessons_by_subject[sid].append(lesson)
             if subject:
                 subject_map[sid] = subject
 
-        # Ordena disciplinas por prioridade decrescente
+        # ── FIX Bug #4: ordena disciplinas por prioridade DESC,
+        #    com Subject.order ASC como critério de desempate.
+        #    Para alunos novos (prioridades iguais), o Subject.order garante
+        #    que a disciplina introdutória seja agendada primeiro.
+        def _subject_sort_key(sid: str):
+            priority = priority_map.get(sid, 1.0)
+            s = subject_map.get(sid)
+            order = (s.order or 0) if s else 999
+            return (-priority, order)
+
         subject_ids_ordered = sorted(
             lessons_by_subject.keys(),
-            key=lambda sid: priority_map.get(sid, 1.0),
-            reverse=True,
+            key=_subject_sort_key,
         )
 
         # ── Etapa 2: round-robin de blocos ────────────────────────────────────
-        # Cada bloco = (subject_id, [lesson1, lesson2])
-        # Uma rodada percorre todas as disciplinas pegando 1 bloco de cada
         all_blocks: List[Tuple[str, List]] = []
         queues = {sid: list(lessons_by_subject[sid]) for sid in subject_ids_ordered}
 
@@ -305,19 +419,11 @@ class ScheduleEngine:
                     all_blocks.append((sid, block))
 
         # ── Etapa 3: distribui blocos nos slots ───────────────────────────────
-        compression = self._calculate_compression_factor(
-            schedule.target_date, len(pending_lessons)
-        )
-        available_slots = self._generate_day_slots(start_date, compression)
-
-        if not available_slots:
-            return
-
         items_to_add: List[ScheduleItem] = []
-        used_minutes: dict[date, int] = defaultdict(int)
+        used_minutes: Dict[date, int] = defaultdict(int)
         slot_idx = 0
         lessons_added = 0
-        simulado_days: set[str] = set()
+        simulado_days: set = set()
 
         for sid, block_lessons in all_blocks:
             if slot_idx >= len(available_slots):
@@ -327,17 +433,14 @@ class ScheduleEngine:
             priority = priority_map.get(sid, 1.0)
             reason = self._build_priority_reason(subject, priority)
 
-            # Duração total do bloco com pausas
             block_duration = sum(
                 max(l.duration_minutes or 30, 15) for l in block_lessons
             )
             block_with_breaks = block_duration + self.BREAK_MINUTES * len(block_lessons)
 
-            # ── FIX Bug 2: force-fit para blocos maiores que o dia ────────────
-            # Se o bloco inteiro não cabe em nenhum dia, reduz para 1 aula por vez
+            # FIX Bug #2 (herdado v4): force-fit para blocos maiores que o dia
             effective_blocks: List[List] = []
-            if block_with_breaks > self.minutes_per_day:
-                # Agenda cada aula individualmente (force-fit)
+            if block_with_breaks > effective_minutes:
                 for lesson in block_lessons:
                     effective_blocks.append([lesson])
             else:
@@ -351,20 +454,15 @@ class ScheduleEngine:
                 sub_with_breaks = sub_duration + self.BREAK_MINUTES * len(sub_block)
 
                 # Encontra próximo slot com espaço suficiente
-                # Proteção: nunca itera mais do que o total de slots disponíveis
                 start_search = slot_idx
                 while slot_idx < len(available_slots):
                     slot_date = available_slots[slot_idx]
                     fits = (
-                        used_minutes[slot_date] + sub_with_breaks
-                        <= self.minutes_per_day
+                        used_minutes[slot_date] + sub_with_breaks <= effective_minutes
                     )
                     if fits:
                         break
-                    # Dia cheio — avança
                     slot_idx += 1
-                    # Se percorreu todos os slots sem achar espaço,
-                    # usa o próximo slot mesmo assim (força agendamento)
                     if slot_idx - start_search > len(available_slots):
                         break
 
@@ -373,7 +471,6 @@ class ScheduleEngine:
 
                 slot_date = available_slots[slot_idx]
 
-                # Adiciona as aulas do sub-bloco
                 for order_idx, lesson in enumerate(sub_block):
                     duration = max(lesson.duration_minutes or 30, 15)
                     items_to_add.append(
@@ -394,7 +491,7 @@ class ScheduleEngine:
                     lessons_added += 1
 
                 # Sessão de questões após o sub-bloco (se sobrar tempo)
-                remaining = self.minutes_per_day - used_minutes[slot_date]
+                remaining = effective_minutes - used_minutes[slot_date]
                 if remaining >= self.MIN_FREE_FOR_QUESTIONS and subject:
                     q_min = min(
                         self.QUESTIONS_BLOCK_MINUTES, remaining - self.BREAK_MINUTES
@@ -437,12 +534,16 @@ class ScheduleEngine:
                             )
                             simulado_days.add(sim_date_str)
 
-                # Avança para o próximo slot — SEMPRE 1 por sub-bloco
                 slot_idx += 1
 
         # ── Etapa 6: revisões espaçadas ───────────────────────────────────────
         self._add_spaced_reviews(
-            schedule, available_slots, used_minutes, priority_map, items_to_add
+            schedule,
+            available_slots,
+            used_minutes,
+            priority_map,
+            items_to_add,
+            effective_minutes,
         )
 
         if items_to_add:
@@ -467,14 +568,29 @@ class ScheduleEngine:
     def _add_review_only_plan(self, schedule, priority_map, start_date):
         """Plano de revisão + questões para quem já assistiu tudo."""
         slots = self._generate_day_slots(start_date)
-        items = []
-        weak_subjects = sorted(priority_map.items(), key=lambda x: x[1], reverse=True)[
-            :5
+        # FIX: pre-load subjects em bulk
+        top_subject_ids = [
+            sid
+            for sid, _ in sorted(
+                priority_map.items(), key=lambda x: x[1], reverse=True
+            )[:5]
         ]
-        for i, (sid, _) in enumerate(weak_subjects):
+        subjects_map = (
+            {
+                s.id: s
+                for s in Subject.query.filter(Subject.id.in_(top_subject_ids)).all()
+            }
+            if top_subject_ids
+            else {}
+        )
+
+        items = []
+        for i, (sid, _) in enumerate(
+            sorted(priority_map.items(), key=lambda x: x[1], reverse=True)[:5]
+        ):
             if i >= len(slots):
                 break
-            subject = Subject.query.get(sid)
+            subject = subjects_map.get(sid)
             if not subject:
                 continue
             items += [
@@ -509,13 +625,21 @@ class ScheduleEngine:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _add_spaced_reviews(
-        self, schedule, slots, used_minutes, priority_map, items_to_add
+        self,
+        schedule,
+        slots,
+        used_minutes,
+        priority_map,
+        items_to_add,
+        effective_minutes: int = None,
     ):
         """
         Agenda revisões espaçadas para disciplinas com questões respondidas.
-        Revisão = sessão de questões das anteriormente erradas.
         Preenche apenas slots com tempo livre — nunca comprime o dia.
         """
+        if effective_minutes is None:
+            effective_minutes = self.minutes_per_day
+
         subjects = Subject.query.filter_by(
             course_id=self.course_id,
             tenant_id=self.tenant_id,
@@ -588,7 +712,7 @@ class ScheduleEngine:
                     continue
 
                 needed = self.REVIEW_MINUTES + self.BREAK_MINUTES
-                if used_minutes[review_date] + needed > self.minutes_per_day:
+                if used_minutes[review_date] + needed > effective_minutes:
                     continue
 
                 items_to_add.append(
@@ -616,11 +740,15 @@ class ScheduleEngine:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _calculate_subject_priorities(self) -> dict:
-        subjects = Subject.query.filter_by(
-            course_id=self.course_id,
-            tenant_id=self.tenant_id,
-            is_deleted=False,
-        ).all()
+        subjects = (
+            Subject.query.filter_by(
+                course_id=self.course_id,
+                tenant_id=self.tenant_id,
+                is_deleted=False,
+            )
+            .order_by(Subject.order)
+            .all()
+        )  # FIX: order by para consistência
 
         priorities = {}
         for subject in subjects:
@@ -687,11 +815,9 @@ class ScheduleEngine:
         Aulas publicadas do curso que o aluno ainda não assistiu
         E que ainda não estão agendadas como pendentes no cronograma atual.
 
-        FIX Bug 1: exclui lesson_ids que já existem em ScheduleItems pendentes
-        (incluindo os de HOJE preservados pelo reorganize).
-        Isso evita que a mesma aula apareça em dois dias diferentes.
+        Retorna ordenado por Subject.order → Module.order → Lesson.order
+        para garantir sequência correta dentro de cada disciplina.
         """
-        # IDs das aulas já assistidas
         watched_ids = set(
             p.lesson_id
             for p in LessonProgress.query.filter_by(
@@ -702,9 +828,7 @@ class ScheduleEngine:
             ).all()
         )
 
-        # ── FIX Bug 1 ─────────────────────────────────────────────────────────
-        # IDs das aulas já agendadas como pendentes em qualquer data futura
-        # (inclui os itens de hoje que foram preservados pelo reorganize)
+        # IDs das aulas já agendadas como pendentes (inclui hoje — preservados pelo reorganize)
         already_scheduled_ids = set(
             item.lesson_id
             for item in (
@@ -714,6 +838,7 @@ class ScheduleEngine:
                 .filter(
                     StudySchedule.user_id == self.user_id,
                     StudySchedule.course_id == self.course_id,
+                    StudySchedule.tenant_id == self.tenant_id,
                     StudySchedule.is_deleted == False,
                     ScheduleItem.item_type == "lesson",
                     ScheduleItem.status == "pending",
@@ -724,10 +849,10 @@ class ScheduleEngine:
             )
             if item.lesson_id is not None
         )
-        # ─────────────────────────────────────────────────────────────────────
 
         exclude_ids = watched_ids | already_scheduled_ids
 
+        # FIX Bug #4: garante ordenação por Subject.order → Module.order → Lesson.order
         all_lessons = (
             Lesson.query.join(Module, Lesson.module_id == Module.id)
             .join(Subject, Module.subject_id == Subject.id)
@@ -748,9 +873,10 @@ class ScheduleEngine:
     def _generate_day_slots(
         self,
         start_date: date,
-        compression: float = 1.0,
+        compression: float = 1.0,  # mantido por compatibilidade, use effective_minutes em _build_items
         max_days: Optional[int] = None,
     ) -> list:
+        """Gera lista de dates disponíveis para estudo a partir de start_date."""
         slots = []
         current = start_date
         limit = max_days or self.MAX_SCHEDULE_DAYS

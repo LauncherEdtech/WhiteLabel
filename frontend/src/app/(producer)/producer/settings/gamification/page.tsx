@@ -2,7 +2,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
 import { useTenantStore } from "@/lib/stores/tenantStore";
 import { useToast } from "@/components/ui/toaster";
@@ -18,8 +18,16 @@ const THEMES = [
         key: "militar",
         label: "Militar",
         icon: Swords,
-        color: "text-amber-600 bg-amber-50 border-amber-200",
-        activeColor: "border-amber-500 bg-amber-50",
+        // Cores do ícone — funcionam em light e dark porque usam text-* (não bg fixo)
+        iconColor: "text-amber-500",
+        iconBg: "bg-amber-500/10 border-amber-500/20",
+        // Borda ativa do card
+        activeColor: "border-amber-500 bg-amber-500/10",
+        // Cor do destaque do topo de patente no preview
+        topRankBg: "bg-amber-500/10",
+        topRankText: "text-amber-400",
+        topRankTextDark: "text-amber-500",
+        topRankCrown: "text-amber-400",
         description: "Para concursos das Forças Armadas e Polícias Militares",
         tags: ["EsPCEx", "IME", "AMAN", "PM"],
         ranks: ["Recruta", "Soldado", "Cabo", "Sargento", "Tenente", "Capitão", "Major", "Coronel", "General"],
@@ -33,8 +41,13 @@ const THEMES = [
         key: "policial",
         label: "Policial",
         icon: Shield,
-        color: "text-blue-600 bg-blue-50 border-blue-200",
-        activeColor: "border-blue-500 bg-blue-50",
+        iconColor: "text-blue-500",
+        iconBg: "bg-blue-500/10 border-blue-500/20",
+        activeColor: "border-blue-500 bg-blue-500/10",
+        topRankBg: "bg-blue-500/10",
+        topRankText: "text-blue-400",
+        topRankTextDark: "text-blue-500",
+        topRankCrown: "text-blue-400",
         description: "Para Polícia Civil, Federal, PRF e Guardas Municipais",
         tags: ["PC", "PF", "PRF", "GM"],
         ranks: ["Recruta", "Investigador", "Inspetor", "Delegado", "Del.-Chefe", "Del. Regional", "Superintendente", "Diretor", "Delegado-Geral"],
@@ -48,8 +61,13 @@ const THEMES = [
         key: "juridico",
         label: "Jurídico",
         icon: Scale,
-        color: "text-indigo-600 bg-indigo-50 border-indigo-200",
-        activeColor: "border-indigo-500 bg-indigo-50",
+        iconColor: "text-indigo-500",
+        iconBg: "bg-indigo-500/10 border-indigo-500/20",
+        activeColor: "border-indigo-500 bg-indigo-500/10",
+        topRankBg: "bg-indigo-500/10",
+        topRankText: "text-indigo-400",
+        topRankTextDark: "text-indigo-500",
+        topRankCrown: "text-indigo-400",
         description: "Para Magistratura, Ministério Público, OAB e PGE",
         tags: ["Magistratura", "MP", "OAB", "PGE"],
         ranks: ["Estagiário", "Bacharel", "Advogado", "Promotor", "Juiz Substituto", "Juiz", "Desembargador", "Ministro", "Pres. STF"],
@@ -63,8 +81,13 @@ const THEMES = [
         key: "fiscal",
         label: "Fiscal",
         icon: Calculator,
-        color: "text-emerald-600 bg-emerald-50 border-emerald-200",
-        activeColor: "border-emerald-500 bg-emerald-50",
+        iconColor: "text-emerald-500",
+        iconBg: "bg-emerald-500/10 border-emerald-500/20",
+        activeColor: "border-emerald-500 bg-emerald-500/10",
+        topRankBg: "bg-emerald-500/10",
+        topRankText: "text-emerald-400",
+        topRankTextDark: "text-emerald-500",
+        topRankCrown: "text-emerald-400",
         description: "Para Receita Federal, SEFAZ, TCU e Controladoria",
         tags: ["RFB", "SEFAZ", "TCU", "CGU"],
         ranks: ["Aprendiz", "Assistente", "Analista", "Auditor Jr.", "Auditor-Fiscal", "Auditor Sênior", "Auditor-Chefe", "Superintendente", "Secretário RFB"],
@@ -78,8 +101,13 @@ const THEMES = [
         key: "administrativo",
         label: "Administrativo",
         icon: Building2,
-        color: "text-violet-600 bg-violet-50 border-violet-200",
-        activeColor: "border-violet-500 bg-violet-50",
+        iconColor: "text-violet-500",
+        iconBg: "bg-violet-500/10 border-violet-500/20",
+        activeColor: "border-violet-500 bg-violet-500/10",
+        topRankBg: "bg-violet-500/10",
+        topRankText: "text-violet-400",
+        topRankTextDark: "text-violet-500",
+        topRankCrown: "text-violet-400",
         description: "Para INSS, Banco do Brasil, Correios, Câmara e Senado",
         tags: ["INSS", "BB", "Correios", "Câmara"],
         ranks: ["Trainee", "Assistente", "Analista Jr.", "Analista Pleno", "Analista Sênior", "Coordenador", "Gerente", "Diretor", "Presidente"],
@@ -93,8 +121,13 @@ const THEMES = [
         key: "saude",
         label: "Saúde",
         icon: HeartPulse,
-        color: "text-rose-600 bg-rose-50 border-rose-200",
-        activeColor: "border-rose-500 bg-rose-50",
+        iconColor: "text-rose-500",
+        iconBg: "bg-rose-500/10 border-rose-500/20",
+        activeColor: "border-rose-500 bg-rose-500/10",
+        topRankBg: "bg-rose-500/10",
+        topRankText: "text-rose-400",
+        topRankTextDark: "text-rose-500",
+        topRankCrown: "text-rose-400",
         description: "Para ANVISA, ANS, hospitais públicos e saúde municipal",
         tags: ["ANVISA", "ANS", "SMS", "SUS"],
         ranks: ["Estagiário", "Técnico", "Auxiliar", "Especialista", "Supervisor", "Coordenador", "Gerente", "Diretor", "Secretário"],
@@ -107,10 +140,12 @@ const THEMES = [
 ];
 
 const INSIGHT_TYPE_COLORS: Record<string, string> = {
-    motivation: "border-l-emerald-400 bg-emerald-50/50",
-    weakness: "border-l-amber-400 bg-amber-50/50",
-    next_step: "border-l-blue-400 bg-blue-50/50",
+    motivation: "border-l-emerald-400 bg-emerald-500/5",
+    weakness: "border-l-amber-400 bg-amber-500/5",
+    next_step: "border-l-blue-400 bg-blue-500/5",
 };
+
+const RANK_POINTS = [0, 100, 300, 600, 1000, 1600, 2500, 4000, 6000];
 
 // ── Componente ────────────────────────────────────────────────────────────────
 
@@ -140,7 +175,6 @@ export default function GamificationSettingsPage() {
                 gamification_theme: gamificationTheme,
             }),
         onSuccess: (res) => {
-            // Atualiza o store local
             if (tenant) {
                 setTenant({
                     ...tenant,
@@ -198,11 +232,15 @@ export default function GamificationSettingsPage() {
                                 className={cn(
                                     "flex flex-col items-start gap-2 p-3 rounded-xl border-2 text-left transition-all",
                                     isSelected
-                                        ? theme.activeColor + " border-2"
-                                        : "border-border bg-background hover:border-border/80 hover:bg-muted/30"
+                                        ? theme.activeColor
+                                        : "border-border bg-background hover:border-border/60 hover:bg-muted/30"
                                 )}
                             >
-                                <div className={cn("h-8 w-8 rounded-lg border flex items-center justify-center", theme.color)}>
+                                <div className={cn(
+                                    "h-8 w-8 rounded-lg border flex items-center justify-center",
+                                    theme.iconBg,
+                                    theme.iconColor
+                                )}>
                                     <Icon className="h-4 w-4" />
                                 </div>
                                 <div>
@@ -224,7 +262,9 @@ export default function GamificationSettingsPage() {
                 {previewData && (
                     <div className="rounded-xl border border-border bg-muted/20 overflow-hidden">
                         <div className="px-4 py-2.5 border-b border-border bg-muted/30 flex items-center gap-2">
-                            <span className="text-xs font-medium text-muted-foreground">Preview — como os alunos vão receber os insights</span>
+                            <span className="text-xs font-medium text-muted-foreground">
+                                Preview — como os alunos vão receber os insights
+                            </span>
                             <span className="ml-auto text-xs font-semibold text-foreground">{previewData.label}</span>
                         </div>
                         <div className="p-4 space-y-2">
@@ -268,11 +308,15 @@ export default function GamificationSettingsPage() {
                                 className={cn(
                                     "flex flex-col items-start gap-2 p-3 rounded-xl border-2 text-left transition-all",
                                     isSelected
-                                        ? theme.activeColor + " border-2"
-                                        : "border-border bg-background hover:border-border/80 hover:bg-muted/30"
+                                        ? theme.activeColor
+                                        : "border-border bg-background hover:border-border/60 hover:bg-muted/30"
                                 )}
                             >
-                                <div className={cn("h-8 w-8 rounded-lg border flex items-center justify-center", theme.color)}>
+                                <div className={cn(
+                                    "h-8 w-8 rounded-lg border flex items-center justify-center",
+                                    theme.iconBg,
+                                    theme.iconColor
+                                )}>
                                     <Icon className="h-4 w-4" />
                                 </div>
                                 <p className="text-sm font-semibold text-foreground">{theme.label}</p>
@@ -281,31 +325,46 @@ export default function GamificationSettingsPage() {
                     })}
                 </div>
 
-                {/* Preview das patentes */}
+                {/* Preview das patentes — cores adaptadas ao tema selecionado */}
                 {gamificationData && (
                     <div className="rounded-xl border border-border overflow-hidden">
                         <div className="px-4 py-2.5 border-b border-border bg-muted/30 flex items-center gap-2">
-                            <span className="text-xs font-medium text-muted-foreground">Progressão de patentes — {gamificationData.label}</span>
+                            <span className="text-xs font-medium text-muted-foreground">
+                                Progressão de patentes — {gamificationData.label}
+                            </span>
                         </div>
                         <div className="divide-y divide-border">
                             {gamificationData.ranks.map((rank, i) => {
-                                const pts = [0, 100, 300, 600, 1000, 1600, 2500, 4000, 6000][i];
+                                const pts = RANK_POINTS[i] ?? 0;
                                 const isLast = i === gamificationData.ranks.length - 1;
                                 return (
-                                    <div key={rank} className={cn("flex items-center gap-3 px-4 py-2.5", isLast && "bg-amber-50/50")}>
+                                    <div
+                                        key={rank}
+                                        className={cn(
+                                            "flex items-center gap-3 px-4 py-2.5",
+                                            isLast && gamificationData.topRankBg
+                                        )}
+                                    >
                                         <span className={cn(
                                             "text-xs font-mono font-bold w-5 text-center",
-                                            isLast ? "text-amber-600" : "text-muted-foreground"
+                                            isLast ? gamificationData.topRankText : "text-muted-foreground"
                                         )}>
                                             {i + 1}
                                         </span>
-                                        <p className={cn("text-sm font-medium flex-1", isLast ? "text-amber-700 font-bold" : "text-foreground")}>
+                                        <p className={cn(
+                                            "text-sm font-medium flex-1",
+                                            isLast
+                                                ? cn(gamificationData.topRankTextDark, "font-bold")
+                                                : "text-foreground"
+                                        )}>
                                             {rank}
                                         </p>
                                         <span className="text-xs text-muted-foreground font-mono">
                                             {pts.toLocaleString("pt-BR")} pts
                                         </span>
-                                        {isLast && <span className="text-amber-500">👑</span>}
+                                        {isLast && (
+                                            <span className={gamificationData.topRankCrown}>👑</span>
+                                        )}
                                     </div>
                                 );
                             })}
