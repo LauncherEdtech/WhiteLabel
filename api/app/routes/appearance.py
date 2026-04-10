@@ -360,7 +360,7 @@ def update_appearance():
 
     # ── Cápsula de Estudos ────────────────────────────────────────────────────
     if "capsule_style" in data:
-        if data["capsule_style"] not in ("operativo", "campeao", "relatorio"):
+        if data["capsule_style"] not in ("operativo", "campeao", "relatorio", "neon", "bold", "elegante"):
             return jsonify({"error": "invalid_capsule_style"}), 400
         branding["capsule_style"] = data["capsule_style"]
 

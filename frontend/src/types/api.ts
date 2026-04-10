@@ -300,7 +300,7 @@ export interface StudyCapsule {
     tenant_logo_url: string | null;
     tenant_primary_color: string;
     tenant_instagram: string | null;
-    capsule_style: "operativo" | "campeao" | "relatorio";
+    capsule_style: "operativo" | "campeao" | "relatorio" | "neon" | "bold" | "elegante";
     user_since: { month: number; year: number };   // ← NOVO
     generated_at: string;
 }

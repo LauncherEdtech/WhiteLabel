@@ -39,8 +39,7 @@ export type ColorPaletteKey =
 export type StudentLayout = "sidebar" | "topbar" | "minimal";
 export type ProducerLayout = "sidebar" | "topbar";
 export type LoginLayout = "split" | "centered" | "fullbg" | "minimal";
-export type CapsuleStyle = "operativo" | "campeao" | "relatorio";
-
+export type CapsuleStyle = "operativo" | "campeao" | "relatorio" | "neon" | "bold" | "elegante";
 export interface ColorPalette {
     key: ColorPaletteKey | "custom";
     name: string;

@@ -174,7 +174,128 @@ const STYLES: {
                 </div>
             ),
         },
+        {
+            key: "neon" as CapsuleStyle,
+            label: "Neon",
+            tagline: "Dark · Glow · Cyberpunk",
+            tags: ["Gaming", "Tech", "Impactante"],
+            accent: "#00FF88",
+            bg: "#050508",
+            preview: ({ primary }) => (
+                <div style={{ background: "#050508", borderRadius: 12, aspectRatio: "9/14", display: "flex", flexDirection: "column", border: `1px solid ${primary}33`, padding: "14px 12px", fontFamily: "system-ui, sans-serif", color: "#fff", position: "relative", overflow: "hidden" }}>
+                    <div style={{ position: "absolute", top: -30, left: "50%", transform: "translateX(-50%)", width: 100, height: 60, background: primary, opacity: 0.08, borderRadius: "50%", filter: "blur(20px)" }} />
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                        <span style={{ fontSize: 8, color: `${primary}99`, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 700 }}>CONCURSODEMO</span>
+                        <span style={{ fontSize: 7, color: `${primary}88`, border: `1px solid ${primary}44`, padding: "1px 5px", borderRadius: 3 }}>ABR 2026</span>
+                    </div>
+                    <span style={{ fontSize: 9, fontWeight: 700, color: primary, marginBottom: 12 }}>@qgconcursos</span>
+                    <div style={{ fontSize: 7, color: `${primary}66`, letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 2 }}>minutos estudados</div>
+                    <div style={{ fontSize: 36, fontWeight: 900, lineHeight: 0.9, color: "#fff", textShadow: `0 0 20px ${primary}44`, marginBottom: 2 }}>2341</div>
+                    <div style={{ height: 2, background: `linear-gradient(90deg, ${primary}, ${primary}22)`, borderRadius: 1, marginBottom: 12, boxShadow: `0 0 8px ${primary}66` }} />
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 10 }}>
+                        {[["questões","487"],["acerto","73%"]].map(([l,v]) => (
+                            <div key={l} style={{ border: `1px solid ${primary}22`, borderRadius: 7, padding: "6px 8px", background: `${primary}08` }}>
+                                <div style={{ fontSize: 6, color: `${primary}77`, textTransform: "uppercase", letterSpacing: "0.1em" }}>{l}</div>
+                                <div style={{ fontSize: 14, fontWeight: 900, color: primary, textShadow: `0 0 8px ${primary}88` }}>{v}</div>
+                            </div>
+                        ))}
+                    </div>
+                    {["Dir. Constitucional","Português","Raz. Lógico"].map((d,i) => (
+                        <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderBottom: `1px solid ${primary}11` }}>
+                            <span style={{ fontSize: 8, color: "rgba(255,255,255,0.6)" }}>{d}</span>
+                            <span style={{ fontSize: 9, fontWeight: 800, color: primary, textShadow: `0 0 6px ${primary}88` }}>{[81,74,68][i]}%</span>
+                        </div>
+                    ))}
+                    <div style={{ marginTop: "auto", paddingTop: 8, borderTop: `1px solid ${primary}22`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontSize: 10, fontWeight: 800, color: primary }}>★ Sargento</span>
+                        <span style={{ fontSize: 7, color: "rgba(255,255,255,0.3)", fontStyle: "italic" }}>Continue firme!</span>
+                    </div>
+                </div>
+            ),
+        },
+        {
+            key: "bold" as CapsuleStyle,
+            label: "Bold",
+            tagline: "Impacto · Grande · Direto",
+            tags: ["Stories", "Redes Sociais", "Jovem"],
+            accent: "#FF4444",
+            bg: "#0a0a0a",
+            preview: ({ primary }) => (
+                <div style={{ background: "#0a0a0a", borderRadius: 12, aspectRatio: "9/14", display: "flex", flexDirection: "column", border: "1px solid #1a1a1a", padding: "14px 12px", fontFamily: "'Arial Black', Arial, sans-serif", color: "#fff", position: "relative", overflow: "hidden" }}>
+                    <div style={{ position: "absolute", top: 0, right: 0, width: 50, height: 50, background: primary, opacity: 0.12, borderBottomLeftRadius: 50 }} />
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                        <span style={{ fontSize: 8, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: "0.08em" }}>CONCURSODEMO</span>
+                        <span style={{ fontSize: 7, background: primary, color: "#fff", padding: "2px 6px", borderRadius: 10, fontWeight: 900 }}>ABR 2026</span>
+                    </div>
+                    <span style={{ fontSize: 9, fontWeight: 900, color: primary, marginBottom: 14 }}>@qgconcursos</span>
+                    <div style={{ fontSize: 7, color: "rgba(255,255,255,0.35)", letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 2 }}>minutos</div>
+                    <div style={{ fontSize: 48, fontWeight: 900, lineHeight: 0.85, letterSpacing: "-0.04em", color: "#fff", marginBottom: 2 }}>2341</div>
+                    <div style={{ height: 3, background: primary, borderRadius: 2, marginBottom: 12 }} />
+                    <div style={{ display: "flex", gap: 0, marginBottom: 10, background: "#111", borderRadius: 8, overflow: "hidden" }}>
+                        {[["487","questões"],["73%","acerto"],["34","aulas"]].map(([v,l],i) => (
+                            <div key={i} style={{ flex: 1, padding: "6px 4px", textAlign: "center", borderRight: i<2 ? "1px solid #1a1a1a" : "none" }}>
+                                <div style={{ fontSize: 13, fontWeight: 900, color: i===1 ? primary : "#fff" }}>{v}</div>
+                                <div style={{ fontSize: 6, color: "rgba(255,255,255,0.3)", textTransform: "uppercase" }}>{l}</div>
+                            </div>
+                        ))}
+                    </div>
+                    {["Dir. Constitucional","Português","Raz. Lógico"].map((d,i) => (
+                        <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                            <span style={{ fontSize: 9, color: "rgba(255,255,255,0.65)", fontWeight: 700 }}>{d}</span>
+                            <span style={{ fontSize: 10, fontWeight: 900, color: primary }}>{[81,74,68][i]}%</span>
+                        </div>
+                    ))}
+                    <div style={{ marginTop: "auto", paddingTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontSize: 11, fontWeight: 900 }}>★ Sargento</span>
+                    </div>
+                </div>
+            ),
+        },
+        {
+            key: "elegante" as CapsuleStyle,
+            label: "Elegante",
+            tagline: "Premium · Claro · Refinado",
+            tags: ["LinkedIn", "Profissional", "Premium"],
+            accent: "#D4AF37",
+            bg: "#f8f6f1",
+            preview: ({ primary }) => (
+                <div style={{ background: "#f8f6f1", borderRadius: 12, aspectRatio: "9/14", display: "flex", flexDirection: "column", border: "1px solid #e8e4dc", padding: "14px 12px", fontFamily: "Georgia, serif", color: "#1a1a1a", position: "relative", overflow: "hidden" }}>
+                    <div style={{ position: "absolute", inset: 0, backgroundImage: "radial-gradient(circle, #00000006 1px, transparent 1px)", backgroundSize: "12px 12px", pointerEvents: "none" }} />
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, position: "relative" }}>
+                        <span style={{ fontSize: 8, color: "#888", letterSpacing: "0.08em", textTransform: "uppercase" }}>CONCURSODEMO</span>
+                        <span style={{ fontSize: 7, color: "#888", letterSpacing: "0.1em", textTransform: "uppercase" }}>ABR 2026</span>
+                    </div>
+                    <span style={{ fontSize: 9, fontWeight: 700, color: primary, marginBottom: 10, position: "relative" }}>@qgconcursos</span>
+                    <div style={{ height: 1, background: primary, opacity: 0.4, marginBottom: 10, position: "relative" }} />
+                    <div style={{ fontSize: 7, color: "#888", letterSpacing: "0.15em", textTransform: "uppercase", marginBottom: 2, position: "relative" }}>tempo de estudo</div>
+                    <div style={{ fontSize: 36, fontWeight: 400, lineHeight: 0.9, color: "#1a1a1a", fontStyle: "italic", marginBottom: 2, position: "relative" }}>2341</div>
+                    <div style={{ fontSize: 8, color: "#888", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12, position: "relative" }}>minutos</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10, position: "relative" }}>
+                        {[["questões","487"],["acerto","73%"]].map(([l,v]) => (
+                            <div key={l} style={{ borderTop: `2px solid ${primary}`, paddingTop: 6 }}>
+                                <div style={{ fontSize: 6, color: "#888", textTransform: "uppercase", letterSpacing: "0.12em" }}>{l}</div>
+                                <div style={{ fontSize: 16, fontWeight: 700, color: "#1a1a1a", fontStyle: "italic" }}>{v}</div>
+                            </div>
+                        ))}
+                    </div>
+                    {["Dir. Constitucional","Português","Raz. Lógico"].map((d,i) => (
+                        <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderBottom: "1px solid #e8e4dc", position: "relative" }}>
+                            <span style={{ fontSize: 8, color: "#333" }}>{d}</span>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: primary, fontStyle: "italic" }}>{[81,74,68][i]}%</span>
+                        </div>
+                    ))}
+                    <div style={{ marginTop: "auto", paddingTop: 8, borderTop: `1px solid ${primary}44`, display: "flex", justifyContent: "space-between", alignItems: "flex-end", position: "relative" }}>
+                        <div>
+                            <div style={{ fontSize: 6, color: "#888", textTransform: "uppercase", letterSpacing: "0.1em" }}>patente</div>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: "#1a1a1a", fontStyle: "italic" }}>Sargento</div>
+                        </div>
+                    </div>
+                </div>
+            ),
+        },
+        
     ];
+
 
 // ── Página ─────────────────────────────────────────────────────────────────
 
