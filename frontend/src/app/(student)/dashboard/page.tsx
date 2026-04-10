@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/utils/cn";
+import { NextActionWidget } from "@/components/student/NextActionWidget";
 import type {
     Insight, ScheduleItem, DisciplinePerformance,
     WeeklyMission, WeeklyMissionItem, WeeklyMissionPendingItem,

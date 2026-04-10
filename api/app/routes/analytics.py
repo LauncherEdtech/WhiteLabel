@@ -388,7 +388,8 @@ def _get_weekly_mission(user_id: str, tenant_id: str, discipline_stats: list) ->
             if i.status == "pending" and i.scheduled_date >= today_str
         ]
 
-        if total > 0:
+        if total > 0 and len(pending) > 0:
+
             # Serializa até 10 itens pendentes da semana para exibição no card
             pending_serialized = []
             for i in pending[:10]:
@@ -1780,6 +1781,19 @@ _INSIGHT_THEME_VOICE = {
 }
 
 
+# ── Mapa de ações — Gemini escolhe o tipo, nós controlamos a URL ──────────────
+
+_NEXT_ACTION_MAP = {
+    "create_schedule":     {"cta_url": "/schedule",  "cta_label": "Criar cronograma",   "icon": "📅"},
+    "watch_lesson":        {"cta_url": "/schedule",  "cta_label": "Ver cronograma",      "icon": "▶️"},
+    "practice_discipline": {"cta_url": "/questions", "cta_label": "Praticar questões",   "icon": "⚠️"},
+    "do_questions":        {"cta_url": "/questions", "cta_label": "Responder questões",  "icon": "📝"},
+    "daily_questions":     {"cta_url": "/questions", "cta_label": "Responder questões",  "icon": "🎯"},
+    "improve_discipline":  {"cta_url": "/questions", "cta_label": "Praticar",           "icon": "📚"},
+    "view_schedule":       {"cta_url": "/schedule",  "cta_label": "Ver cronograma",      "icon": "📋"},
+    "keep_going":          {"cta_url": "/questions", "cta_label": "Continuar estudando", "icon": "🏆"},
+}
+
 def _generate_insights(
     user,
     tenant,
@@ -1808,6 +1822,305 @@ def _generate_insights(
         questions_stats, discipline_stats, lesson_progress, time_stats
     )
 
+# ══════════════════════════════════════════════════════════════════════════════
+# PRÓXIMA AÇÃO RECOMENDADA — widget coach com Gemini
+# ══════════════════════════════════════════════════════════════════════════════
+
+@analytics_bp.route("/student/next-action", methods=["GET"])
+@jwt_required()
+@require_tenant
+def student_next_action():
+    """Retorna a próxima ação recomendada pelo coach IA. Cache Redis 15 min."""
+    tenant  = get_current_tenant()
+    user_id = get_jwt_identity()
+
+    cache_key = f"next_action:{tenant.id}:{user_id}"
+    cached    = _cache_get(cache_key)
+    if cached:
+        return jsonify(cached), 200
+
+    user = User.query.filter_by(id=user_id, tenant_id=tenant.id, is_deleted=False).first()
+    if not user:
+        return jsonify({"error": "user_not_found"}), 404
+
+    action = _determine_next_action(user_id, tenant.id, user, tenant)
+    _cache_set(cache_key, action, ttl_seconds=900)  # 15 min
+
+    return jsonify(action), 200
+
+
+def _determine_next_action(user_id: str, tenant_id: str, user, tenant) -> dict:
+    """Usa Gemini para decidir a próxima ação. Fallback para regras simples."""
+    context = _build_student_context_for_action(user_id, tenant_id)
+
+    api_key = current_app.config.get("GEMINI_API_KEY", "")
+    if api_key:
+        try:
+            return _gemini_next_action(user, tenant, context, api_key)
+        except Exception as e:
+            current_app.logger.warning(f"[GEMINI] next_action falhou, usando fallback: {e}")
+
+    return _rule_based_next_action(context)
+
+
+def _build_student_context_for_action(user_id: str, tenant_id: str) -> dict:
+    """Monta contexto completo do aluno para o Gemini analisar."""
+    from datetime import date
+
+    today     = date.today()
+    today_str = today.isoformat()
+    now       = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # ── Cronograma ────────────────────────────────────────────────────────────
+    schedule = StudySchedule.query.filter_by(
+        user_id=user_id, tenant_id=tenant_id, is_deleted=False, status="active",
+    ).first()
+
+    schedule_ctx = {"has_schedule": False, "today_pending": [], "week_progress": None}
+
+    if schedule:
+        schedule_ctx["has_schedule"] = True
+
+        today_items = (
+            ScheduleItem.query.filter(
+                ScheduleItem.schedule_id == schedule.id,
+                ScheduleItem.scheduled_date == today_str,
+                ScheduleItem.status == "pending",
+                ScheduleItem.is_deleted == False,
+            )
+            .order_by(ScheduleItem.order)
+            .all()
+        )
+
+        schedule_ctx["today_pending"] = [
+            {
+                "item_type":   i.item_type,
+                "lesson_title": i.lesson.title if i.lesson_id and i.lesson else None,
+                "subject_name": i.subject.name if i.subject_id and i.subject else None,
+                "estimated_minutes": i.estimated_minutes,
+                "lesson_id":   i.lesson_id,
+            }
+            for i in today_items[:5]
+        ]
+
+        week_start = today - timedelta(days=today.weekday())
+        week_end   = week_start + timedelta(days=6)
+        week_items = ScheduleItem.query.filter(
+            ScheduleItem.schedule_id == schedule.id,
+            ScheduleItem.scheduled_date >= week_start.isoformat(),
+            ScheduleItem.scheduled_date <= week_end.isoformat(),
+            ScheduleItem.is_deleted == False,
+        ).all()
+
+        total_week = len(week_items)
+        done_week  = sum(1 for i in week_items if i.status == "done")
+        schedule_ctx["week_progress"] = {
+            "total": total_week,
+            "done":  done_week,
+            "pct":   round((done_week / total_week) * 100, 1) if total_week else 0,
+        }
+
+    # ── Disciplinas ───────────────────────────────────────────────────────────
+    discipline_stats = _get_discipline_stats(user_id, tenant_id)
+    critical = [d for d in discipline_stats if d["accuracy_rate"] < 40  and d["total_answered"] >= 5]
+    weak     = [d for d in discipline_stats if 40 <= d["accuracy_rate"] < 60 and d["total_answered"] >= 5]
+    strong   = [d for d in discipline_stats if d["accuracy_rate"] >= 70]
+
+    # ── Questões hoje ─────────────────────────────────────────────────────────
+    today_count = (
+        db.session.query(func.count(QuestionAttempt.id))
+        .filter(
+            QuestionAttempt.user_id == user_id,
+            QuestionAttempt.tenant_id == tenant_id,
+            QuestionAttempt.is_deleted == False,
+            QuestionAttempt.created_at >= today_start,
+        )
+        .scalar() or 0
+    )
+
+    # ── Total e acerto geral ──────────────────────────────────────────────────
+    total_row = (
+        db.session.query(
+            func.count(QuestionAttempt.id).label("total"),
+            func.sum(case((QuestionAttempt.is_correct == True, 1), else_=0)).label("correct"),
+        )
+        .filter(
+            QuestionAttempt.user_id == user_id,
+            QuestionAttempt.tenant_id == tenant_id,
+            QuestionAttempt.is_deleted == False,
+        )
+        .one()
+    )
+    total_q  = total_row.total or 0
+    accuracy = round((total_row.correct / total_q) * 100, 1) if total_q else 0
+
+    # ── Aulas ─────────────────────────────────────────────────────────────────
+    lesson_progress = _get_lesson_progress_stats(user_id, tenant_id)
+
+    return {
+        "schedule": schedule_ctx,
+        "disciplines": {
+            "critical": sorted(critical, key=lambda x: x["accuracy_rate"])[:3],
+            "weak":     sorted(weak,     key=lambda x: x["accuracy_rate"])[:3],
+            "strong":   sorted(strong,   key=lambda x: x["accuracy_rate"], reverse=True)[:3],
+        },
+        "questions": {
+            "total":            total_q,
+            "overall_accuracy": accuracy,
+            "answered_today":   today_count,
+        },
+        "lessons": {
+            "watched":   lesson_progress["total_watched"],
+            "available": lesson_progress["total_available"],
+            "pct":       lesson_progress["completion_rate"],
+        },
+    }
+
+
+def _gemini_next_action(user, tenant, context: dict, api_key: str) -> dict:
+    """Chama Gemini para decidir a próxima ação com mensagem personalizada."""
+    from google import genai
+
+    insight_theme = (tenant.settings or {}).get("insight_theme", "militar")
+    voice = _INSIGHT_THEME_VOICE.get(insight_theme, _INSIGHT_THEME_VOICE["militar"])
+
+    sched     = context["schedule"]
+    discs     = context["disciplines"]
+    questions = context["questions"]
+    lessons   = context["lessons"]
+
+    critical_str = ", ".join(f"{d['discipline']} ({d['accuracy_rate']}%)" for d in discs["critical"]) or "nenhuma"
+    weak_str     = ", ".join(f"{d['discipline']} ({d['accuracy_rate']}%)" for d in discs["weak"])     or "nenhuma"
+    strong_str   = ", ".join(f"{d['discipline']} ({d['accuracy_rate']}%)" for d in discs["strong"])   or "nenhuma"
+
+    pending_str = "; ".join(
+        f"{i['item_type']} — {i['lesson_title'] or i['subject_name'] or 'sem título'}"
+        for i in sched["today_pending"]
+    ) if sched["today_pending"] else "nenhuma"
+
+    week_prog = sched.get("week_progress")
+    week_str  = (
+        f"{week_prog['done']}/{week_prog['total']} itens ({week_prog['pct']}%)"
+        if week_prog else "sem dados"
+    )
+
+    prompt = f"""Você é um assistente coach de estudos para concursos públicos com perfil de {voice['persona']}.
+
+Analise o contexto do aluno e decida A ÚNICA ação mais importante que ele deve fazer AGORA.
+
+CONTEXTO DO ALUNO ({user.name}):
+- Tem cronograma ativo: {"Sim" if sched["has_schedule"] else "NÃO — nunca criou um cronograma"}
+- Pendências de hoje no cronograma: {pending_str}
+- Progresso semanal no cronograma: {week_str}
+- Questões respondidas hoje: {questions["answered_today"]}
+- Total de questões respondidas: {questions["total"]}
+- Acerto geral: {questions["overall_accuracy"]}%
+- Disciplinas CRÍTICAS (abaixo de 40%): {critical_str}
+- Disciplinas fracas (40-60%): {weak_str}
+- Disciplinas fortes (acima de 70%): {strong_str}
+- Aulas assistidas: {lessons["watched"]} de {lessons["available"]} ({lessons["pct"]}%)
+
+REGRA DE PRIORIDADE OBRIGATÓRIA — siga EXATAMENTE esta ordem:
+1. Se NÃO tem cronograma → "create_schedule" (prioridade máxima, sempre)
+2. Se tem aula pendente HOJE no cronograma → "watch_lesson" (priority: high)
+3. Se tem questões pendentes HOJE no cronograma → "do_questions" (priority: high)
+4. Se cronograma da semana está abaixo de 50% → "view_schedule" (priority: medium)
+5. Só se não há nada pendente hoje: disciplina < 40% → "practice_discipline" (priority: high)
+6. Só se não há nada pendente hoje: sem questões hoje → "daily_questions" (priority: medium)
+7. Só se não há nada pendente hoje: disciplina 40-60% → "improve_discipline" (priority: medium)
+8. Se tudo bem → "keep_going" (priority: low)
+
+AÇÕES DISPONÍVEIS: create_schedule, watch_lesson, practice_discipline, do_questions,
+daily_questions, improve_discipline, view_schedule, keep_going
+
+INSTRUÇÕES:
+- Tom: {voice['tom']}
+- title: curto, direto, máximo 6 palavras
+- message: personalizada com dados reais, máximo 2 frases
+- Se escolher practice_discipline ou improve_discipline: preencha discipline_filter com o nome exato
+- Responda APENAS com JSON válido, sem markdown
+
+FORMATO:
+{{"action_type": "...", "title": "...", "message": "...", "priority": "high"|"medium"|"low", "discipline_filter": "nome ou null"}}"""
+
+    client   = genai.Client(api_key=api_key)
+    response = client.models.generate_content(model="gemini-2.5-flash-lite", contents=prompt)
+    text     = response.text.strip()
+    if text.startswith("```"):
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+
+    parsed      = json.loads(text.strip())
+    action_type = parsed.get("action_type", "keep_going")
+    if action_type not in _NEXT_ACTION_MAP:
+        action_type = "keep_going"
+
+    base      = _NEXT_ACTION_MAP[action_type]
+    disc_name = parsed.get("discipline_filter")
+    cta_params: dict = {}
+    if disc_name and action_type in ("practice_discipline", "improve_discipline", "do_questions"):
+        cta_params = {"discipline": disc_name}
+
+    current_app.logger.info(f"[GEMINI] next_action={action_type} user={user.id}")
+
+    return {
+        "action_type": action_type,
+        "title":       parsed.get("title", base["cta_label"]),
+        "message":     parsed.get("message", ""),
+        "cta_label":   base["cta_label"],
+        "cta_url":     base["cta_url"],
+        "cta_params":  cta_params,
+        "icon":        base["icon"],
+        "priority":    parsed.get("priority", "medium"),
+    }
+
+
+def _rule_based_next_action(context: dict) -> dict:
+    """Fallback simples caso Gemini falhe."""
+    sched     = context["schedule"]
+    discs     = context["disciplines"]
+    questions = context["questions"]
+
+    if not sched["has_schedule"]:
+        base = _NEXT_ACTION_MAP["create_schedule"]
+        return {**base, "action_type": "create_schedule", "cta_params": {}, "priority": "high",
+                "title": "Crie seu cronograma",
+                "message": "Um cronograma personalizado organiza seus estudos e aumenta suas chances de aprovação."}
+
+    if sched["today_pending"]:
+        first = sched["today_pending"][0]
+        if first["item_type"] == "lesson":
+            base = _NEXT_ACTION_MAP["watch_lesson"]
+            return {**base, "action_type": "watch_lesson", "cta_params": {}, "priority": "high",
+                    "title": "Aula do dia te esperando",
+                    "message": f'"{first["lesson_title"]}" está no cronograma de hoje.'}
+        disc = first.get("subject_name")
+        base = _NEXT_ACTION_MAP["do_questions"]
+        return {**base, "action_type": "do_questions",
+                "cta_params": {"discipline": disc} if disc else {},
+                "priority": "high", "title": "Questões do cronograma de hoje",
+                "message": f"Questões programadas para hoje{f' de {disc}' if disc else ''}. Mantenha o ritmo!"}
+
+    if discs["critical"]:
+        worst = discs["critical"][0]
+        base  = _NEXT_ACTION_MAP["practice_discipline"]
+        return {**base, "action_type": "practice_discipline",
+                "cta_params": {"discipline": worst["discipline"]}, "priority": "high",
+                "title": f"Reforce {worst['discipline']}",
+                "message": f"Acerto de {worst['accuracy_rate']}% — abaixo da meta. Resolva questões agora!"}
+
+    if questions["answered_today"] == 0:
+        base = _NEXT_ACTION_MAP["daily_questions"]
+        return {**base, "action_type": "daily_questions", "cta_params": {}, "priority": "medium",
+                "title": "Nenhuma questão hoje ainda",
+                "message": "Que tal 10 questões agora? Consistência diária é o segredo."}
+
+    base = _NEXT_ACTION_MAP["keep_going"]
+    return {**base, "action_type": "keep_going", "cta_params": {}, "priority": "low",
+            "title": "Você está indo bem!",
+            "message": f"Já respondeu {questions['answered_today']} questões hoje. Continue assim!"}
 
 def _gemini_student_insights(
     api_key: str,

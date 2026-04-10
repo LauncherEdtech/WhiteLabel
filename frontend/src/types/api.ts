@@ -319,3 +319,16 @@ export interface StudyCapsule {
     user_since: { month: number; year: number };
     generated_at: string;
 }
+
+// ── Widget IA — próxima ação ──────────────────────────────────────────────────
+
+export interface NextAction {
+    action_type: string;
+    title: string;
+    message: string;
+    cta_label: string;
+    cta_url: string;
+    cta_params: Record<string, string>;
+    icon: string;
+    priority: "high" | "medium" | "low";
+}

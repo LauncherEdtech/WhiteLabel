@@ -10,6 +10,7 @@ import { StudentSidebar } from "@/components/layout/StudentSidebar";
 import { StudentTopbar } from "@/components/layout/StudentTopbar";
 import { StudentMinimalNav } from "@/components/layout/StudentMinimalNav";
 import { TopBar } from "@/components/layout/TopBar";
+import { FloatingCoachWidget } from "@/components/student/FloatingCoachWidget";
 
 export default function StudentLayout({ children }: { children: React.ReactNode }) {
     const { user, isLoading } = useAuthStore();
@@ -76,6 +77,8 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
                 <main className="flex-1 overflow-y-auto">
                     <div className="p-6 max-w-7xl mx-auto">
                         {children}
+                     {/* Coach flutuante — aparece em todas as páginas do aluno */}
+                     <FloatingCoachWidget />
                     </div>
                 </main>
             </div>
