@@ -674,6 +674,21 @@ def answer_question(question_id: str):
     except Exception:
         pass
 
+    # Dispara adaptação do cronograma se a questão pertence a uma disciplina
+    # Threshold: >= 10 tentativas e acurácia < 50% → injeta revisões extras
+    # Se acurácia >= 70% → remove revisões adaptativas pendentes
+    try:
+        if question.subject_id:
+            from app.tasks.schedule_tasks import adapt_after_question_attempt
+
+            adapt_after_question_attempt.delay(
+                user_id=user_id,
+                tenant_id=tenant.id,
+                subject_id=question.subject_id,
+            )
+    except Exception:
+        pass  # Nunca falha a resposta da questão por causa do cronograma
+
     return (
         jsonify(
             {

@@ -1,11 +1,12 @@
 // frontend/src/types/schedule.ts
-// FIX Bug #4 (tipo): ItemStatus usava "completed" mas o backend envia "done".
-// Corrigido para refletir os valores reais retornados pela API.
+// Tipos alinhados com o contrato REAL da API (api/app/routes/schedule.py)
+//
+// Status real do backend: "pending" | "done" | "skipped" | "rescheduled"
+// NÃO usa "completed" nem "overdue" — esses valores não existem na API.
 
 export type ItemType = "lesson" | "questions" | "review" | "simulado";
 
-// "done" é o valor real que o backend grava e retorna (ScheduleItem.status)
-// Valores: "pending" | "done" | "skipped" | "rescheduled"
+// Valores exatos retornados pela API (model ScheduleItem.status)
 export type ItemStatus = "pending" | "done" | "skipped" | "rescheduled";
 
 export interface StudySchedule {
@@ -19,14 +20,16 @@ export interface StudySchedule {
     last_reorganized_at: string | null;
 }
 
+// A API retorna days como array de { date, items } — sem is_today nem day_label
+// Esses campos são computados no frontend (ver ScheduleDay.tsx > parseDayMeta)
 export interface ScheduleDay {
-    date: string;
+    date: string;   // ISO date "YYYY-MM-DD"
     items: ScheduleItem[];
 }
 
 export interface ScheduleItem {
     id: string;
-    item_type: ItemType;
+    item_type: ItemType;   // campo real da API (não "type")
     status: ItemStatus;
     scheduled_date: string;
     order: number;
@@ -34,12 +37,14 @@ export interface ScheduleItem {
     priority_reason: string | null;
     has_checkin: boolean;
     question_filters: {
+        _adaptive?: boolean;
         tags?: string[];
         difficulty?: "easy" | "medium" | "hard" | "expert";
         quantity?: number;
     } | null;
     template_item_title: string | null;
     template_item_notes: string | null;
+    // lesson e subject são opcionais dependendo do item_type
     lesson?: {
         id: string;
         title: string;
@@ -68,6 +73,6 @@ export interface ScheduleStats {
 
 export interface ScheduleResponse {
     schedule: StudySchedule | null;
-    days: { date: string; items: ScheduleItem[] }[];
+    days: ScheduleDay[];
     stats: ScheduleStats | null;
 }
