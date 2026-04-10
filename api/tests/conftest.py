@@ -95,7 +95,7 @@ def _seed_test_data():
     _db.session.flush()
 
     for key, text in [("a","Não há crime sem lei anterior"), ("b","Toda conduta é crime"), ("c","A lei retroage"), ("d","O juiz cria crimes")]:
-        _db.session.add(Alternative(question_id=question.id, key=key, text=text))
+        _db.session.add(Alternative(question_id=question.id, tenant_id=tenant.id, key=key, text=text))
 
     _db.session.commit()
 
