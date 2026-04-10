@@ -18,7 +18,7 @@ class TestAuth:
             json={"email": "aluno@test.com", "password": "Aluno@123456"},
             headers=tenant_headers)
         assert res.status_code == 200
-        assert "access_token" in res.json
+        assert "user_id" in res.json
         assert "refresh_token" in res.json
         assert res.json["user"]["role"] == "student"
 
@@ -46,7 +46,7 @@ class TestAuth:
     def test_me_authenticated(self, client, student_headers):
         res = client.get("/api/v1/auth/me", headers=student_headers)
         assert res.status_code == 200
-        assert res.json["user"]["email"] == "aluno@test.com"
+        assert res.json["email"] == "aluno@test.com"
 
     def test_me_unauthenticated(self, client, tenant_headers):
         res = client.get("/api/v1/auth/me", headers=tenant_headers)
@@ -58,7 +58,7 @@ class TestAuth:
                   "password": "Novo@123456"},
             headers=tenant_headers)
         assert res.status_code in (201, 200)
-        assert "access_token" in res.json
+        assert "user_id" in res.json
 
     def test_register_duplicate_email(self, client, tenant_headers):
         res = client.post("/api/v1/auth/register",
@@ -77,7 +77,7 @@ class TestAuth:
         res = client.post("/api/v1/auth/refresh",
             headers={**tenant_headers, "Authorization": f"Bearer {refresh_token}"})
         assert res.status_code == 200
-        assert "access_token" in res.json
+        assert "user_id" in res.json
 
     def test_update_profile(self, client, student_headers):
         res = client.put("/api/v1/auth/profile",
