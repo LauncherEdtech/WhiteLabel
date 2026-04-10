@@ -150,7 +150,25 @@ export interface DisciplinePerformance {
 
 // ── Missão Semanal ────────────────────────────────────────────────────────────
 
-export type WeeklyMissionItemType = "schedule" | "discipline_accuracy";
+export interface WeeklyMissionPendingItem {
+    id: string;
+    item_type: string;
+    scheduled_date: string;
+    estimated_minutes: number;
+    lesson?: { id: string; title: string } | null;
+    subject?: { id: string; name: string; color: string } | null;
+}
+
+export interface WeeklyMissionDisciplineAlert {
+    discipline: string;
+    current_accuracy: number;
+    target_accuracy: number;
+    total_attempts: number;
+    urgent: boolean;
+    done: boolean;
+}
+
+export type WeeklyMissionItemType = "schedule" | "discipline_cluster";
 
 export interface WeeklyMissionItem {
     type: WeeklyMissionItemType;
@@ -160,13 +178,10 @@ export interface WeeklyMissionItem {
     total?: number;
     completed?: number;
     progress_pct?: number;
-    // discipline_accuracy
-    discipline?: string;
-    current_accuracy?: number;
-    target_accuracy?: number;
-    total_attempts?: number;
-    /** true = abaixo de 40% (crítico/vermelho), false = 40-59% (melhorando/amarelo) */
-    urgent?: boolean;
+    pending_items?: WeeklyMissionPendingItem[];
+    // discipline_cluster
+    disciplines?: WeeklyMissionDisciplineAlert[];
+    done_count?: number;
 }
 
 export interface WeeklyMission {
@@ -301,6 +316,6 @@ export interface StudyCapsule {
     tenant_primary_color: string;
     tenant_instagram: string | null;
     capsule_style: "operativo" | "campeao" | "relatorio" | "neon" | "bold" | "elegante";
-    user_since: { month: number; year: number };   // ← NOVO
+    user_since: { month: number; year: number };
     generated_at: string;
 }

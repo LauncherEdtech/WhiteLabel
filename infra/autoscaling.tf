@@ -21,17 +21,24 @@ resource "aws_iam_role_policy" "ecs_sqs" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "sqs:SendMessage",
-        "sqs:ReceiveMessage",
-        "sqs:DeleteMessage",
-        "sqs:GetQueueAttributes",
-        "sqs:GetQueueUrl",
-      ]
-      Resource = aws_sqs_queue.celery.arn
-    }]
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:SendMessage",
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes",
+          "sqs:GetQueueUrl",
+        ]
+        Resource = aws_sqs_queue.celery.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:ListQueues", "sqs:CreateQueue"]
+        Resource = "*"
+      }
+    ]
   })
 }
 

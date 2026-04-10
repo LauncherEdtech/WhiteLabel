@@ -342,28 +342,14 @@ def student_dashboard():
 
 
 def _get_weekly_mission(user_id: str, tenant_id: str, discipline_stats: list) -> dict:
-    """
-    Monta a missão semanal baseada em tarefas.
-
-    Retorna:
-        {
-            "has_schedule": bool,
-            "week_start": "YYYY-MM-DD",
-            "week_end":   "YYYY-MM-DD",
-            "items": [...],
-            "total_items": int,
-            "completed_items": int,
-        }
-    """
     from datetime import date
 
     today = date.today()
-    week_start = today - timedelta(days=today.weekday())  # segunda-feira
-    week_end = week_start + timedelta(days=6)  # domingo
+    week_start = today - timedelta(days=today.weekday())
+    week_end = week_start + timedelta(days=6)
     week_start_str = week_start.isoformat()
     week_end_str = week_end.isoformat()
 
-    # ── Cronograma ativo do aluno ─────────────────────────────────────────────
     schedule = (
         StudySchedule.query.filter_by(
             user_id=user_id, tenant_id=tenant_id, is_deleted=False
@@ -376,17 +362,41 @@ def _get_weekly_mission(user_id: str, tenant_id: str, discipline_stats: list) ->
     items = []
 
     if has_schedule:
-        week_items = ScheduleItem.query.filter(
-            ScheduleItem.schedule_id == schedule.id,
-            ScheduleItem.scheduled_date >= week_start_str,
-            ScheduleItem.scheduled_date <= week_end_str,
-            ScheduleItem.is_deleted == False,
-        ).all()
+        week_items = (
+            ScheduleItem.query.filter(
+                ScheduleItem.schedule_id == schedule.id,
+                ScheduleItem.scheduled_date >= week_start_str,
+                ScheduleItem.scheduled_date <= week_end_str,
+                ScheduleItem.is_deleted == False,
+            )
+            .order_by(ScheduleItem.scheduled_date, ScheduleItem.order)
+            .all()
+        )
 
         total = len(week_items)
         completed = sum(1 for i in week_items if i.status == "done")
+        pending = [i for i in week_items if i.status == "pending"]
 
         if total > 0:
+            # Serializa até 10 itens pendentes da semana para exibição no card
+            pending_serialized = []
+            for i in pending[:10]:
+                d = {
+                    "id": i.id,
+                    "item_type": i.item_type,
+                    "scheduled_date": i.scheduled_date,
+                    "estimated_minutes": i.estimated_minutes,
+                }
+                if i.lesson_id and i.lesson:
+                    d["lesson"] = {"id": i.lesson.id, "title": i.lesson.title}
+                if i.subject_id and i.subject:
+                    d["subject"] = {
+                        "id": i.subject.id,
+                        "name": i.subject.name,
+                        "color": i.subject.color,
+                    }
+                pending_serialized.append(d)
+
             items.append(
                 {
                     "type": "schedule",
@@ -395,34 +405,40 @@ def _get_weekly_mission(user_id: str, tenant_id: str, discipline_stats: list) ->
                     "completed": completed,
                     "progress_pct": round((completed / total) * 100, 1) if total else 0,
                     "done": completed >= total,
+                    "pending_items": pending_serialized,
                 }
             )
 
-    # ── Alertas de disciplina ─────────────────────────────────────────────────
-    # Entra na missão: accuracy < 40%  e  total_attempts >= 5
-    # Sai da missão:   accuracy >= 60%
-    # Entre 40-59%:    permanece (urgent=False → cor amarela)
+    # ── Cluster de disciplinas ─────────────────────────────────────────────
+    discipline_alerts = []
     for disc in discipline_stats:
         accuracy = disc.get("accuracy_rate", 0)
         total_attempts = disc.get("total_answered") or disc.get("total_attempts", 0)
-
         if total_attempts < 5:
-            continue  # poucos dados → não gera ruído
-
-        if accuracy < 60:  # não saiu da missão
-            items.append(
+            continue
+        if accuracy < 60:
+            discipline_alerts.append(
                 {
-                    "type": "discipline_accuracy",
-                    "title": f"Melhorar acerto em {disc['discipline']}",
                     "discipline": disc["discipline"],
                     "current_accuracy": accuracy,
                     "target_accuracy": 60.0,
                     "total_attempts": total_attempts,
-                    "urgent": accuracy
-                    < 40,  # True=crítico (vermelho), False=melhorando (amarelo)
+                    "urgent": accuracy < 40,
                     "done": False,
                 }
             )
+
+    if discipline_alerts:
+        items.append(
+            {
+                "type": "discipline_cluster",
+                "title": "Melhore seu desempenho",
+                "disciplines": discipline_alerts,
+                "total": len(discipline_alerts),
+                "done_count": 0,
+                "done": False,
+            }
+        )
 
     completed_items = sum(1 for i in items if i.get("done", False))
 

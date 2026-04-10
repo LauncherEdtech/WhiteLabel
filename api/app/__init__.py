@@ -167,8 +167,29 @@ def _register_error_handlers(app: Flask) -> None:
 
 
 def _configure_celery(app: Flask) -> None:
+    # Detecta se está usando SQS ou Redis como broker
+    broker_url = app.config["CELERY_BROKER_URL"]
+    is_sqs = broker_url.startswith("sqs://")
+
+    if is_sqs:
+        # SQS: usa predefined_queues para apontar direto para a fila criada
+        # evita que o kombu tente criar/listar filas desnecessariamente
+        transport_options = {
+            "visibility_timeout": 3600,
+            "predefined_queues": {
+                "celery": {
+                    "url": "https://sqs.sa-east-1.amazonaws.com/853696859705/concurso-platform-celery",
+                }
+            },
+        }
+    else:
+        # Redis (dev local): sem opções especiais
+        transport_options = {
+            "visibility_timeout": 3600,
+        }
+
     celery_app.conf.update(
-        broker_url=app.config["CELERY_BROKER_URL"],
+        broker_url=broker_url,
         result_backend=app.config["CELERY_RESULT_BACKEND"],
         task_serializer=app.config["CELERY_TASK_SERIALIZER"],
         result_serializer=app.config["CELERY_RESULT_SERIALIZER"],
@@ -176,32 +197,20 @@ def _configure_celery(app: Flask) -> None:
         timezone="America/Sao_Paulo",
         enable_utc=True,
         include=["app.tasks"],
-        # ── OTIMIZAÇÃO UPSTASH: reduz BRPOP agressivo ────────────────────────
-        # Sem isso, o worker faz polling contínuo gerando milhões de ops/dia.
-        broker_transport_options={
-            # Tempo máximo bloqueado no BRPOP antes de tentar novamente (s)
-            "visibility_timeout": 3600,
-            # Timeout do socket Redis — evita conexões presas
-            "socket_timeout": 30,
-            # Intervalo entre tentativas de polling quando fila está vazia
-            "interval": 5,
-        },
-        # Worker verifica tarefas a cada 5s em vez de continuamente
+        broker_transport_options=transport_options,
         broker_connection_retry_on_startup=True,
-        # Limita prefetch para não sobrecarregar Redis
         worker_prefetch_multiplier=1,
-        # Descarta resultados de tasks mais rápido (economiza SET/GET)
-        result_expires=300,  # 5 minutos
+        result_expires=300,
     )
 
     celery_app.conf.beat_schedule = {
         "nightly-schedule-check": {
             "task": "app.tasks.schedule_tasks.nightly_schedule_check",
-            "schedule": 3 * 3600,  # a cada 3h
+            "schedule": 3 * 3600,
         },
         "publish-cloudwatch-metrics": {
             "task": "app.tasks.cloudwatch_metrics.publish_active_users_metric",
-            "schedule": 300,  # a cada 5min (era 60s) — economiza 80% das ops
+            "schedule": 300,
         },
     }
 
