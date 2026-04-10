@@ -48,6 +48,7 @@ jobs:
           FLASK_ENV: testing
           SECRET_KEY: test-secret-key-for-ci
           JWT_SECRET_KEY: test-jwt-key-for-ci
+          PYTHONPATH: ${{ github.workspace }}/api
           DATABASE_URL: postgresql://test_user:test_pass@localhost:5432/test_db
         run: |
           cd api
