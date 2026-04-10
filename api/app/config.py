@@ -11,19 +11,16 @@ class Config:
 
     # ── Banco de Dados ───────────────────────────────────────────────────────
     SQLALCHEMY_DATABASE_URI = os.environ.get("DATABASE_URL")
-    # SEGURANÇA: Desabilita tracking de modificações (overhead + vazamento de memória)
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    # Pool de conexões: evita conexões ociosas no RDS
     SQLALCHEMY_ENGINE_OPTIONS = {
-        "pool_pre_ping": True,  # Testa conexão antes de usar
-        "pool_recycle": 300,  # Recicla conexões a cada 5min
+        "pool_pre_ping": True,
+        "pool_recycle": 300,
         "pool_size": 10,
         "max_overflow": 20,
     }
 
     # ── Segurança Flask ──────────────────────────────────────────────────────
     SECRET_KEY = os.environ.get("SECRET_KEY")
-    # SEGURANÇA: Verifica se a chave foi definida (falha rápida em dev descuidado)
     if not SECRET_KEY:
         raise ValueError("SECRET_KEY não definida no ambiente!")
 
@@ -32,35 +29,30 @@ class Config:
     if not JWT_SECRET_KEY:
         raise ValueError("JWT_SECRET_KEY não definida no ambiente!")
 
-    JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=1)  # Token curto
-    JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=30)  # Refresh longo
+    JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=1)
+    JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=30)
     JWT_ALGORITHM = "HS256"
-    # SEGURANÇA: Tokens ficam no header Authorization, nunca em cookies sem httpOnly
     JWT_TOKEN_LOCATION = ["headers"]
     JWT_HEADER_NAME = "Authorization"
     JWT_HEADER_TYPE = "Bearer"
 
     # ── Redis / Celery ───────────────────────────────────────────────────────
     REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-    # ssl_cert_reqs=CERT_NONE necessário para rediss:// no ElastiCache
     _ssl_suffix = (
         "?ssl_cert_reqs=CERT_NONE" if REDIS_URL.startswith("rediss://") else ""
     )
     CELERY_BROKER_URL = REDIS_URL + _ssl_suffix
     CELERY_RESULT_BACKEND = REDIS_URL + _ssl_suffix
-    # SEGURANÇA: Serializa tarefas como JSON (nunca pickle em produção)
     CELERY_TASK_SERIALIZER = "json"
     CELERY_RESULT_SERIALIZER = "json"
     CELERY_ACCEPT_CONTENT = ["json"]
 
     # ── Rate Limiting ────────────────────────────────────────────────────────
-    # SEGURANÇA: Limita requisições por IP via Redis para prevenir brute-force
     RATELIMIT_STORAGE_URI = REDIS_URL
     RATELIMIT_DEFAULT = "200 per hour"
-    RATELIMIT_HEADERS_ENABLED = True  # Retorna headers X-RateLimit-*
+    RATELIMIT_HEADERS_ENABLED = True
 
     # ── CORS ─────────────────────────────────────────────────────────────────
-    # Origens permitidas são definidas por tenant (ver middleware/tenant.py)
     CORS_SUPPORTS_CREDENTIALS = True
 
     # ── IA ───────────────────────────────────────────────────────────────────
@@ -83,9 +75,7 @@ class DevelopmentConfig(Config):
     """Configuração para desenvolvimento local."""
 
     DEBUG = True
-    # SEGURANÇA: Em dev, log de queries SQL ajuda a detectar N+1 e queries inseguras
-    SQLALCHEMY_ECHO = False  # True para ver SQL no terminal (verboso)
-    # Rate limit mais permissivo em dev para não atrapalhar testes
+    SQLALCHEMY_ECHO = False
     RATELIMIT_DEFAULT = "10000 per hour"
 
 
@@ -94,9 +84,7 @@ class ProductionConfig(Config):
 
     DEBUG = False
     TESTING = False
-    # SEGURANÇA: Force HTTPS verificando headers do ALB/CloudFront
     PREFERRED_URL_SCHEME = "https"
-    # SEGURANÇA: Headers de segurança HTTP (complementa Nginx/CloudFront)
     SESSION_COOKIE_SECURE = True
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
@@ -106,32 +94,23 @@ class TestingConfig(Config):
     """Configuração para testes automatizados."""
 
     TESTING = True
-    SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"  # BD em memória para testes rápidos
-    JWT_ACCESS_TOKEN_EXPIRES = timedelta(minutes=5)
-    RATELIMIT_ENABLED = False  # Desabilita rate limit nos testes
-
-
-# Mapa de ambientes para a factory do Flask
-config_by_name = {
-    "development": DevelopmentConfig,
-    "production": ProductionConfig,
-    "testing": TestingConfig,
-}
-
-
-class TestingConfig(Config):
-    TESTING = True
+    DEBUG = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
-    WTF_CSRF_ENABLED = False
-    RATELIMIT_ENABLED = False
+    # SQLite não suporta pool_size/max_overflow — override obrigatório
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        "pool_pre_ping": False,
+    }
+    JWT_ACCESS_TOKEN_EXPIRES = timedelta(minutes=5)
     JWT_SECRET_KEY = "test-jwt-secret-key"
     SECRET_KEY = "test-secret-key"
-    CELERY_TASK_ALWAYS_EAGER = True  # Tasks executam sincronamente
+    RATELIMIT_ENABLED = False
+    WTF_CSRF_ENABLED = False
+    CELERY_TASK_ALWAYS_EAGER = True
     MAIL_SUPPRESS_SEND = True
 
 
 config_by_name = {
     "development": DevelopmentConfig,
     "production": ProductionConfig,
-    "testing": TestingConfig,  # ← adiciona esta linha
+    "testing": TestingConfig,
 }

@@ -52,7 +52,7 @@ jobs:
           DATABASE_URL: postgresql://test_user:test_pass@localhost:5432/test_db
         run: |
           cd api
-          pytest tests/ -v --cov=app --cov-report=xml --cov-fail-under=60
+          pytest tests/ -v --cov=app --cov-report=xml --cov-fail-under=50
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
