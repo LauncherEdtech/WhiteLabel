@@ -16,7 +16,8 @@ import {
 import Link from "next/link";
 import { cn } from "@/lib/utils/cn";
 import type {
-    Insight, ScheduleItem, DisciplinePerformance, WeeklyMission, WeeklyMissionItem,
+    Insight, ScheduleItem, DisciplinePerformance,
+    WeeklyMission, WeeklyMissionItem, WeeklyMissionPendingItem,
 } from "@/types/api";
 
 export default function DashboardPage() {
@@ -80,8 +81,8 @@ export default function DashboardPage() {
                 />
             </div>
 
-            {/* Missão Semanal */}
-            <WeeklyMissionCard mission={weekly_mission} todaysPending={todays_pending} />
+            {/* Missão Semanal — itens da semana vêm dentro de mission */}
+            <WeeklyMissionCard mission={weekly_mission} />
 
             {/* Grid: Pendências + Desempenho */}
             <div className="grid lg:grid-cols-2 gap-6">
@@ -172,20 +173,11 @@ export default function DashboardPage() {
 // MISSÃO SEMANAL
 // ══════════════════════════════════════════════════════════════════════════════
 
-function WeeklyMissionCard({
-    mission,
-    todaysPending,
-}: {
-    mission: WeeklyMission | undefined;
-    todaysPending: ScheduleItem[];
-}) {
+function WeeklyMissionCard({ mission }: { mission: WeeklyMission | undefined }) {
     if (!mission) return null;
 
     const { has_schedule, items, total_items, completed_items } = mission;
     const allDone = total_items > 0 && completed_items >= total_items;
-
-    // Cada item tem ~52px de altura. 5 itens = 260px + espaçamentos
-    const SCROLL_HEIGHT = 224;
 
     return (
         <Card className={cn(
@@ -253,27 +245,18 @@ function WeeklyMissionCard({
                 {items.length > 0 && (
                     <div className="relative">
                         <div
-                            className={cn(
-                                "space-y-1.5 overflow-y-auto",
-                                // Scrollbar customizada via inline style — sem depender de plugin
-                            )}
+                            className="space-y-1.5 overflow-y-auto"
                             style={{
-                                maxHeight: `${SCROLL_HEIGHT}px`,
+                                maxHeight: "224px",
                                 scrollbarWidth: "thin",
                                 scrollbarColor: "hsl(var(--border)) transparent",
                             }}
                         >
                             {items.map((item, i) => (
-                                <MissionItem
-                                    key={i}
-                                    item={item}
-                                    todaysPending={todaysPending}
-                                />
+                                <MissionItem key={i} item={item} />
                             ))}
                         </div>
-
-                        {/* Fade bottom — indica que tem mais para rolar */}
-                        {items.length > 5 && (
+                        {items.length > 4 && (
                             <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-card to-transparent pointer-events-none" />
                         )}
                     </div>
@@ -283,37 +266,38 @@ function WeeklyMissionCard({
     );
 }
 
-// ── Item: cronograma (expansível) ─────────────────────────────────────────────
+// ── Cronograma expansível — itens da semana agrupados por dia ─────────────────
 
-function ScheduleMissionItem({
-    item,
-    todaysPending,
-}: {
-    item: WeeklyMissionItem;
-    todaysPending: ScheduleItem[];
-}) {
+function ScheduleMissionItem({ item }: { item: WeeklyMissionItem }) {
     const [open, setOpen] = useState(false);
     const pct = item.progress_pct ?? 0;
     const done = item.done ?? false;
+    const pending = item.pending_items ?? [];
 
-    const typeIcon: Record<string, React.ReactNode> = {
+    const DAY_NAMES = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+    const TYPE_LABEL: Record<string, string> = {
+        lesson: "Aula", questions: "Questões", review: "Revisão", simulado: "Simulado",
+    };
+    const TYPE_ICON: Record<string, React.ReactNode> = {
         lesson: <Play className="h-3 w-3 text-primary" />,
         questions: <HelpCircle className="h-3 w-3 text-secondary" />,
         review: <RotateCcw className="h-3 w-3 text-warning" />,
         simulado: <FileText className="h-3 w-3 text-destructive" />,
     };
-    const typeLabel: Record<string, string> = {
-        lesson: "Aula", questions: "Questões", review: "Revisão", simulado: "Simulado",
-    };
 
-    const pendingToShow = todaysPending.slice(0, 5);
+    // Agrupa itens por data
+    const byDate = pending.reduce<Record<string, WeeklyMissionPendingItem[]>>((acc, p) => {
+        if (!acc[p.scheduled_date]) acc[p.scheduled_date] = [];
+        acc[p.scheduled_date].push(p);
+        return acc;
+    }, {});
 
     return (
         <div className={cn(
             "rounded-lg border transition-colors overflow-hidden",
             done ? "bg-success/5 border-success/20" : "bg-card border-border"
         )}>
-            {/* Linha principal — clicável */}
+            {/* Linha principal */}
             <button
                 onClick={() => setOpen(v => !v)}
                 className="w-full flex items-center gap-3 p-2.5 hover:bg-accent/50 transition-colors text-left"
@@ -327,7 +311,6 @@ function ScheduleMissionItem({
                         : <Calendar className="h-3.5 w-3.5 text-primary" />
                     }
                 </div>
-
                 <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-2">
                         <p className="text-xs font-medium text-foreground truncate">{item.title}</p>
@@ -344,46 +327,55 @@ function ScheduleMissionItem({
                         />
                     </div>
                 </div>
-
                 <ChevronDown className={cn(
                     "h-3.5 w-3.5 text-muted-foreground shrink-0 transition-transform duration-200",
                     open && "rotate-180"
                 )} />
             </button>
 
-            {/* Expansão: atividades do dia */}
+            {/* Expansão: itens da semana agrupados por dia */}
             {open && (
-                <div className="border-t border-border bg-muted/30 px-2.5 py-2 space-y-1">
-                    {todaysPending.length === 0 ? (
+                <div className="border-t border-border bg-muted/30 px-2.5 py-2 space-y-2">
+                    {pending.length === 0 ? (
                         <p className="text-xs text-muted-foreground text-center py-2">
-                            Nenhuma atividade pendente para hoje.
+                            Nenhuma atividade pendente esta semana. 🎯
                         </p>
                     ) : (
                         <>
-                            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide px-1 mb-1.5">
-                                Atividades de hoje
+                            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide px-1">
+                                Pendentes esta semana
                             </p>
-                            {pendingToShow.map((pending) => (
-                                <Link key={pending.id} href="/schedule" className="block">
-                                    <div className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-accent transition-colors">
-                                        <div className="h-5 w-5 rounded bg-background flex items-center justify-center shrink-0">
-                                            {typeIcon[pending.type] ?? <Calendar className="h-3 w-3 text-muted-foreground" />}
-                                        </div>
-                                        <div className="flex-1 min-w-0">
-                                            <p className="text-xs text-foreground truncate">
-                                                {pending.lesson?.title ?? pending.subject?.name ?? typeLabel[pending.type]}
-                                            </p>
-                                        </div>
-                                        <span className="text-[10px] text-muted-foreground shrink-0">
-                                            {pending.estimated_minutes}min
-                                        </span>
+                            {Object.entries(byDate).map(([date, dayItems]) => {
+                                const d = new Date(date + "T12:00:00");
+                                const dayName = DAY_NAMES[d.getDay()];
+                                const dayNum = d.getDate();
+                                return (
+                                    <div key={date}>
+                                        <p className="text-[10px] text-muted-foreground/60 px-1 mb-1">
+                                            {dayName} {dayNum}
+                                        </p>
+                                        {dayItems.map(p => (
+                                            <Link key={p.id} href="/schedule" className="block">
+                                                <div className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-accent transition-colors">
+                                                    <div className="h-5 w-5 rounded bg-background flex items-center justify-center shrink-0">
+                                                        {TYPE_ICON[p.item_type] ?? <Calendar className="h-3 w-3 text-muted-foreground" />}
+                                                    </div>
+                                                    <p className="text-xs text-foreground flex-1 truncate">
+                                                        {p.lesson?.title ?? p.subject?.name ?? TYPE_LABEL[p.item_type] ?? p.item_type}
+                                                    </p>
+                                                    <span className="text-[10px] text-muted-foreground shrink-0">
+                                                        {p.estimated_minutes}min
+                                                    </span>
+                                                </div>
+                                            </Link>
+                                        ))}
                                     </div>
-                                </Link>
-                            ))}
-                            {todaysPending.length > 5 && (
+                                );
+                            })}
+                            {(item.total ?? 0) - (item.completed ?? 0) > pending.length && (
                                 <Link href="/schedule">
                                     <p className="text-[10px] text-primary text-center pt-1 hover:underline">
-                                        +{todaysPending.length - 5} no cronograma →
+                                        Ver todos no cronograma →
                                     </p>
                                 </Link>
                             )}
@@ -395,74 +387,105 @@ function ScheduleMissionItem({
     );
 }
 
-// ── Item: disciplina ──────────────────────────────────────────────────────────
+// ── Disciplinas — cluster expansível ──────────────────────────────────────────
 
-function DisciplineMissionItem({ item }: { item: WeeklyMissionItem }) {
-    const current = item.current_accuracy ?? 0;
-    const target = item.target_accuracy ?? 60;
-    const urgent = item.urgent ?? false;
-    const pct = Math.min(Math.round((current / target) * 100), 100);
+function DisciplineClusterItem({ item }: { item: WeeklyMissionItem }) {
+    const [open, setOpen] = useState(false);
+    const disciplines = item.disciplines ?? [];
+    const urgentCount = disciplines.filter(d => d.urgent).length;
 
     return (
-        <Link href="/questions" className="block group">
-            <div className={cn(
-                "flex items-center gap-3 p-2.5 rounded-lg border transition-colors group-hover:border-primary/30",
-                urgent ? "bg-destructive/5 border-destructive/15" : "bg-warning/5 border-warning/15"
-            )}>
+        <div className={cn(
+            "rounded-lg border overflow-hidden transition-colors",
+            item.done ? "bg-success/5 border-success/20"
+                : urgentCount > 0 ? "bg-destructive/5 border-destructive/15"
+                    : "bg-warning/5 border-warning/15"
+        )}>
+            {/* Linha principal */}
+            <button
+                onClick={() => setOpen(v => !v)}
+                className="w-full flex items-center gap-3 p-2.5 hover:bg-accent/50 transition-colors text-left"
+            >
                 <div className={cn(
                     "h-6 w-6 rounded flex items-center justify-center shrink-0",
-                    urgent ? "bg-destructive/15" : "bg-warning/15"
+                    urgentCount > 0 ? "bg-destructive/15" : "bg-warning/15"
                 )}>
                     <AlertTriangle className={cn(
                         "h-3.5 w-3.5",
-                        urgent ? "text-destructive" : "text-warning"
+                        urgentCount > 0 ? "text-destructive" : "text-warning"
                     )} />
                 </div>
-
                 <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-2">
-                        <p className="text-xs font-medium text-foreground truncate">
-                            {item.discipline}
-                        </p>
+                        <p className="text-xs font-medium text-foreground truncate">{item.title}</p>
                         <span className={cn(
                             "text-xs font-bold shrink-0",
-                            urgent ? "text-destructive" : "text-warning"
+                            urgentCount > 0 ? "text-destructive" : "text-warning"
                         )}>
-                            {current}%
-                            <span className="text-muted-foreground font-normal"> → {target}%</span>
+                            {disciplines.length} disciplina{disciplines.length !== 1 ? "s" : ""}
                         </span>
                     </div>
-                    <div className="mt-1 h-1 w-full bg-muted rounded-full overflow-hidden">
-                        <div
-                            className={cn("h-full rounded-full transition-all duration-500",
-                                urgent ? "bg-destructive" : "bg-warning"
-                            )}
-                            style={{ width: `${pct}%` }}
-                        />
-                    </div>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">
+                        {urgentCount > 0
+                            ? `${urgentCount} crítica${urgentCount !== 1 ? "s" : ""} — abaixo de 40%`
+                            : "Melhorando — meta: 60% de acerto"}
+                    </p>
                 </div>
+                <ChevronDown className={cn(
+                    "h-3.5 w-3.5 text-muted-foreground shrink-0 transition-transform duration-200",
+                    open && "rotate-180"
+                )} />
+            </button>
 
-                <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-            </div>
-        </Link>
+            {/* Expansão: lista de disciplinas */}
+            {open && (
+                <div className="border-t border-border bg-muted/30 px-2.5 py-2 space-y-1">
+                    <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide px-1 mb-1.5">
+                        Disciplinas para melhorar
+                    </p>
+                    {disciplines.map((disc, i) => {
+                        const pct = Math.min(
+                            Math.round((disc.current_accuracy / disc.target_accuracy) * 100),
+                            100
+                        );
+                        return (
+                            <Link key={i} href="/questions" className="block">
+                                <div className="px-2 py-2 rounded-md hover:bg-accent transition-colors">
+                                    <div className="flex items-center justify-between mb-1">
+                                        <p className="text-xs text-foreground font-medium truncate flex-1">
+                                            {disc.discipline}
+                                        </p>
+                                        <span className={cn(
+                                            "text-xs font-bold shrink-0 ml-2",
+                                            disc.urgent ? "text-destructive" : "text-warning"
+                                        )}>
+                                            {disc.current_accuracy}%
+                                            <span className="text-muted-foreground font-normal"> → {disc.target_accuracy}%</span>
+                                        </span>
+                                    </div>
+                                    <div className="h-1 w-full bg-muted rounded-full overflow-hidden">
+                                        <div
+                                            className={cn("h-full rounded-full transition-all duration-500",
+                                                disc.urgent ? "bg-destructive" : "bg-warning"
+                                            )}
+                                            style={{ width: `${pct}%` }}
+                                        />
+                                    </div>
+                                </div>
+                            </Link>
+                        );
+                    })}
+                </div>
+            )}
+        </div>
     );
 }
 
 // ── Router de item ────────────────────────────────────────────────────────────
 
-function MissionItem({
-    item,
-    todaysPending,
-}: {
-    item: WeeklyMissionItem;
-    todaysPending: ScheduleItem[];
-}) {
-    if (item.type === "schedule") {
-        return <ScheduleMissionItem item={item} todaysPending={todaysPending} />;
-    }
-    if (item.type === "discipline_accuracy") {
-        return <DisciplineMissionItem item={item} />;
-    }
+function MissionItem({ item }: { item: WeeklyMissionItem }) {
+    if (item.type === "schedule") return <ScheduleMissionItem item={item} />;
+    if (item.type === "discipline_cluster") return <DisciplineClusterItem item={item} />;
     return null;
 }
 
