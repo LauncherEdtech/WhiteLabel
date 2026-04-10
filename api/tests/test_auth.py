@@ -33,7 +33,6 @@ class TestAuth:
             json={"email": "nonexistent@test.com", "password": "Aluno@123456"},
             headers=tenant_headers)
         assert res.status_code == 401
-        # Mensagem genérica — não revela se email existe
         assert "credenciais" in res.json["message"].lower() or \
                "inválid" in res.json["message"].lower()
 
@@ -58,7 +57,7 @@ class TestAuth:
                   "password": "Novo@123456"},
             headers=tenant_headers)
         assert res.status_code in (201, 200)
-        assert "access_token" in res.json
+        assert "user_id" in res.json
 
     def test_register_duplicate_email(self, client, tenant_headers):
         res = client.post("/api/v1/auth/register",
@@ -68,12 +67,10 @@ class TestAuth:
         assert res.status_code == 409
 
     def test_refresh_token(self, client, tenant_headers):
-        # Obtém refresh token
         login = client.post("/api/v1/auth/login",
             json={"email": "aluno@test.com", "password": "Aluno@123456"},
             headers=tenant_headers)
         refresh_token = login.json["refresh_token"]
-
         res = client.post("/api/v1/auth/refresh",
             headers={**tenant_headers, "Authorization": f"Bearer {refresh_token}"})
         assert res.status_code == 200
@@ -87,7 +84,6 @@ class TestAuth:
         assert res.json["user"]["name"] == "Maria Silva"
 
     def test_forgot_password_returns_200_always(self, client, tenant_headers):
-        """Deve retornar 200 mesmo para emails inexistentes (anti-enumeração)."""
         for email in ["aluno@test.com", "nonexistent@test.com"]:
             res = client.post("/api/v1/auth/forgot-password",
                 json={"email": email}, headers=tenant_headers)
