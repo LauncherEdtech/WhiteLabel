@@ -204,6 +204,7 @@ export function FloatingCoachWidget() {
 
             {/* ── Botão flutuante ─────────────────────────────────────────── */}
             <button
+                data-onboarding="coach"
                 onClick={() => setOpen(v => !v)}
                 className={cn(
                     "relative h-14 w-14 rounded-full shadow-xl shadow-black/30 pointer-events-auto",

@@ -274,7 +274,7 @@ function QuestionsContent() {
             </aside>
 
             {/* ── Conteúdo principal ── */}
-            <div className="flex-1 min-w-0 space-y-4">
+            <div data-onboarding="questions" className="flex-1 min-w-0 space-y-4">
 
                 {/* Header */}
                 <div className="flex items-center justify-between">

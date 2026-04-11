@@ -1,7 +1,7 @@
 // frontend/src/app/(student)/layout.tsx
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/stores/authStore";
 import { useMe } from "@/lib/hooks/useAuth";
@@ -23,6 +23,18 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
 
     const layoutStudent = (tenant?.branding as any)?.layout_student || "sidebar";
 
+    // Detecta mobile (< 1024px = breakpoint lg do Tailwind)
+    const [isMobile, setIsMobile] = useState(false);
+    useEffect(() => {
+        const check = () => setIsMobile(window.innerWidth < 1024);
+        check();
+        window.addEventListener("resize", check);
+        return () => window.removeEventListener("resize", check);
+    }, []);
+
+    // Mobile sempre usa minimal — desktop respeita configuração do produtor
+    const effectiveLayout = isMobile ? "minimal" : layoutStudent;
+
     useEffect(() => {
         if (!isLoading && !isFetching && user) {
             if (user.role !== "student") {
@@ -32,7 +44,6 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
     }, [user, isLoading, isFetching, router]);
 
     // Prefetch silencioso dos dados mais usados
-    // Roda assim que o layout monta — dados chegam antes do usuário navegar
     useEffect(() => {
         if (!user) return;
         queryClient.prefetchQuery({
@@ -64,7 +75,7 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
     }
 
     // ── Layout: Barra superior ────────────────────────────────────────────────
-    if (layoutStudent === "topbar") {
+    if (effectiveLayout === "topbar") {
         return (
             <div className="min-h-screen bg-background flex flex-col">
                 <StudentTopbar />
@@ -79,7 +90,7 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
     }
 
     // ── Layout: Dock minimal ──────────────────────────────────────────────────
-    if (layoutStudent === "minimal") {
+    if (effectiveLayout === "minimal") {
         return (
             <div className="min-h-screen bg-background">
                 <main className="pb-28">

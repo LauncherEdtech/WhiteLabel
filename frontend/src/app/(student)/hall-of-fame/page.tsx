@@ -48,22 +48,22 @@ function RankIcon({ icon, className }: { icon: string; className?: string }) {
 }
 
 const CATEGORY_LABELS: Record<string, { label: string; color: string }> = {
-    "questões":   { label: "📝 Questões",    color: "from-blue-500/20 to-blue-600/10 border-blue-500/30" },
-    "acerto":     { label: "🎯 Acerto",       color: "from-green-500/20 to-green-600/10 border-green-500/30" },
-    "aulas":      { label: "🎬 Aulas",        color: "from-purple-500/20 to-purple-600/10 border-purple-500/30" },
-    "streak":     { label: "🔥 Consistência", color: "from-orange-500/20 to-orange-600/10 border-orange-500/30" },
-    "cronograma": { label: "📅 Cronograma",   color: "from-cyan-500/20 to-cyan-600/10 border-cyan-500/30" },
-    "simulados":  { label: "📋 Simulados",    color: "from-yellow-500/20 to-yellow-600/10 border-yellow-500/30" },
-    "especiais":  { label: "⭐ Especiais",    color: "from-pink-500/20 to-pink-600/10 border-pink-500/30" },
+    "questões": { label: "📝 Questões", color: "from-blue-500/20 to-blue-600/10 border-blue-500/30" },
+    "acerto": { label: "🎯 Acerto", color: "from-green-500/20 to-green-600/10 border-green-500/30" },
+    "aulas": { label: "🎬 Aulas", color: "from-purple-500/20 to-purple-600/10 border-purple-500/30" },
+    "streak": { label: "🔥 Consistência", color: "from-orange-500/20 to-orange-600/10 border-orange-500/30" },
+    "cronograma": { label: "📅 Cronograma", color: "from-cyan-500/20 to-cyan-600/10 border-cyan-500/30" },
+    "simulados": { label: "📋 Simulados", color: "from-yellow-500/20 to-yellow-600/10 border-yellow-500/30" },
+    "especiais": { label: "⭐ Especiais", color: "from-pink-500/20 to-pink-600/10 border-pink-500/30" },
 };
 
 const MAX_RANK_LABELS: Record<string, string> = {
-    militar:       "Você é um General! 👑",
-    policial:      "Você é Delegado-Geral! 👑",
-    juridico:      "Você preside o STF! 👑",
-    fiscal:        "Você é Secretário da RFB! 👑",
-    administrativo:"Você é Presidente! 👑",
-    saude:         "Você é Secretário! 👑",
+    militar: "Você é um General! 👑",
+    policial: "Você é Delegado-Geral! 👑",
+    juridico: "Você preside o STF! 👑",
+    fiscal: "Você é Secretário da RFB! 👑",
+    administrativo: "Você é Presidente! 👑",
+    saude: "Você é Secretário! 👑",
 };
 
 function NewBadgeNotification({ badges, onDismiss }: { badges: BadgeDef[]; onDismiss: () => void }) {
@@ -185,7 +185,7 @@ function BadgeItem({ badge }: { badge: BadgeDef }) {
         <div onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
             className={cn("relative flex flex-col items-center gap-2 p-3 rounded-2xl border-2 transition-all duration-200 cursor-default text-center group",
                 badge.earned ? "bg-gradient-to-b from-white/10 to-white/5 border-white/30 hover:border-yellow-400/60 hover:bg-yellow-400/10"
-                             : "bg-transparent border-white/10 grayscale opacity-50")}>
+                    : "bg-transparent border-white/10 grayscale opacity-50")}>
             <div className={cn("h-14 w-14 rounded-xl flex items-center justify-center text-3xl transition-transform duration-200",
                 badge.earned ? "bg-white/20 shadow-inner" : "bg-white/5",
                 badge.earned && hovered ? "scale-110" : "scale-100")}>
@@ -236,7 +236,7 @@ export default function HallOfFamePage() {
     const earnedInCat = badges.filter(b => b.earned).length;
 
     return (
-        <div className="space-y-6 max-w-3xl animate-fade-in">
+        <div data-onboarding="hall-of-fame" className="space-y-6 max-w-3xl animate-fade-in">
             <NewBadgeNotification badges={newBadges} onDismiss={() => setNewBadges([])} />
 
             <div className="flex items-center gap-3">
@@ -288,7 +288,7 @@ export default function HallOfFamePage() {
                             <button key={cat} onClick={() => setActiveCategory(cat)}
                                 className={cn("flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border",
                                     isActive ? "bg-primary text-primary-foreground border-primary shadow-sm"
-                                             : "bg-muted/30 text-muted-foreground border-border hover:border-primary/50 hover:text-foreground")}>
+                                        : "bg-muted/30 text-muted-foreground border-border hover:border-primary/50 hover:text-foreground")}>
                                 {cfg.label}
                                 <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full", isActive ? "bg-white/20" : "bg-muted")}>
                                     {earned}/{total}

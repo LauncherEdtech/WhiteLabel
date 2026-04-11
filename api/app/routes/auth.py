@@ -155,7 +155,6 @@ def login():
 
     set_activity_user(user.id)
 
-
     return (
         jsonify(
             {
@@ -173,7 +172,11 @@ def login():
                     "slug": tenant.slug,
                     "plan": tenant.plan,
                     "branding": tenant.branding or {},
-                    "features": list(tenant.features) if isinstance(tenant.features, set) else (tenant.features or {}),
+                    "features": (
+                        list(tenant.features)
+                        if isinstance(tenant.features, set)
+                        else (tenant.features or {})
+                    ),
                     "custom_domain": tenant.custom_domain,
                 },
             }
@@ -374,10 +377,61 @@ def me():
                 "email_verified": user.email_verified,
                 "preferences": user.preferences,
                 "study_availability": user.study_availability,
+                "settings": user.settings or {},
             }
         ),
         200,
     )
+
+
+@auth_bp.route("/onboarding/complete", methods=["POST"])
+@jwt_required()
+@require_tenant
+def complete_onboarding():
+    """Marca onboarding como concluído."""
+    user_id = get_jwt_identity()
+    tenant = get_current_tenant()
+
+    user = User.query.filter_by(
+        id=user_id, tenant_id=tenant.id, is_deleted=False
+    ).first()
+    if not user:
+        return jsonify({"error": "not_found"}), 404
+
+    settings = user.settings or {}
+    settings["onboarding"] = {
+        "completed": True,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    user.settings = settings
+    db.session.commit()
+
+    return jsonify({"message": "Onboarding concluído."}), 200
+
+
+@auth_bp.route("/onboarding/skip", methods=["POST"])
+@jwt_required()
+@require_tenant
+def skip_onboarding():
+    """Aluno pulou o onboarding."""
+    user_id = get_jwt_identity()
+    tenant = get_current_tenant()
+
+    user = User.query.filter_by(
+        id=user_id, tenant_id=tenant.id, is_deleted=False
+    ).first()
+    if not user:
+        return jsonify({"error": "not_found"}), 404
+
+    settings = user.settings or {}
+    settings["onboarding"] = {
+        "skipped": True,
+        "skipped_at": datetime.now(timezone.utc).isoformat(),
+    }
+    user.settings = settings
+    db.session.commit()
+
+    return jsonify({"message": "Onboarding pulado."}), 200
 
 
 @auth_bp.route("/profile", methods=["PUT"])

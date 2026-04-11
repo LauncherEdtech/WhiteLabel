@@ -825,7 +825,7 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
     setDays(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d].sort());
 
   return (
-    <div className="max-w-lg mx-auto space-y-6 animate-fade-in">
+    <div data-onboarding="schedule" className="max-w-lg mx-auto space-y-6 animate-fade-in">
       <div className="text-center space-y-2">
         <div className="h-16 w-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto">
           <Sparkles className="h-8 w-8 text-primary" />

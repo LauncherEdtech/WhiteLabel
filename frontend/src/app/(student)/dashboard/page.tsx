@@ -69,7 +69,8 @@ export default function DashboardPage() {
             </div>
 
             {/* Cards de métricas */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 stagger">
+            <div data-onboarding="metrics" className="grid grid-cols-2 lg:grid-cols-4 gap-4 stagger">
+                
                 <MetricCard
                     icon={<Target className="h-5 w-5" />}
                     label="Acerto geral"
@@ -101,8 +102,9 @@ export default function DashboardPage() {
             </div>
 
             {/* Missão Semanal — itens da semana vêm dentro de mission */}
-            <WeeklyMissionCard mission={weekly_mission} />
-
+            <div data-onboarding="mission">
+                <WeeklyMissionCard mission={weekly_mission} />
+            </div>
             {/* Grid: Pendências + Desempenho */}
             <div className="grid lg:grid-cols-2 gap-6">
                 <Card>

@@ -16,10 +16,11 @@ class UserRole(str, PyEnum):
     Papéis com permissões crescentes.
     SEGURANÇA: Verificação de role sempre server-side, nunca confiar no cliente.
     """
-    SUPER_ADMIN = "super_admin"         # Acesso total à plataforma (você)
-    PRODUCER_ADMIN = "producer_admin"   # Dono do tenant (infoprodutor)
-    PRODUCER_STAFF = "producer_staff"   # Equipe do infoprodutor (suporte, tutor)
-    STUDENT = "student"                 # Aluno comprador do curso
+
+    SUPER_ADMIN = "super_admin"  # Acesso total à plataforma (você)
+    PRODUCER_ADMIN = "producer_admin"  # Dono do tenant (infoprodutor)
+    PRODUCER_STAFF = "producer_staff"  # Equipe do infoprodutor (suporte, tutor)
+    STUDENT = "student"  # Aluno comprador do curso
 
 
 class User(BaseModel, TenantMixin):
@@ -32,6 +33,7 @@ class User(BaseModel, TenantMixin):
     - Tokens de reset de senha com expiração
     - Tentativas de login limitadas (rate limiter nas rotas)
     """
+
     __tablename__ = "users"
 
     # ── Identificação ─────────────────────────────────────────────────────────
@@ -87,6 +89,13 @@ class User(BaseModel, TenantMixin):
         nullable=True,
     )
 
+    # ── Configurações internas (onboarding, flags, etc.) ──────────────────────────
+    settings = Column(
+        JSON,
+        default=dict,
+        nullable=True,
+    )
+
     # ── Relacionamentos ───────────────────────────────────────────────────────
     tenant = relationship("Tenant", back_populates="users")
     lesson_progress = relationship(
@@ -107,6 +116,7 @@ class User(BaseModel, TenantMixin):
 
     # SEGURANÇA: unique constraint composto (email + tenant_id)
     from sqlalchemy import UniqueConstraint
+
     __table_args__ = (
         UniqueConstraint("email", "tenant_id", name="uq_user_email_tenant"),
     )
@@ -147,5 +157,3 @@ class User(BaseModel, TenantMixin):
 
     def __repr__(self):
         return f"<User {self.email} [{self.role}]>"
-
-
