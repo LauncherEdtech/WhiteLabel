@@ -529,15 +529,15 @@ function PendingItem({ item }: { item: ScheduleItem }) {
     };
     return (
         <Link href="/schedule" className="block">
-            <div className="flex items-center gap-2.5 p-2 rounded-lg hover:bg-accent transition-colors">
+            <div className="flex items-center gap-2.5 p-2 rounded-lg hover:bg-accent transition-colors overflow-hidden">
                 <div className="h-6 w-6 rounded-md bg-primary/10 flex items-center justify-center shrink-0">
                     <Calendar className="h-3 w-3 text-primary" />
                 </div>
-                <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium text-foreground truncate">
+                <div className="flex-1 min-w-0 overflow-hidden">
+                    <p className="text-xs font-medium text-foreground truncate w-full">
                         {item.lesson?.title ?? item.subject?.name ?? typeLabel[item.type] ?? item.type}
                     </p>
-                    <p className="text-[10px] text-muted-foreground">
+                    <p className="text-[10px] text-muted-foreground truncate">
                         {typeLabel[item.type]} · {item.estimated_minutes}min
                     </p>
                 </div>

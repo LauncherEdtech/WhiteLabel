@@ -129,7 +129,13 @@ class ScheduleEngine:
             ScheduleItem.scheduled_date >= tomorrow_str,
             ScheduleItem.status == "pending",
             ScheduleItem.is_deleted == False,
-        ).delete(synchronize_session="fetch")
+        ).update(
+            {
+                "is_deleted": True,
+                "deleted_at": datetime.now(timezone.utc).isoformat(),
+            },
+            synchronize_session="fetch",
+        )
 
         schedule.status = "active"
         schedule.last_reorganized_at = datetime.now(timezone.utc).isoformat()
