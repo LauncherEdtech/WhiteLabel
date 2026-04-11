@@ -128,7 +128,7 @@ export function FloatingCoachWidget() {
     const cfg = PRIORITY_CONFIG[data.priority];
 
     return (
-        <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3 pointer-events-none">
+        <div className="fixed bottom-28 right-4 lg:bottom-6 lg:right-6 flex flex-col items-end gap-3 pointer-events-none">
 
             {/* ── Card expandido ──────────────────────────────────────────── */}
             {open && (

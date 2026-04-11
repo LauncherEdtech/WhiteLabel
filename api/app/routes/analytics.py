@@ -1405,6 +1405,7 @@ def _get_todays_pending(user_id: str, tenant_id: str, today_start: datetime) -> 
         ScheduleItem.query.join(StudySchedule)
         .filter(
             StudySchedule.user_id == user_id,
+            StudySchedule.is_deleted == False,
             ScheduleItem.tenant_id == tenant_id,
             ScheduleItem.scheduled_date == today_str,
             ScheduleItem.status == "pending",
