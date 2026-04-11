@@ -1,7 +1,7 @@
 // frontend/src/app/(student)/layout.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/stores/authStore";
 import { useMe } from "@/lib/hooks/useAuth";
@@ -16,6 +16,23 @@ import { FloatingCoachWidget } from "@/components/student/FloatingCoachWidget";
 import { OnboardingTour } from "@/components/onboarding/OnboardingTour";
 import { useOnboarding } from "@/lib/hooks/useOnboarding";
 
+// ── Hook de detecção mobile via useLayoutEffect ───────────────────────────────
+// useLayoutEffect roda SINCRONAMENTE antes do browser pintar a tela.
+// Isso garante que o layout correto é aplicado sem flash visível,
+// diferente de useEffect que roda depois da pintura.
+function useIsMobile(): boolean {
+    const [isMobile, setIsMobile] = useState(false);
+
+    useLayoutEffect(() => {
+        const check = () => setIsMobile(window.innerWidth < 1024);
+        check(); // executa imediatamente — antes do primeiro paint
+        window.addEventListener("resize", check);
+        return () => window.removeEventListener("resize", check);
+    }, []);
+
+    return isMobile;
+}
+
 export default function StudentLayout({ children }: { children: React.ReactNode }) {
     const { user, isLoading } = useAuthStore();
     const router = useRouter();
@@ -24,16 +41,7 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
     const queryClient = useQueryClient();
 
     const layoutStudent = (tenant?.branding as any)?.layout_student || "sidebar";
-
-    // ✅ FIX: lê o tamanho real na inicialização — evita flash do layout errado
-    const [isMobile, setIsMobile] = useState(() =>
-        typeof window !== "undefined" ? window.innerWidth < 1024 : false
-    );
-    useEffect(() => {
-        const check = () => setIsMobile(window.innerWidth < 1024);
-        window.addEventListener("resize", check);
-        return () => window.removeEventListener("resize", check);
-    }, []);
+    const isMobile = useIsMobile();
 
     // Mobile sempre usa minimal — desktop respeita configuração do produtor
     const effectiveLayout = isMobile ? "minimal" : layoutStudent;
