@@ -1,6 +1,9 @@
 // frontend/src/lib/api/schedule.ts
 import { apiClient } from "./client";
 
+export const uncheckinItem = (itemId: string) =>
+    apiClient.delete(`/schedule/checkin/${itemId}`);
+
 export const scheduleApi = {
     generate: async (courseId: string, targetDate?: string) => {
         const res = await apiClient.post("/schedule/generate", {

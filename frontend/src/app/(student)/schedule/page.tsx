@@ -126,9 +126,10 @@ function ViewToggle({ view, onChange }: { view: ViewMode; onChange: (v: ViewMode
 // Item individual (compartilhado entre views)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function ScheduleItemRow({ item, courseId, onCheckin, loading }: {
+function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
   item: any; courseId: string;
   onCheckin: (id: string, completed: boolean) => void;
+  onUncheckin: (id: string) => void;
   loading: boolean;
 }) {
   const router = useRouter();
@@ -147,16 +148,25 @@ function ScheduleItemRow({ item, courseId, onCheckin, loading }: {
       !isDoneOrSkipped && "bg-background border-border hover:border-primary/20",
     )}>
       <button
-        onClick={() => !isDoneOrSkipped && onCheckin(item.id, true)}
-        disabled={loading || isDoneOrSkipped}
+        onClick={() => {
+          if (isDone) onUncheckin(item.id);
+          else if (!isSkipped) onCheckin(item.id, true);
+        }}
+        disabled={loading || isSkipped}
+        title={isDone ? "Desfazer check-in" : "Marcar como concluído"}
         className={cn(
           "h-6 w-6 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 transition-all",
-          isDone && "bg-success border-success",
-          isSkipped && "bg-muted border-muted",
+          isDone && "bg-success border-success hover:bg-destructive hover:border-destructive group",
+          isSkipped && "bg-muted border-muted cursor-not-allowed",
           !isDoneOrSkipped && "border-border hover:border-success hover:bg-success/10",
         )}
       >
-        {isDone && <CheckCircle2 className="h-3.5 w-3.5 text-white" />}
+        {isDone && (
+          <>
+            <CheckCircle2 className="h-3.5 w-3.5 text-white group-hover:hidden" />
+            <RotateCcw className="h-3.5 w-3.5 text-white hidden group-hover:block" />
+          </>
+        )}
       </button>
 
       <div className={cn("h-8 w-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5", cfg.color)}>
@@ -212,8 +222,9 @@ function ScheduleItemRow({ item, courseId, onCheckin, loading }: {
 // View: Lista (padrão)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function ScheduleListView({ days, courseId, onCheckin, loading }: {
+function ScheduleListView({ days, courseId, onCheckin, onUncheckin, loading }: {
   days: any[]; courseId: string;
+  onUncheckin: (id: string) => void;
   onCheckin: (id: string, completed: boolean) => void; loading: boolean;
 }) {
   if (days.length === 0) return null;
@@ -246,7 +257,7 @@ function ScheduleListView({ days, courseId, onCheckin, loading }: {
             <div className="space-y-2 ml-2 pl-10 border-l-2 border-border">
               {items.map((item: any) => (
                 <ScheduleItemRow key={item.id} item={item} courseId={courseId}
-                  onCheckin={onCheckin} loading={loading} />
+                  onCheckin={onCheckin} onUncheckin={onUncheckin} loading={loading} />
               ))}
             </div>
           </div>
@@ -260,8 +271,9 @@ function ScheduleListView({ days, courseId, onCheckin, loading }: {
 // View: Blocos
 // ─────────────────────────────────────────────────────────────────────────────
 
-function ScheduleBlocksView({ days, courseId, onCheckin, loading }: {
+function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading }: {
   days: any[]; courseId: string;
+  onUncheckin: (id: string) => void;
   onCheckin: (id: string, completed: boolean) => void; loading: boolean;
 }) {
   const router = useRouter();
@@ -322,16 +334,25 @@ function ScheduleBlocksView({ days, courseId, onCheckin, loading }: {
                   >
                     {/* Check button */}
                     <button
-                      onClick={() => !isDoneOrSkipped && onCheckin(item.id, true)}
-                      disabled={loading || isDoneOrSkipped}
+                      onClick={() => {
+                        if (isDone) onUncheckin(item.id);
+                        else if (!isSkipped) onCheckin(item.id, true);
+                      }}
+                      disabled={loading || isSkipped}
+                      title={isDone ? "Desfazer check-in" : "Marcar como concluído"}
                       className={cn(
-                        "h-5 w-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all",
-                        isDone && "bg-success border-success",
-                        isSkipped && "bg-muted border-muted",
+                        "h-5 w-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all group",
+                        isDone && "bg-success border-success hover:bg-destructive hover:border-destructive",
+                        isSkipped && "bg-muted border-muted cursor-not-allowed",
                         !isDoneOrSkipped && "border-border hover:border-success",
                       )}
                     >
-                      {isDone && <CheckCircle2 className="h-3 w-3 text-white" />}
+                      {isDone && (
+                        <>
+                          <CheckCircle2 className="h-3 w-3 text-white group-hover:hidden" />
+                          <RotateCcw className="h-3 w-3 text-white hidden group-hover:block" />
+                        </>
+                      )}
                     </button>
 
                     {/* Ícone de tipo */}
@@ -375,8 +396,9 @@ function ScheduleBlocksView({ days, courseId, onCheckin, loading }: {
 // View: Calendário
 // ─────────────────────────────────────────────────────────────────────────────
 
-function ScheduleCalendarView({ days, courseId, onCheckin, loading }: {
+function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading }: {
   days: any[]; courseId: string;
+  onUncheckin: (id: string) => void;
   onCheckin: (id: string, completed: boolean) => void; loading: boolean;
 }) {
   const today = new Date();
@@ -548,7 +570,7 @@ function ScheduleCalendarView({ days, courseId, onCheckin, loading }: {
             <div className="space-y-2">
               {selectedItems.map((item: any) => (
                 <ScheduleItemRow key={item.id} item={item} courseId={courseId}
-                  onCheckin={onCheckin} loading={loading} />
+                  onCheckin={onCheckin} onUncheckin={onUncheckin} loading={loading} />
               ))}
             </div>
           )}
@@ -597,6 +619,16 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
     onError: () => toast.error("Erro ao marcar item"),
   });
 
+  const uncheckinMutation = useMutation({
+    mutationFn: (itemId: string) =>
+      apiClient.delete(`/schedule/checkin/${itemId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["schedule", courseId] });
+      toast.success("Check-in desfeito.");
+    },
+    onError: () => toast.error("Erro ao desfazer check-in"),
+  });
+
   const reorganizeMutation = useMutation({
     mutationFn: () => apiClient.post("/schedule/reorganize", { course_id: courseId }),
     onSuccess: () => {
@@ -636,7 +668,8 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
     courseId,
     onCheckin: (id: string, completed: boolean) =>
       checkinMutation.mutate({ itemId: id, completed }),
-    loading: checkinMutation.isPending,
+    onUncheckin: (id: string) => uncheckinMutation.mutate(id),
+    loading: checkinMutation.isPending || uncheckinMutation.isPending,
   };
 
   return (

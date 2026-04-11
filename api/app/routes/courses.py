@@ -1008,6 +1008,42 @@ def checkin_lesson(lesson_id: str):
     )
 
 
+@courses_bp.route("/lessons/<string:lesson_id>/uncheckin", methods=["POST"])
+@jwt_required()
+@require_tenant
+def uncheckin_lesson(lesson_id: str):
+    """Aluno desmarca aula como assistida — volta para not_watched."""
+    tenant = get_current_tenant()
+    user_id = get_jwt_identity()
+
+    lesson = Lesson.query.filter_by(
+        id=lesson_id, tenant_id=tenant.id, is_deleted=False,
+    ).first()
+    if not lesson:
+        return jsonify({"error": "not_found"}), 404
+
+    progress = LessonProgress.query.filter_by(
+        lesson_id=lesson.id, user_id=user_id, tenant_id=tenant.id,
+    ).first()
+
+    if not progress:
+        return jsonify({"error": "not_found", "message": "Nenhum progresso registrado."}), 404
+
+    progress.status = "not_watched"
+    progress.watch_percentage = 0.0
+    progress.last_watched_at = None
+    db.session.commit()
+
+    # Invalida caches
+    try:
+        from app.routes.analytics import _cache_delete, _dashboard_cache_key
+        _cache_delete(_dashboard_cache_key(user_id, tenant.id))
+        _cache_delete(f"next_action:{tenant.id}:{user_id}")
+    except Exception:
+        pass
+
+    return jsonify({"message": "Aula desmarcada.", "status": "not_watched"}), 200
+
 @courses_bp.route("/lessons/<string:lesson_id>", methods=["PUT"])
 @jwt_required()
 @require_tenant

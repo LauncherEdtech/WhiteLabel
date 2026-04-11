@@ -331,6 +331,7 @@ def checkin_item(item_id: str):
     # ── Invalida cache do dashboard após commit ───────────────────────────────
     try:
         from app.routes.analytics import _cache_delete, _dashboard_cache_key
+
         _cache_delete(_dashboard_cache_key(user_id, tenant.id))
         _cache_delete(f"next_action:{tenant.id}:{user_id}")  # ← NOVO
     except Exception:
@@ -358,6 +359,63 @@ def checkin_item(item_id: str):
         ),
         200,
     )
+
+
+@schedule_bp.route("/checkin/<string:item_id>", methods=["DELETE"])
+@jwt_required()
+@require_tenant
+def uncheckin_item(item_id: str):
+    """Aluno desfaz check-in de um item do cronograma — volta para pending."""
+    tenant = get_current_tenant()
+    user_id = get_jwt_identity()
+
+    item = ScheduleItem.query.filter_by(id=item_id, is_deleted=False).first()
+    if not item:
+        return jsonify({"error": "not_found"}), 404
+
+    schedule = StudySchedule.query.filter_by(
+        id=item.schedule_id,
+        user_id=user_id,
+        tenant_id=tenant.id,
+        is_deleted=False,
+    ).first()
+    if not schedule:
+        return jsonify({"error": "forbidden"}), 403
+
+    # Volta item para pending
+    item.status = "pending"
+
+    # Remove check-in se existir
+    checkin = ScheduleCheckIn.query.filter_by(item_id=item_id, is_deleted=False).first()
+    if checkin:
+        checkin.is_deleted = True
+
+    # Se for aula, desmarca o progresso também
+    if item.item_type == "lesson" and item.lesson_id:
+        from app.models.course import LessonProgress
+
+        progress = LessonProgress.query.filter_by(
+            lesson_id=item.lesson_id,
+            user_id=user_id,
+            tenant_id=tenant.id,
+        ).first()
+        if progress:
+            progress.status = "not_watched"
+            progress.watch_percentage = 0.0
+            progress.last_watched_at = None
+
+    db.session.commit()
+
+    # Invalida caches
+    try:
+        from app.routes.analytics import _cache_delete, _dashboard_cache_key
+
+        _cache_delete(_dashboard_cache_key(user_id, tenant.id))
+        _cache_delete(f"next_action:{tenant.id}:{user_id}")
+    except Exception:
+        pass
+
+    return jsonify({"message": "Check-in desfeito.", "item_status": "pending"}), 200
 
 
 # ══════════════════════════════════════════════════════════════════════════════

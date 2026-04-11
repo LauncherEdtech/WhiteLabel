@@ -2,6 +2,10 @@
 import { apiClient } from "./client";
 import { Course } from "@/types/api";
 
+
+export const uncheckinLesson = (lessonId: string) =>
+    apiClient.post(`/courses/lessons/${lessonId}/uncheckin`);
+
 export const coursesApi = {
   list: async () => {
     const res = await apiClient.get<{ courses: Course[] }>("/courses/");
