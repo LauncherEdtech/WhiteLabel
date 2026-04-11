@@ -165,6 +165,7 @@ def login():
                     "name": user.name,
                     "email": user.email,
                     "role": user.role.value,
+                    "settings": user.settings or {},
                 },
                 "tenant": {
                     "id": tenant.id,

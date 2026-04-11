@@ -673,7 +673,7 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
   };
 
   return (
-    <div className="space-y-5 animate-fade-in">
+    <div data-onboarding="schedule" className="space-y-5 animate-fade-in">
       {/* Cabeçalho */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>

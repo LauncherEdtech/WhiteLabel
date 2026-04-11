@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils/cn";
 import { apiClient } from "@/lib/api/client";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuthStore } from "@/lib/stores/authStore";
+import { AUTH_KEYS } from "@/lib/hooks/useAuth";
 
 // ── Step definitions ──────────────────────────────────────────────────────────
 
@@ -226,10 +227,22 @@ export function OnboardingTour({ initialStep = 0, onComplete }: OnboardingTourPr
         try { await apiClient.post("/auth/onboarding/complete"); } catch { }
     }, []);
 
+    // Substituir handleNext inteiro:
     const handleNext = useCallback(async () => {
         if (isLast) {
             await completeOnboarding();
-            // Abre o coach automaticamente
+            // Atualiza authStore optimisticamente — evita o tour reaparecer
+            const currentUser = useAuthStore.getState().user;
+            if (currentUser) {
+                useAuthStore.getState().setUser({
+                    ...currentUser,
+                    settings: {
+                        ...((currentUser as any).settings || {}),
+                        onboarding: { completed: true },
+                    },
+                } as any);
+            }
+            queryClient.invalidateQueries({ queryKey: AUTH_KEYS.me });
             localStorage.removeItem("coach_widget_dismiss");
             queryClient.invalidateQueries({ queryKey: ["next-action"] });
             window.dispatchEvent(new Event("coach:show"));
@@ -239,12 +252,25 @@ export function OnboardingTour({ initialStep = 0, onComplete }: OnboardingTourPr
         }
     }, [isLast, onComplete, queryClient, completeOnboarding]);
 
+    // Substituir handleSkip inteiro:
     const handleSkip = useCallback(async () => {
         try {
             await apiClient.post("/auth/onboarding/skip");
         } catch { }
+        // Atualiza authStore optimisticamente
+        const currentUser = useAuthStore.getState().user;
+        if (currentUser) {
+            useAuthStore.getState().setUser({
+                ...currentUser,
+                settings: {
+                    ...((currentUser as any).settings || {}),
+                    onboarding: { skipped: true },
+                },
+            } as any);
+        }
+        queryClient.invalidateQueries({ queryKey: AUTH_KEYS.me });
         onComplete();
-    }, [onComplete]);
+    }, [onComplete, queryClient]);
 
     // ── Progress dots ─────────────────────────────────────────────────────────
     const ProgressDots = ({ size = "md" }: { size?: "sm" | "md" }) => (
