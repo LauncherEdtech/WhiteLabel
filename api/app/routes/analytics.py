@@ -38,6 +38,8 @@ from app.middleware.tenant import (
     get_current_tenant,
 )
 
+BRT = timezone(timedelta(hours=-3))
+
 analytics_bp = Blueprint("analytics", __name__)
 
 
@@ -301,8 +303,11 @@ def student_dashboard():
             return jsonify(cached), 200
 
     now = datetime.now(timezone.utc)
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    week_start = today_start - timedelta(days=today_start.weekday())
+    now_brt = now.astimezone(BRT)
+    today_start = now_brt.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(
+        timezone.utc
+    )
+    week_start = today_start - timedelta(days=now_brt.weekday())
 
     questions_stats = _get_questions_stats(
         target_user_id, tenant.id, today_start, week_start
@@ -350,7 +355,7 @@ def student_dashboard():
 def _get_weekly_mission(user_id: str, tenant_id: str, discipline_stats: list) -> dict:
     from datetime import date
 
-    today = date.today()
+    today = datetime.now(BRT).date()
     week_start = today - timedelta(days=today.weekday())
     week_end = week_start + timedelta(days=6)
     week_start_str = week_start.isoformat()
@@ -1393,7 +1398,8 @@ def _get_time_stats(
 
 
 def _get_todays_pending(user_id: str, tenant_id: str, today_start: datetime) -> list:
-    today_str = today_start.date().isoformat()
+    # today_start já está em UTC mas representa meia-noite BRT
+    today_str = today_start.astimezone(BRT).date().isoformat()
 
     items = (
         ScheduleItem.query.join(StudySchedule)
@@ -1784,15 +1790,48 @@ _INSIGHT_THEME_VOICE = {
 # ── Mapa de ações — Gemini escolhe o tipo, nós controlamos a URL ──────────────
 
 _NEXT_ACTION_MAP = {
-    "create_schedule":     {"cta_url": "/schedule",  "cta_label": "Criar cronograma",   "icon": "📅"},
-    "watch_lesson":        {"cta_url": "/schedule",  "cta_label": "Ver cronograma",      "icon": "▶️"},
-    "practice_discipline": {"cta_url": "/questions", "cta_label": "Praticar questões",   "icon": "⚠️"},
-    "do_questions":        {"cta_url": "/questions", "cta_label": "Responder questões",  "icon": "📝"},
-    "daily_questions":     {"cta_url": "/questions", "cta_label": "Responder questões",  "icon": "🎯"},
-    "improve_discipline":  {"cta_url": "/questions", "cta_label": "Praticar",           "icon": "📚"},
-    "view_schedule":       {"cta_url": "/schedule",  "cta_label": "Ver cronograma",      "icon": "📋"},
-    "keep_going":          {"cta_url": "/questions", "cta_label": "Continuar estudando", "icon": "🏆"},
+    "create_schedule": {
+        "cta_url": "/schedule",
+        "cta_label": "Criar cronograma",
+        "icon": "📅",
+    },
+    "watch_lesson": {
+        "cta_url": "/schedule",
+        "cta_label": "Ver cronograma",
+        "icon": "▶️",
+    },
+    "practice_discipline": {
+        "cta_url": "/questions",
+        "cta_label": "Praticar questões",
+        "icon": "⚠️",
+    },
+    "do_questions": {
+        "cta_url": "/questions",
+        "cta_label": "Responder questões",
+        "icon": "📝",
+    },
+    "daily_questions": {
+        "cta_url": "/questions",
+        "cta_label": "Responder questões",
+        "icon": "🎯",
+    },
+    "improve_discipline": {
+        "cta_url": "/questions",
+        "cta_label": "Praticar",
+        "icon": "📚",
+    },
+    "view_schedule": {
+        "cta_url": "/schedule",
+        "cta_label": "Ver cronograma",
+        "icon": "📋",
+    },
+    "keep_going": {
+        "cta_url": "/questions",
+        "cta_label": "Continuar estudando",
+        "icon": "🏆",
+    },
 }
+
 
 def _generate_insights(
     user,
@@ -1822,24 +1861,28 @@ def _generate_insights(
         questions_stats, discipline_stats, lesson_progress, time_stats
     )
 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PRÓXIMA AÇÃO RECOMENDADA — widget coach com Gemini
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 @analytics_bp.route("/student/next-action", methods=["GET"])
 @jwt_required()
 @require_tenant
 def student_next_action():
     """Retorna a próxima ação recomendada pelo coach IA. Cache Redis 15 min."""
-    tenant  = get_current_tenant()
+    tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
     cache_key = f"next_action:{tenant.id}:{user_id}"
-    cached    = _cache_get(cache_key)
+    cached = _cache_get(cache_key)
     if cached:
         return jsonify(cached), 200
 
-    user = User.query.filter_by(id=user_id, tenant_id=tenant.id, is_deleted=False).first()
+    user = User.query.filter_by(
+        id=user_id, tenant_id=tenant.id, is_deleted=False
+    ).first()
     if not user:
         return jsonify({"error": "user_not_found"}), 404
 
@@ -1858,7 +1901,9 @@ def _determine_next_action(user_id: str, tenant_id: str, user, tenant) -> dict:
         try:
             return _gemini_next_action(user, tenant, context, api_key)
         except Exception as e:
-            current_app.logger.warning(f"[GEMINI] next_action falhou, usando fallback: {e}")
+            current_app.logger.warning(
+                f"[GEMINI] next_action falhou, usando fallback: {e}"
+            )
 
     return _rule_based_next_action(context)
 
@@ -1867,14 +1912,17 @@ def _build_student_context_for_action(user_id: str, tenant_id: str) -> dict:
     """Monta contexto completo do aluno para o Gemini analisar."""
     from datetime import date
 
-    today     = date.today()
+    today = datetime.now(BRT).date()
     today_str = today.isoformat()
-    now       = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     # ── Cronograma ────────────────────────────────────────────────────────────
     schedule = StudySchedule.query.filter_by(
-        user_id=user_id, tenant_id=tenant_id, is_deleted=False, status="active",
+        user_id=user_id,
+        tenant_id=tenant_id,
+        is_deleted=False,
+        status="active",
     ).first()
 
     schedule_ctx = {"has_schedule": False, "today_pending": [], "week_progress": None}
@@ -1895,17 +1943,17 @@ def _build_student_context_for_action(user_id: str, tenant_id: str) -> dict:
 
         schedule_ctx["today_pending"] = [
             {
-                "item_type":   i.item_type,
+                "item_type": i.item_type,
                 "lesson_title": i.lesson.title if i.lesson_id and i.lesson else None,
                 "subject_name": i.subject.name if i.subject_id and i.subject else None,
                 "estimated_minutes": i.estimated_minutes,
-                "lesson_id":   i.lesson_id,
+                "lesson_id": i.lesson_id,
             }
             for i in today_items[:5]
         ]
 
         week_start = today - timedelta(days=today.weekday())
-        week_end   = week_start + timedelta(days=6)
+        week_end = week_start + timedelta(days=6)
         week_items = ScheduleItem.query.filter(
             ScheduleItem.schedule_id == schedule.id,
             ScheduleItem.scheduled_date >= week_start.isoformat(),
@@ -1914,18 +1962,26 @@ def _build_student_context_for_action(user_id: str, tenant_id: str) -> dict:
         ).all()
 
         total_week = len(week_items)
-        done_week  = sum(1 for i in week_items if i.status == "done")
+        done_week = sum(1 for i in week_items if i.status == "done")
         schedule_ctx["week_progress"] = {
             "total": total_week,
-            "done":  done_week,
-            "pct":   round((done_week / total_week) * 100, 1) if total_week else 0,
+            "done": done_week,
+            "pct": round((done_week / total_week) * 100, 1) if total_week else 0,
         }
 
     # ── Disciplinas ───────────────────────────────────────────────────────────
     discipline_stats = _get_discipline_stats(user_id, tenant_id)
-    critical = [d for d in discipline_stats if d["accuracy_rate"] < 40  and d["total_answered"] >= 5]
-    weak     = [d for d in discipline_stats if 40 <= d["accuracy_rate"] < 60 and d["total_answered"] >= 5]
-    strong   = [d for d in discipline_stats if d["accuracy_rate"] >= 70]
+    critical = [
+        d
+        for d in discipline_stats
+        if d["accuracy_rate"] < 40 and d["total_answered"] >= 5
+    ]
+    weak = [
+        d
+        for d in discipline_stats
+        if 40 <= d["accuracy_rate"] < 60 and d["total_answered"] >= 5
+    ]
+    strong = [d for d in discipline_stats if d["accuracy_rate"] >= 70]
 
     # ── Questões hoje ─────────────────────────────────────────────────────────
     today_count = (
@@ -1936,14 +1992,17 @@ def _build_student_context_for_action(user_id: str, tenant_id: str) -> dict:
             QuestionAttempt.is_deleted == False,
             QuestionAttempt.created_at >= today_start,
         )
-        .scalar() or 0
+        .scalar()
+        or 0
     )
 
     # ── Total e acerto geral ──────────────────────────────────────────────────
     total_row = (
         db.session.query(
             func.count(QuestionAttempt.id).label("total"),
-            func.sum(case((QuestionAttempt.is_correct == True, 1), else_=0)).label("correct"),
+            func.sum(case((QuestionAttempt.is_correct == True, 1), else_=0)).label(
+                "correct"
+            ),
         )
         .filter(
             QuestionAttempt.user_id == user_id,
@@ -1952,7 +2011,7 @@ def _build_student_context_for_action(user_id: str, tenant_id: str) -> dict:
         )
         .one()
     )
-    total_q  = total_row.total or 0
+    total_q = total_row.total or 0
     accuracy = round((total_row.correct / total_q) * 100, 1) if total_q else 0
 
     # ── Aulas ─────────────────────────────────────────────────────────────────
@@ -1962,18 +2021,20 @@ def _build_student_context_for_action(user_id: str, tenant_id: str) -> dict:
         "schedule": schedule_ctx,
         "disciplines": {
             "critical": sorted(critical, key=lambda x: x["accuracy_rate"])[:3],
-            "weak":     sorted(weak,     key=lambda x: x["accuracy_rate"])[:3],
-            "strong":   sorted(strong,   key=lambda x: x["accuracy_rate"], reverse=True)[:3],
+            "weak": sorted(weak, key=lambda x: x["accuracy_rate"])[:3],
+            "strong": sorted(strong, key=lambda x: x["accuracy_rate"], reverse=True)[
+                :3
+            ],
         },
         "questions": {
-            "total":            total_q,
+            "total": total_q,
             "overall_accuracy": accuracy,
-            "answered_today":   today_count,
+            "answered_today": today_count,
         },
         "lessons": {
-            "watched":   lesson_progress["total_watched"],
+            "watched": lesson_progress["total_watched"],
             "available": lesson_progress["total_available"],
-            "pct":       lesson_progress["completion_rate"],
+            "pct": lesson_progress["completion_rate"],
         },
     }
 
@@ -1985,24 +2046,40 @@ def _gemini_next_action(user, tenant, context: dict, api_key: str) -> dict:
     insight_theme = (tenant.settings or {}).get("insight_theme", "militar")
     voice = _INSIGHT_THEME_VOICE.get(insight_theme, _INSIGHT_THEME_VOICE["militar"])
 
-    sched     = context["schedule"]
-    discs     = context["disciplines"]
+    sched = context["schedule"]
+    discs = context["disciplines"]
     questions = context["questions"]
-    lessons   = context["lessons"]
+    lessons = context["lessons"]
 
-    critical_str = ", ".join(f"{d['discipline']} ({d['accuracy_rate']}%)" for d in discs["critical"]) or "nenhuma"
-    weak_str     = ", ".join(f"{d['discipline']} ({d['accuracy_rate']}%)" for d in discs["weak"])     or "nenhuma"
-    strong_str   = ", ".join(f"{d['discipline']} ({d['accuracy_rate']}%)" for d in discs["strong"])   or "nenhuma"
+    critical_str = (
+        ", ".join(
+            f"{d['discipline']} ({d['accuracy_rate']}%)" for d in discs["critical"]
+        )
+        or "nenhuma"
+    )
+    weak_str = (
+        ", ".join(f"{d['discipline']} ({d['accuracy_rate']}%)" for d in discs["weak"])
+        or "nenhuma"
+    )
+    strong_str = (
+        ", ".join(f"{d['discipline']} ({d['accuracy_rate']}%)" for d in discs["strong"])
+        or "nenhuma"
+    )
 
-    pending_str = "; ".join(
-        f"{i['item_type']} — {i['lesson_title'] or i['subject_name'] or 'sem título'}"
-        for i in sched["today_pending"]
-    ) if sched["today_pending"] else "nenhuma"
+    pending_str = (
+        "; ".join(
+            f"{i['item_type']} — {i['lesson_title'] or i['subject_name'] or 'sem título'}"
+            for i in sched["today_pending"]
+        )
+        if sched["today_pending"]
+        else "nenhuma"
+    )
 
     week_prog = sched.get("week_progress")
-    week_str  = (
+    week_str = (
         f"{week_prog['done']}/{week_prog['total']} itens ({week_prog['pct']}%)"
-        if week_prog else "sem dados"
+        if week_prog
+        else "sem dados"
     )
 
     prompt = f"""Você é um assistente coach de estudos para concursos públicos com perfil de {voice['persona']}.
@@ -2044,83 +2121,118 @@ INSTRUÇÕES:
 FORMATO:
 {{"action_type": "...", "title": "...", "message": "...", "priority": "high"|"medium"|"low", "discipline_filter": "nome ou null"}}"""
 
-    client   = genai.Client(api_key=api_key)
-    response = client.models.generate_content(model="gemini-2.5-flash-lite", contents=prompt)
-    text     = response.text.strip()
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model="gemini-2.5-flash-lite", contents=prompt
+    )
+    text = response.text.strip()
     if text.startswith("```"):
         text = text.split("```")[1]
         if text.startswith("json"):
             text = text[4:]
 
-    parsed      = json.loads(text.strip())
+    parsed = json.loads(text.strip())
     action_type = parsed.get("action_type", "keep_going")
     if action_type not in _NEXT_ACTION_MAP:
         action_type = "keep_going"
 
-    base      = _NEXT_ACTION_MAP[action_type]
+    base = _NEXT_ACTION_MAP[action_type]
     disc_name = parsed.get("discipline_filter")
     cta_params: dict = {}
-    if disc_name and action_type in ("practice_discipline", "improve_discipline", "do_questions"):
+    if disc_name and action_type in (
+        "practice_discipline",
+        "improve_discipline",
+        "do_questions",
+    ):
         cta_params = {"discipline": disc_name}
 
     current_app.logger.info(f"[GEMINI] next_action={action_type} user={user.id}")
 
     return {
         "action_type": action_type,
-        "title":       parsed.get("title", base["cta_label"]),
-        "message":     parsed.get("message", ""),
-        "cta_label":   base["cta_label"],
-        "cta_url":     base["cta_url"],
-        "cta_params":  cta_params,
-        "icon":        base["icon"],
-        "priority":    parsed.get("priority", "medium"),
+        "title": parsed.get("title", base["cta_label"]),
+        "message": parsed.get("message", ""),
+        "cta_label": base["cta_label"],
+        "cta_url": base["cta_url"],
+        "cta_params": cta_params,
+        "icon": base["icon"],
+        "priority": parsed.get("priority", "medium"),
     }
 
 
 def _rule_based_next_action(context: dict) -> dict:
     """Fallback simples caso Gemini falhe."""
-    sched     = context["schedule"]
-    discs     = context["disciplines"]
+    sched = context["schedule"]
+    discs = context["disciplines"]
     questions = context["questions"]
 
     if not sched["has_schedule"]:
         base = _NEXT_ACTION_MAP["create_schedule"]
-        return {**base, "action_type": "create_schedule", "cta_params": {}, "priority": "high",
-                "title": "Crie seu cronograma",
-                "message": "Um cronograma personalizado organiza seus estudos e aumenta suas chances de aprovação."}
+        return {
+            **base,
+            "action_type": "create_schedule",
+            "cta_params": {},
+            "priority": "high",
+            "title": "Crie seu cronograma",
+            "message": "Um cronograma personalizado organiza seus estudos e aumenta suas chances de aprovação.",
+        }
 
     if sched["today_pending"]:
         first = sched["today_pending"][0]
         if first["item_type"] == "lesson":
             base = _NEXT_ACTION_MAP["watch_lesson"]
-            return {**base, "action_type": "watch_lesson", "cta_params": {}, "priority": "high",
-                    "title": "Aula do dia te esperando",
-                    "message": f'"{first["lesson_title"]}" está no cronograma de hoje.'}
+            return {
+                **base,
+                "action_type": "watch_lesson",
+                "cta_params": {},
+                "priority": "high",
+                "title": "Aula do dia te esperando",
+                "message": f'"{first["lesson_title"]}" está no cronograma de hoje.',
+            }
         disc = first.get("subject_name")
         base = _NEXT_ACTION_MAP["do_questions"]
-        return {**base, "action_type": "do_questions",
-                "cta_params": {"discipline": disc} if disc else {},
-                "priority": "high", "title": "Questões do cronograma de hoje",
-                "message": f"Questões programadas para hoje{f' de {disc}' if disc else ''}. Mantenha o ritmo!"}
+        return {
+            **base,
+            "action_type": "do_questions",
+            "cta_params": {"discipline": disc} if disc else {},
+            "priority": "high",
+            "title": "Questões do cronograma de hoje",
+            "message": f"Questões programadas para hoje{f' de {disc}' if disc else ''}. Mantenha o ritmo!",
+        }
 
     if discs["critical"]:
         worst = discs["critical"][0]
-        base  = _NEXT_ACTION_MAP["practice_discipline"]
-        return {**base, "action_type": "practice_discipline",
-                "cta_params": {"discipline": worst["discipline"]}, "priority": "high",
-                "title": f"Reforce {worst['discipline']}",
-                "message": f"Acerto de {worst['accuracy_rate']}% — abaixo da meta. Resolva questões agora!"}
+        base = _NEXT_ACTION_MAP["practice_discipline"]
+        return {
+            **base,
+            "action_type": "practice_discipline",
+            "cta_params": {"discipline": worst["discipline"]},
+            "priority": "high",
+            "title": f"Reforce {worst['discipline']}",
+            "message": f"Acerto de {worst['accuracy_rate']}% — abaixo da meta. Resolva questões agora!",
+        }
 
     if questions["answered_today"] == 0:
         base = _NEXT_ACTION_MAP["daily_questions"]
-        return {**base, "action_type": "daily_questions", "cta_params": {}, "priority": "medium",
-                "title": "Nenhuma questão hoje ainda",
-                "message": "Que tal 10 questões agora? Consistência diária é o segredo."}
+        return {
+            **base,
+            "action_type": "daily_questions",
+            "cta_params": {},
+            "priority": "medium",
+            "title": "Nenhuma questão hoje ainda",
+            "message": "Que tal 10 questões agora? Consistência diária é o segredo.",
+        }
 
     base = _NEXT_ACTION_MAP["keep_going"]
-    return {**base, "action_type": "keep_going", "cta_params": {}, "priority": "low",
-            "title": "Você está indo bem!",
-            "message": f"Já respondeu {questions['answered_today']} questões hoje. Continue assim!"}
+    return {
+        **base,
+        "action_type": "keep_going",
+        "cta_params": {},
+        "priority": "low",
+        "title": "Você está indo bem!",
+        "message": f"Já respondeu {questions['answered_today']} questões hoje. Continue assim!",
+    }
+
 
 def _gemini_student_insights(
     api_key: str,

@@ -4,11 +4,11 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import Image from "next/image";
+import { useState } from "react";
 import {
     LayoutDashboard, BookOpen, HelpCircle,
     ClipboardList, Calendar, BarChart3,
-    LogOut, GraduationCap,
-    Trophy,
+    LogOut, GraduationCap, Trophy, Menu, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import { useTenantStore } from "@/lib/stores/tenantStore";
@@ -25,7 +25,7 @@ const navItems = [
     { href: "/hall-of-fame", label: "Mural de Honra", icon: Trophy },
 ];
 
-export function StudentSidebar() {
+function SidebarContent({ onClose }: { onClose?: () => void }) {
     const pathname = usePathname();
     const { getBranding } = useTenantStore();
     const { user } = useAuthStore();
@@ -33,17 +33,16 @@ export function StudentSidebar() {
     const branding = getBranding();
 
     return (
-        <aside className="w-64 shrink-0 flex flex-col border-r border-border bg-card h-screen">
+        <div className="flex flex-col h-full">
             {/* Logo */}
-            <div className="p-5 border-b border-border">
-                <Link href="/dashboard" className="flex items-center gap-3">
+            <div className="p-5 border-b border-border flex items-center justify-between">
+                <Link href="/dashboard" onClick={onClose} className="flex items-center gap-3">
                     {branding.logo_url ? (
                         <div className="h-8 w-8 rounded-lg overflow-hidden shrink-0 border border-border">
                             <Image
                                 src={branding.logo_url}
                                 alt={branding.platform_name}
-                                width={32}
-                                height={32}
+                                width={32} height={32}
                                 className="h-full w-full object-contain"
                             />
                         </div>
@@ -56,17 +55,23 @@ export function StudentSidebar() {
                         {branding.platform_name}
                     </span>
                 </Link>
+                {/* Botão fechar — só visível no drawer mobile */}
+                {onClose && (
+                    <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-accent lg:hidden">
+                        <X className="h-4 w-4 text-muted-foreground" />
+                    </button>
+                )}
             </div>
 
             {/* Navegação */}
             <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
                 {navItems.map(({ href, label, icon: Icon }) => {
-                    const isActive =
-                        pathname === href || pathname.startsWith(href + "/");
+                    const isActive = pathname === href || pathname.startsWith(href + "/");
                     return (
                         <Link
                             key={href}
                             href={href}
+                            onClick={onClose}
                             className={cn(
                                 "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150",
                                 isActive
@@ -90,12 +95,8 @@ export function StudentSidebar() {
                         </span>
                     </div>
                     <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-foreground truncate">
-                            {user?.name}
-                        </p>
-                        <p className="text-xs text-muted-foreground truncate">
-                            {user?.email}
-                        </p>
+                        <p className="text-sm font-medium text-foreground truncate">{user?.name}</p>
+                        <p className="text-xs text-muted-foreground truncate">{user?.email}</p>
                     </div>
                     <button
                         onClick={logout}
@@ -106,6 +107,45 @@ export function StudentSidebar() {
                     </button>
                 </div>
             </div>
-        </aside>
+        </div>
+    );
+}
+
+export function StudentSidebar() {
+    const [drawerOpen, setDrawerOpen] = useState(false);
+
+    return (
+        <>
+            {/* ── Desktop: sidebar fixa ── */}
+            <aside className="hidden lg:flex w-64 shrink-0 flex-col border-r border-border bg-card h-screen">
+                <SidebarContent />
+            </aside>
+
+            {/* ── Mobile: botão hamburger ── */}
+            <button
+                className="lg:hidden fixed top-3 left-4 z-50 p-2 rounded-lg bg-card border border-border shadow-sm"
+                onClick={() => setDrawerOpen(true)}
+            >
+                <Menu className="h-5 w-5 text-foreground" />
+            </button>
+
+            {/* ── Mobile: drawer overlay ── */}
+            {drawerOpen && (
+                <div className="fixed inset-0 z-50 lg:hidden">
+                    {/* Backdrop */}
+                    <div
+                        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+                        onClick={() => setDrawerOpen(false)}
+                    />
+                    {/* Drawer */}
+                    <aside className={cn(
+                        "absolute left-0 top-0 h-full w-72 bg-card border-r border-border shadow-2xl",
+                        "animate-in slide-in-from-left duration-200",
+                    )}>
+                        <SidebarContent onClose={() => setDrawerOpen(false)} />
+                    </aside>
+                </div>
+            )}
+        </>
     );
 }

@@ -3,12 +3,9 @@
 
 import { Bell } from "lucide-react";
 import { useAuthStore } from "@/lib/stores/authStore";
-import { useTenantStore } from "@/lib/stores/tenantStore";
 
 export function TopBar() {
     const { user } = useAuthStore();
-    const { getBranding } = useTenantStore();
-    const branding = getBranding();
 
     const greeting = () => {
         const h = new Date().getHours();
@@ -18,8 +15,11 @@ export function TopBar() {
     };
 
     return (
-        <header className="h-16 shrink-0 border-b border-border bg-card/50 backdrop-blur-sm px-6 flex items-center justify-between">
-            <div>
+        <header className="h-14 shrink-0 border-b border-border bg-card/50 backdrop-blur-sm px-4 flex items-center justify-between">
+            {/* Espaço para o botão hamburger no mobile (44px = w-11) */}
+            <div className="w-11 lg:w-0 shrink-0" />
+
+            <div className="flex-1">
                 <p className="text-sm text-muted-foreground">
                     {greeting()},{" "}
                     <span className="font-medium text-foreground">

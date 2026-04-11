@@ -283,7 +283,7 @@ def checkin_item(item_id: str):
     now_iso = datetime.now(timezone.utc).isoformat()
 
     # Atualiza ou cria check-in
-    checkin = ScheduleCheckIn.query.filter_by(item_id=item_id, is_deleted=False).first()
+    checkin = ScheduleCheckIn.query.filter_by(item_id=item_id).first()
     if not checkin:
         checkin = ScheduleCheckIn(
             tenant_id=tenant.id,
@@ -296,6 +296,8 @@ def checkin_item(item_id: str):
         )
         db.session.add(checkin)
     else:
+        # Reativa se estava soft-deleted (re-checkin após uncheckin)
+        checkin.is_deleted = False
         checkin.completed = data["completed"]
         checkin.note = data.get("note", checkin.note)
         checkin.perceived_difficulty = data.get(
