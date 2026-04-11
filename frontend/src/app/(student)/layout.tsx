@@ -24,7 +24,10 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
     const layoutStudent = (tenant?.branding as any)?.layout_student || "sidebar";
 
     // Detecta mobile (< 1024px = breakpoint lg do Tailwind)
-    const [isMobile, setIsMobile] = useState(false);
+
+    const [isMobile, setIsMobile] = useState(() =>
+        typeof window !== "undefined" ? window.innerWidth < 1024 : false
+    );
     useEffect(() => {
         const check = () => setIsMobile(window.innerWidth < 1024);
         check();
