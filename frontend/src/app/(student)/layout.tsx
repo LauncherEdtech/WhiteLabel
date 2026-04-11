@@ -108,7 +108,7 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
     if (effectiveLayout === "minimal") {
         return (
             <div className="min-h-screen bg-background">
-                <main className="pb-28">
+                <main className="pt-12 pb-28">
                     <div className="p-6 max-w-5xl mx-auto">
                         {children}
                     </div>

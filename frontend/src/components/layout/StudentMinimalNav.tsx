@@ -28,7 +28,7 @@ export function StudentMinimalNav() {
 
     return (
         <>
-            {/* ── Barra superior: saudação + botão Sair ── */}
+            {/* ── Barra superior fixa ── */}
             <div className="fixed top-0 left-0 right-0 z-50 h-12 flex items-center justify-between px-4 bg-card/90 backdrop-blur-xl border-b border-border">
                 <p className="text-sm text-muted-foreground">
                     Olá,{" "}
@@ -46,10 +46,7 @@ export function StudentMinimalNav() {
                 </button>
             </div>
 
-            {/* ── Spacer para o topbar fixo ── */}
-            <div className="h-12" />
-
-            {/* ── Dock flutuante na parte inferior ── */}
+            {/* ── Dock flutuante inferior ── */}
             <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-lg">
                 <nav className={cn(
                     "flex items-center justify-around px-2 py-3 rounded-2xl",
@@ -78,9 +75,6 @@ export function StudentMinimalNav() {
                     })}
                 </nav>
             </div>
-
-            {/* ── Padding para conteúdo não ficar sob o dock ── */}
-            <div className="pb-28" />
         </>
     );
 }
