@@ -223,7 +223,7 @@ export function OnboardingTour({ initialStep = 0, onComplete }: OnboardingTourPr
     }, [pathname, current.route]);
 
     const completeOnboarding = useCallback(async () => {
-        try { await apiClient.post("/users/onboarding/complete"); } catch { }
+        try { await apiClient.post("/auth/onboarding/complete"); } catch { }
     }, []);
 
     const handleNext = useCallback(async () => {
@@ -241,7 +241,7 @@ export function OnboardingTour({ initialStep = 0, onComplete }: OnboardingTourPr
 
     const handleSkip = useCallback(async () => {
         try {
-            await apiClient.post("/users/onboarding/skip");
+            await apiClient.post("/auth/onboarding/skip");
         } catch { }
         onComplete();
     }, [onComplete]);

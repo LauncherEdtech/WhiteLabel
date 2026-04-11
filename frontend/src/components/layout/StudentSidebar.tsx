@@ -55,9 +55,8 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
                         {branding.platform_name}
                     </span>
                 </Link>
-                {/* Botão fechar — só visível no drawer mobile */}
                 {onClose && (
-                    <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-accent lg:hidden">
+                    <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-accent">
                         <X className="h-4 w-4 text-muted-foreground" />
                     </button>
                 )}
@@ -111,8 +110,14 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
     );
 }
 
-export function StudentSidebar() {
+// ── desktopOnly: renderiza só o conteúdo, sem hamburger/drawer ───────────────
+// Usado pelo layout quando o container da sidebar já é gerenciado externamente
+export function StudentSidebar({ desktopOnly = false }: { desktopOnly?: boolean }) {
     const [drawerOpen, setDrawerOpen] = useState(false);
+
+    if (desktopOnly) {
+        return <SidebarContent />;
+    }
 
     return (
         <>
@@ -132,12 +137,10 @@ export function StudentSidebar() {
             {/* ── Mobile: drawer overlay ── */}
             {drawerOpen && (
                 <div className="fixed inset-0 z-50 lg:hidden">
-                    {/* Backdrop */}
                     <div
                         className="absolute inset-0 bg-black/50 backdrop-blur-sm"
                         onClick={() => setDrawerOpen(false)}
                     />
-                    {/* Drawer */}
                     <aside className={cn(
                         "absolute left-0 top-0 h-full w-72 bg-card border-r border-border shadow-2xl",
                         "animate-in slide-in-from-left duration-200",

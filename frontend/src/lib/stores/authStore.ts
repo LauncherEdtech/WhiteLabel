@@ -26,7 +26,6 @@ export const useAuthStore = create<AuthState>()(
             setUser: (user) => set({ user, isAuthenticated: true, isLoading: false }),
 
             setTokens: (access, refresh) => {
-                // secure: true apenas em HTTPS real (não HTTP/ALB sem SSL)
                 const isHttps = typeof window !== "undefined" && window.location.protocol === "https:";
                 Cookies.set("access_token", access, {
                     expires: 1 / 24,
@@ -50,8 +49,14 @@ export const useAuthStore = create<AuthState>()(
         }),
         {
             name: "auth-store",
-            // Persiste apenas dados não sensíveis
             partialize: (state) => ({ user: state.user }),
+            // ✅ FIX: se já tem user em cache, não precisa esperar useMe
+            // Evita isLoading = true eterno em sessões persistidas
+            onRehydrateStorage: () => (state) => {
+                if (state?.user) {
+                    state.isLoading = false;
+                }
+            },
         }
     )
 );
