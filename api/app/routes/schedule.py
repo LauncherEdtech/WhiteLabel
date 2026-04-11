@@ -331,11 +331,10 @@ def checkin_item(item_id: str):
     # ── Invalida cache do dashboard após commit ───────────────────────────────
     try:
         from app.routes.analytics import _cache_delete, _dashboard_cache_key
-
         _cache_delete(_dashboard_cache_key(user_id, tenant.id))
+        _cache_delete(f"next_action:{tenant.id}:{user_id}")  # ← NOVO
     except Exception:
-        pass  # Nunca falha o check-in por causa do cache
-
+        pass
     # Dispara adaptação assíncrona via Celery
     try:
         from app.tasks.schedule_tasks import adapt_after_checkin

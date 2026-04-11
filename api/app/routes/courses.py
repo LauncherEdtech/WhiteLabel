@@ -986,6 +986,12 @@ def checkin_lesson(lesson_id: str):
 
     db.session.commit()
 
+    try:
+        from app.routes.analytics import _cache_delete
+        _cache_delete(f"next_action:{tenant.id}:{user_id}")
+    except Exception:
+        pass
+
     # TODO: Disparar task Celery para recalcular cronograma
     # from app.tasks.schedule_tasks import recalculate_schedule
     # recalculate_schedule.delay(user_id, tenant.id)

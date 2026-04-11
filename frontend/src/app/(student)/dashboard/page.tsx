@@ -31,6 +31,7 @@ export default function DashboardPage() {
     const showCoach = () => {
         localStorage.removeItem("coach_widget_dismiss");
         queryClient.invalidateQueries({ queryKey: ["next-action"] });
+        window.dispatchEvent(new Event("coach:show"));
     };
     if (isLoading) return <DashboardSkeleton />;
     if (error || !data) return <DashboardError />;

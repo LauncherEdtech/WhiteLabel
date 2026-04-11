@@ -647,6 +647,13 @@ def answer_question(question_id: str):
 
     db.session.commit()
 
+    try:
+        from app.routes.analytics import _cache_delete, _dashboard_cache_key
+        _cache_delete(_dashboard_cache_key(user_id, tenant.id))
+        _cache_delete(f"next_action:{tenant.id}:{user_id}")
+    except Exception:
+        pass
+
     # Monta resposta com justificativas
     alternatives_with_feedback = []
     for alt in sorted(question.alternatives, key=lambda a: a.key):

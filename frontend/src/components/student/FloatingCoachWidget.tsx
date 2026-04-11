@@ -99,6 +99,16 @@ export function FloatingCoachWidget() {
         return () => clearTimeout(t);
     }, [pathname]);
 
+    useEffect(() => {
+        const handler = () => {
+            setDismissed(false);
+            setOpen(true); // abre automaticamente ao clicar no botão
+            refetch();
+        };
+        window.addEventListener("coach:show", handler);
+        return () => window.removeEventListener("coach:show", handler);
+    }, [refetch]);
+
     const handleDismiss = () => {
         if (!data) return;
         saveDismiss(data.action_type);
