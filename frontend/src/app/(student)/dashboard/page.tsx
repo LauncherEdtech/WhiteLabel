@@ -25,7 +25,6 @@ import type {
 export default function DashboardPage() {
     const { user } = useAuthStore();
     const { data, isLoading, error } = useStudentDashboard();
-
     const queryClient = useQueryClient();
 
     const showCoach = () => {
@@ -33,6 +32,7 @@ export default function DashboardPage() {
         queryClient.invalidateQueries({ queryKey: ["next-action"] });
         window.dispatchEvent(new Event("coach:show"));
     };
+
     if (isLoading) return <DashboardSkeleton />;
     if (error || !data) return <DashboardError />;
 
@@ -47,87 +47,88 @@ export default function DashboardPage() {
     } = data;
 
     return (
-        <div className="space-y-6 animate-fade-in">
-            {/* Header */}
-            <div className="flex items-start justify-between">
+        <div className="space-y-4 lg:space-y-6 animate-fade-in">
+
+            {/* Header — mobile compacto */}
+            <div className="flex items-center justify-between">
                 <div>
-                    <h1 className="font-display text-2xl font-bold text-foreground">
+                    <h1 className="font-display text-xl lg:text-2xl font-bold text-foreground">
                         Dashboard
                     </h1>
-                    <p className="text-sm text-muted-foreground mt-1">
+                    <p className="text-xs lg:text-sm text-muted-foreground mt-0.5">
                         Acompanhe seu progresso de hoje
                     </p>
                 </div>
                 <button
                     onClick={showCoach}
                     title="Ver sugestão do assistente"
-                    className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground border border-border hover:border-primary/40 px-2.5 py-1.5 rounded-lg transition-colors"
+                    className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground border border-border hover:border-primary/40 px-2.5 py-1.5 rounded-lg transition-colors shrink-0"
                 >
                     <Brain className="h-3.5 w-3.5" />
-                    Assistente
+                    <span className="hidden sm:inline">Assistente</span>
                 </button>
             </div>
 
-            {/* Cards de métricas */}
-            <div data-onboarding="metrics" className="grid grid-cols-2 lg:grid-cols-4 gap-4 stagger">
-                
+            {/* Cards de métricas — mobile: 2x2, desktop: 1x4 */}
+            <div data-onboarding="metrics" className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
                 <MetricCard
-                    icon={<Target className="h-5 w-5" />}
+                    icon={<Target className="h-4 w-4 lg:h-5 lg:w-5" />}
                     label="Acerto geral"
                     value={`${questions.overall_accuracy}%`}
-                    sub={`${questions.total_correct} de ${questions.total_answered}`}
+                    sub={`${questions.total_correct}/${questions.total_answered}`}
                     color="primary"
                 />
                 <MetricCard
-                    icon={<BookOpen className="h-5 w-5" />}
+                    icon={<BookOpen className="h-4 w-4 lg:h-5 lg:w-5" />}
                     label="Questões hoje"
                     value={String(questions.today.answered)}
-                    sub={`${questions.today.accuracy}% de acerto`}
+                    sub={`${questions.today.accuracy}% acerto`}
                     color="secondary"
                 />
                 <MetricCard
-                    icon={<Clock className="h-5 w-5" />}
+                    icon={<Clock className="h-4 w-4 lg:h-5 lg:w-5" />}
                     label="Tempo hoje"
                     value={`${Math.round(time_studied.today_minutes)}min`}
-                    sub={`${Math.round(time_studied.week_minutes)}min esta semana`}
+                    sub={`${Math.round(time_studied.week_minutes)}min semana`}
                     color="warning"
                 />
                 <MetricCard
-                    icon={<TrendingUp className="h-5 w-5" />}
-                    label="Aulas assistidas"
+                    icon={<TrendingUp className="h-4 w-4 lg:h-5 lg:w-5" />}
+                    label="Aulas"
                     value={`${lesson_progress.total_watched}`}
-                    sub={`de ${lesson_progress.total_available} disponíveis`}
+                    sub={`de ${lesson_progress.total_available}`}
                     color="success"
                 />
             </div>
 
-            {/* Missão Semanal — itens da semana vêm dentro de mission */}
+            {/* Missão Semanal */}
             <div data-onboarding="mission">
                 <WeeklyMissionCard mission={weekly_mission} />
             </div>
+
             {/* Grid: Pendências + Desempenho */}
-            <div className="grid lg:grid-cols-2 gap-6">
+            <div className="grid lg:grid-cols-2 gap-4 lg:gap-6">
                 <Card>
-                    <CardHeader className="pb-3">
+                    <CardHeader className="pb-2 lg:pb-3 px-4 pt-4">
                         <div className="flex items-center justify-between">
-                            <CardTitle className="text-base">
-                                <Calendar className="h-4 w-4 inline mr-2 text-primary" />
+                            <CardTitle className="text-sm lg:text-base">
+                                <Calendar className="h-3.5 w-3.5 lg:h-4 lg:w-4 inline mr-1.5 text-primary" />
                                 Pendências de hoje
                             </CardTitle>
-                            <Link href="/schedule" className="text-xs text-primary hover:underline flex items-center gap-1">
-                                Cronograma <ChevronRight className="h-3 w-3" />
+                            <Link href="/schedule" className="text-xs text-primary hover:underline flex items-center gap-0.5">
+                                Ver <ChevronRight className="h-3 w-3" />
                             </Link>
                         </div>
                     </CardHeader>
-                    <CardContent className="pt-0">
+                    <CardContent className="pt-0 px-4 pb-4">
                         {todays_pending.length === 0 ? (
-                            <div className="flex flex-col items-center gap-2 py-6 text-center">
-                                <CheckCircle2 className="h-8 w-8 text-success" />
+                            <div className="flex flex-col items-center gap-2 py-4 text-center">
+                                <CheckCircle2 className="h-7 w-7 text-success" />
                                 <p className="text-sm font-medium text-foreground">Tudo em dia!</p>
-                                <p className="text-xs text-muted-foreground">Nenhuma pendência para hoje.</p>
+                                <p className="text-xs text-muted-foreground">Nenhuma pendência.</p>
                             </div>
                         ) : (
-                            <div className="space-y-2">
+                            <div className="space-y-1.5">
                                 {todays_pending.slice(0, 4).map((item) => (
                                     <PendingItem key={item.id} item={item} />
                                 ))}
@@ -142,27 +143,27 @@ export default function DashboardPage() {
                 </Card>
 
                 <Card>
-                    <CardHeader className="pb-3">
+                    <CardHeader className="pb-2 lg:pb-3 px-4 pt-4">
                         <div className="flex items-center justify-between">
-                            <CardTitle className="text-base">
-                                <BarChart3 className="h-4 w-4 inline mr-2 text-primary" />
+                            <CardTitle className="text-sm lg:text-base">
+                                <BarChart3 className="h-3.5 w-3.5 lg:h-4 lg:w-4 inline mr-1.5 text-primary" />
                                 Desempenho
                             </CardTitle>
-                            <Link href="/analytics" className="text-xs text-primary hover:underline flex items-center gap-1">
-                                Detalhes <ChevronRight className="h-3 w-3" />
+                            <Link href="/analytics" className="text-xs text-primary hover:underline flex items-center gap-0.5">
+                                Ver <ChevronRight className="h-3 w-3" />
                             </Link>
                         </div>
                     </CardHeader>
-                    <CardContent className="pt-0">
+                    <CardContent className="pt-0 px-4 pb-4">
                         {discipline_performance.length === 0 ? (
-                            <div className="flex flex-col items-center gap-2 py-6 text-center">
-                                <BarChart3 className="h-8 w-8 text-muted-foreground" />
-                                <p className="text-sm text-muted-foreground">
+                            <div className="flex flex-col items-center gap-2 py-4 text-center">
+                                <BarChart3 className="h-7 w-7 text-muted-foreground" />
+                                <p className="text-xs text-muted-foreground">
                                     Responda questões para ver seu desempenho.
                                 </p>
                             </div>
                         ) : (
-                            <div className="space-y-3">
+                            <div className="space-y-2 lg:space-y-3">
                                 {discipline_performance.slice(0, 5).map((d) => (
                                     <DisciplineBar key={d.discipline} discipline={d} />
                                 ))}
@@ -175,11 +176,11 @@ export default function DashboardPage() {
             {/* Insights */}
             {insights.length > 0 && (
                 <div>
-                    <div className="flex items-center gap-2 mb-3">
+                    <div className="flex items-center gap-2 mb-2 lg:mb-3">
                         <Lightbulb className="h-4 w-4 text-warning" />
                         <h2 className="text-sm font-semibold text-foreground">Análise inteligente</h2>
                     </div>
-                    <div className="space-y-3">
+                    <div className="space-y-2 lg:space-y-3">
                         {insights.map((insight, i) => (
                             <InsightCard key={i} insight={insight} />
                         ))}
@@ -205,10 +206,9 @@ function WeeklyMissionCard({ mission }: { mission: WeeklyMission | undefined }) 
             "border transition-colors",
             allDone ? "border-success/40 bg-success/5" : "border-border"
         )}>
-            <CardContent className="p-4">
-                {/* Header */}
+            <CardContent className="p-3 lg:p-4">
                 <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2.5">
+                    <div className="flex items-center gap-2">
                         <div className={cn(
                             "h-7 w-7 rounded-md flex items-center justify-center shrink-0",
                             allDone ? "bg-success/15" : "bg-primary/10"
@@ -232,7 +232,6 @@ function WeeklyMissionCard({ mission }: { mission: WeeklyMission | undefined }) 
                             </p>
                         </div>
                     </div>
-
                     {total_items > 0 && (
                         <span className={cn(
                             "text-xs font-bold px-2 py-0.5 rounded-full shrink-0",
@@ -247,12 +246,11 @@ function WeeklyMissionCard({ mission }: { mission: WeeklyMission | undefined }) 
                     )}
                 </div>
 
-                {/* CTA sem cronograma */}
                 {!has_schedule && (
-                    <div className="flex items-center gap-3 mb-3 p-2.5 rounded-lg bg-muted/50 border border-dashed border-border">
+                    <div className="flex items-center gap-2 mb-3 p-2.5 rounded-lg bg-muted/50 border border-dashed border-border">
                         <Calendar className="h-4 w-4 text-muted-foreground shrink-0" />
                         <p className="text-xs text-muted-foreground flex-1">
-                            Crie um cronograma para acompanhar sua evolução semana a semana.
+                            Crie um cronograma para acompanhar sua evolução.
                         </p>
                         <Link href="/schedule">
                             <Button size="sm" variant="outline" className="h-6 text-xs px-2 shrink-0">
@@ -262,7 +260,6 @@ function WeeklyMissionCard({ mission }: { mission: WeeklyMission | undefined }) 
                     </div>
                 )}
 
-                {/* Lista scrollável */}
                 {items.length > 0 && (
                     <div className="relative">
                         <div
@@ -287,8 +284,6 @@ function WeeklyMissionCard({ mission }: { mission: WeeklyMission | undefined }) 
     );
 }
 
-// ── Cronograma expansível — itens da semana agrupados por dia ─────────────────
-
 function ScheduleMissionItem({ item }: { item: WeeklyMissionItem }) {
     const [open, setOpen] = useState(false);
     const pct = item.progress_pct ?? 0;
@@ -306,7 +301,6 @@ function ScheduleMissionItem({ item }: { item: WeeklyMissionItem }) {
         simulado: <FileText className="h-3 w-3 text-destructive" />,
     };
 
-    // Agrupa itens por data
     const byDate = pending.reduce<Record<string, WeeklyMissionPendingItem[]>>((acc, p) => {
         if (!acc[p.scheduled_date]) acc[p.scheduled_date] = [];
         acc[p.scheduled_date].push(p);
@@ -318,7 +312,6 @@ function ScheduleMissionItem({ item }: { item: WeeklyMissionItem }) {
             "rounded-lg border transition-colors overflow-hidden",
             done ? "bg-success/5 border-success/20" : "bg-card border-border"
         )}>
-            {/* Linha principal */}
             <button
                 onClick={() => setOpen(v => !v)}
                 className="w-full flex items-center gap-3 p-2.5 hover:bg-accent/50 transition-colors text-left"
@@ -354,7 +347,6 @@ function ScheduleMissionItem({ item }: { item: WeeklyMissionItem }) {
                 )} />
             </button>
 
-            {/* Expansão: itens da semana agrupados por dia */}
             {open && (
                 <div className="border-t border-border bg-muted/30 px-2.5 py-2 space-y-2">
                     {pending.length === 0 ? (
@@ -408,8 +400,6 @@ function ScheduleMissionItem({ item }: { item: WeeklyMissionItem }) {
     );
 }
 
-// ── Disciplinas — cluster expansível ──────────────────────────────────────────
-
 function DisciplineClusterItem({ item }: { item: WeeklyMissionItem }) {
     const [open, setOpen] = useState(false);
     const disciplines = item.disciplines ?? [];
@@ -422,7 +412,6 @@ function DisciplineClusterItem({ item }: { item: WeeklyMissionItem }) {
                 : urgentCount > 0 ? "bg-destructive/5 border-destructive/15"
                     : "bg-warning/5 border-warning/15"
         )}>
-            {/* Linha principal */}
             <button
                 onClick={() => setOpen(v => !v)}
                 className="w-full flex items-center gap-3 p-2.5 hover:bg-accent/50 transition-colors text-left"
@@ -443,7 +432,7 @@ function DisciplineClusterItem({ item }: { item: WeeklyMissionItem }) {
                             "text-xs font-bold shrink-0",
                             urgentCount > 0 ? "text-destructive" : "text-warning"
                         )}>
-                            {disciplines.length} disciplina{disciplines.length !== 1 ? "s" : ""}
+                            {disciplines.length} disc.
                         </span>
                     </div>
                     <p className="text-[10px] text-muted-foreground mt-0.5">
@@ -458,7 +447,6 @@ function DisciplineClusterItem({ item }: { item: WeeklyMissionItem }) {
                 )} />
             </button>
 
-            {/* Expansão: lista de disciplinas */}
             {open && (
                 <div className="border-t border-border bg-muted/30 px-2.5 py-2 space-y-1">
                     <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide px-1 mb-1.5">
@@ -502,17 +490,11 @@ function DisciplineClusterItem({ item }: { item: WeeklyMissionItem }) {
     );
 }
 
-// ── Router de item ────────────────────────────────────────────────────────────
-
 function MissionItem({ item }: { item: WeeklyMissionItem }) {
     if (item.type === "schedule") return <ScheduleMissionItem item={item} />;
     if (item.type === "discipline_cluster") return <DisciplineClusterItem item={item} />;
     return null;
 }
-
-// ══════════════════════════════════════════════════════════════════════════════
-// Sub-componentes existentes
-// ══════════════════════════════════════════════════════════════════════════════
 
 function MetricCard({ icon, label, value, sub, color }: {
     icon: React.ReactNode;
@@ -529,13 +511,13 @@ function MetricCard({ icon, label, value, sub, color }: {
     };
     return (
         <Card className="hover:shadow-md transition-shadow">
-            <CardContent className="p-4">
-                <div className={cn("h-9 w-9 rounded-lg flex items-center justify-center mb-3", colors[color])}>
+            <CardContent className="p-3 lg:p-4">
+                <div className={cn("h-8 w-8 lg:h-9 lg:w-9 rounded-lg flex items-center justify-center mb-2 lg:mb-3", colors[color])}>
                     {icon}
                 </div>
-                <p className="font-display text-2xl font-bold text-foreground leading-none">{value}</p>
+                <p className="font-display text-xl lg:text-2xl font-bold text-foreground leading-none">{value}</p>
                 <p className="text-xs text-muted-foreground mt-1">{label}</p>
-                {sub && <p className="text-xs text-muted-foreground/70 mt-0.5 truncate">{sub}</p>}
+                {sub && <p className="text-[10px] text-muted-foreground/70 mt-0.5 truncate">{sub}</p>}
             </CardContent>
         </Card>
     );
@@ -547,15 +529,15 @@ function PendingItem({ item }: { item: ScheduleItem }) {
     };
     return (
         <Link href="/schedule" className="block">
-            <div className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-accent transition-colors">
-                <div className="h-7 w-7 rounded-md bg-primary/10 flex items-center justify-center shrink-0">
-                    <Calendar className="h-3.5 w-3.5 text-primary" />
+            <div className="flex items-center gap-2.5 p-2 rounded-lg hover:bg-accent transition-colors">
+                <div className="h-6 w-6 rounded-md bg-primary/10 flex items-center justify-center shrink-0">
+                    <Calendar className="h-3 w-3 text-primary" />
                 </div>
                 <div className="flex-1 min-w-0">
                     <p className="text-xs font-medium text-foreground truncate">
                         {item.lesson?.title ?? item.subject?.name ?? typeLabel[item.type] ?? item.type}
                     </p>
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-[10px] text-muted-foreground">
                         {typeLabel[item.type]} · {item.estimated_minutes}min
                     </p>
                 </div>
@@ -604,12 +586,12 @@ function InsightCard({ insight }: { insight: Insight }) {
     };
     return (
         <Card className={cn("border-l-4 animate-fade-in", borderColor[insight.type] || "border-l-primary")}>
-            <CardContent className="p-4">
+            <CardContent className="p-3 lg:p-4">
                 <div className="flex items-start gap-2">
-                    <span className="text-xl">{insight.icon}</span>
+                    <span className="text-lg lg:text-xl">{insight.icon}</span>
                     <div>
-                        <p className="text-sm font-semibold text-foreground">{insight.title}</p>
-                        <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{insight.message}</p>
+                        <p className="text-xs lg:text-sm font-semibold text-foreground">{insight.title}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">{insight.message}</p>
                     </div>
                 </div>
             </CardContent>
@@ -619,15 +601,15 @@ function InsightCard({ insight }: { insight: Insight }) {
 
 function DashboardSkeleton() {
     return (
-        <div className="space-y-6 animate-pulse">
+        <div className="space-y-4 lg:space-y-6 animate-pulse">
             <div className="h-8 w-40 bg-muted rounded-lg" />
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                {[...Array(4)].map((_, i) => <div key={i} className="h-28 bg-muted rounded-xl" />)}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
+                {[...Array(4)].map((_, i) => <div key={i} className="h-24 lg:h-28 bg-muted rounded-xl" />)}
             </div>
             <div className="h-32 bg-muted rounded-xl" />
-            <div className="grid lg:grid-cols-2 gap-6">
-                <div className="h-64 bg-muted rounded-xl" />
-                <div className="h-64 bg-muted rounded-xl" />
+            <div className="grid lg:grid-cols-2 gap-4 lg:gap-6">
+                <div className="h-48 lg:h-64 bg-muted rounded-xl" />
+                <div className="h-48 lg:h-64 bg-muted rounded-xl" />
             </div>
         </div>
     );
