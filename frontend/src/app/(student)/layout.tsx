@@ -13,6 +13,8 @@ import { StudentTopbar } from "@/components/layout/StudentTopbar";
 import { StudentMinimalNav } from "@/components/layout/StudentMinimalNav";
 import { TopBar } from "@/components/layout/TopBar";
 import { FloatingCoachWidget } from "@/components/student/FloatingCoachWidget";
+import { OnboardingTour } from "@/components/onboarding/OnboardingTour";
+import { useOnboarding } from "@/lib/hooks/useOnboarding";
 
 export default function StudentLayout({ children }: { children: React.ReactNode }) {
     const { user, isLoading } = useAuthStore();
@@ -23,20 +25,29 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
 
     const layoutStudent = (tenant?.branding as any)?.layout_student || "sidebar";
 
-    // Detecta mobile (< 1024px = breakpoint lg do Tailwind)
-
+    // ✅ FIX: lê o tamanho real na inicialização — evita flash do layout errado
     const [isMobile, setIsMobile] = useState(() =>
         typeof window !== "undefined" ? window.innerWidth < 1024 : false
     );
     useEffect(() => {
         const check = () => setIsMobile(window.innerWidth < 1024);
-        check();
         window.addEventListener("resize", check);
         return () => window.removeEventListener("resize", check);
     }, []);
 
     // Mobile sempre usa minimal — desktop respeita configuração do produtor
     const effectiveLayout = isMobile ? "minimal" : layoutStudent;
+
+    // Onboarding
+    const { needsOnboarding } = useOnboarding();
+    const [showTour, setShowTour] = useState(false);
+
+    useEffect(() => {
+        if (needsOnboarding && !isLoading && !isFetching) {
+            const t = setTimeout(() => setShowTour(true), 500);
+            return () => clearTimeout(t);
+        }
+    }, [needsOnboarding, isLoading, isFetching]);
 
     useEffect(() => {
         if (!isLoading && !isFetching && user) {
@@ -88,6 +99,7 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
                     </div>
                 </main>
                 <FloatingCoachWidget />
+                {showTour && <OnboardingTour onComplete={() => setShowTour(false)} />}
             </div>
         );
     }
@@ -103,6 +115,7 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
                 </main>
                 <StudentMinimalNav />
                 <FloatingCoachWidget />
+                {showTour && <OnboardingTour onComplete={() => setShowTour(false)} />}
             </div>
         );
     }
@@ -119,8 +132,8 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
                     </div>
                 </main>
             </div>
-            {/* Fora do scroll container — position: fixed funciona corretamente */}
             <FloatingCoachWidget />
+            {showTour && <OnboardingTour onComplete={() => setShowTour(false)} />}
         </div>
     );
 }
