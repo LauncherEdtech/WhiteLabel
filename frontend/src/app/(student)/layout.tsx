@@ -6,6 +6,8 @@ import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/stores/authStore";
 import { useMe } from "@/lib/hooks/useAuth";
 import { useTenantStore } from "@/lib/stores/tenantStore";
+import { useQueryClient } from "@tanstack/react-query";
+import { apiClient } from "@/lib/api/client";
 import { StudentSidebar } from "@/components/layout/StudentSidebar";
 import { StudentTopbar } from "@/components/layout/StudentTopbar";
 import { StudentMinimalNav } from "@/components/layout/StudentMinimalNav";
@@ -17,8 +19,8 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
     const router = useRouter();
     const { isLoading: isFetching } = useMe();
     const { tenant } = useTenantStore();
+    const queryClient = useQueryClient();
 
-    // Lê o layout salvo no branding do tenant
     const layoutStudent = (tenant?.branding as any)?.layout_student || "sidebar";
 
     useEffect(() => {
@@ -28,6 +30,27 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
             }
         }
     }, [user, isLoading, isFetching, router]);
+
+    // Prefetch silencioso dos dados mais usados
+    // Roda assim que o layout monta — dados chegam antes do usuário navegar
+    useEffect(() => {
+        if (!user) return;
+        queryClient.prefetchQuery({
+            queryKey: ["student-dashboard"],
+            queryFn: () => apiClient.get("/analytics/student/dashboard").then(r => r.data),
+            staleTime: 5 * 60 * 1000,
+        });
+        queryClient.prefetchQuery({
+            queryKey: ["courses"],
+            queryFn: () => apiClient.get("/courses/").then(r => r.data),
+            staleTime: 5 * 60 * 1000,
+        });
+        queryClient.prefetchQuery({
+            queryKey: ["next-action"],
+            queryFn: () => apiClient.get("/analytics/student/next-action").then(r => r.data),
+            staleTime: 15 * 60 * 1000,
+        });
+    }, [user]);
 
     if (isLoading || isFetching) {
         return (
@@ -50,6 +73,7 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
                         {children}
                     </div>
                 </main>
+                <FloatingCoachWidget />
             </div>
         );
     }
@@ -64,6 +88,7 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
                     </div>
                 </main>
                 <StudentMinimalNav />
+                <FloatingCoachWidget />
             </div>
         );
     }
@@ -77,11 +102,11 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
                 <main className="flex-1 overflow-y-auto">
                     <div className="p-6 max-w-7xl mx-auto">
                         {children}
-                     {/* Coach flutuante — aparece em todas as páginas do aluno */}
-                     <FloatingCoachWidget />
                     </div>
                 </main>
             </div>
+            {/* Fora do scroll container — position: fixed funciona corretamente */}
+            <FloatingCoachWidget />
         </div>
     );
 }

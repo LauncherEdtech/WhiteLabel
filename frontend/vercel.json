@@ -1,0 +1,13 @@
+{
+    "functions": {
+        "app/**": {
+            "maxDuration": 10
+        }
+    },
+    "crons": [
+        {
+            "path": "/api/keepalive",
+            "schedule": "*/5 * * * *"
+        }
+    ]
+}
