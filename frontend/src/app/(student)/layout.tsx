@@ -1,7 +1,7 @@
 // frontend/src/app/(student)/layout.tsx
 "use client";
 
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/stores/authStore";
 import { useMe } from "@/lib/hooks/useAuth";
@@ -15,23 +15,7 @@ import { TopBar } from "@/components/layout/TopBar";
 import { FloatingCoachWidget } from "@/components/student/FloatingCoachWidget";
 import { OnboardingTour } from "@/components/onboarding/OnboardingTour";
 import { useOnboarding } from "@/lib/hooks/useOnboarding";
-
-// ── Hook de detecção mobile via useLayoutEffect ───────────────────────────────
-// useLayoutEffect roda SINCRONAMENTE antes do browser pintar a tela.
-// Isso garante que o layout correto é aplicado sem flash visível,
-// diferente de useEffect que roda depois da pintura.
-function useIsMobile(): boolean {
-    const [isMobile, setIsMobile] = useState(false);
-
-    useLayoutEffect(() => {
-        const check = () => setIsMobile(window.innerWidth < 1024);
-        check(); // executa imediatamente — antes do primeiro paint
-        window.addEventListener("resize", check);
-        return () => window.removeEventListener("resize", check);
-    }, []);
-
-    return isMobile;
-}
+import { cn } from "@/lib/utils/cn";
 
 export default function StudentLayout({ children }: { children: React.ReactNode }) {
     const { user, isLoading } = useAuthStore();
@@ -41,10 +25,6 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
     const queryClient = useQueryClient();
 
     const layoutStudent = (tenant?.branding as any)?.layout_student || "sidebar";
-    const isMobile = useIsMobile();
-
-    // Mobile sempre usa minimal — desktop respeita configuração do produtor
-    const effectiveLayout = isMobile ? "minimal" : layoutStudent;
 
     // Onboarding
     const { needsOnboarding } = useOnboarding();
@@ -65,7 +45,6 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
         }
     }, [user, isLoading, isFetching, router]);
 
-    // Prefetch silencioso dos dados mais usados
     useEffect(() => {
         if (!user) return;
         queryClient.prefetchQuery({
@@ -96,50 +75,60 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
         );
     }
 
-    // ── Layout: Barra superior ────────────────────────────────────────────────
-    if (effectiveLayout === "topbar") {
-        return (
-            <div className="min-h-screen bg-background flex flex-col">
-                <StudentTopbar />
-                <main className="flex-1 overflow-y-auto">
-                    <div className="p-6 max-w-7xl mx-auto">
-                        {children}
-                    </div>
-                </main>
-                <FloatingCoachWidget />
-                {showTour && <OnboardingTour onComplete={() => setShowTour(false)} />}
-            </div>
-        );
-    }
-
-    // ── Layout: Dock minimal ──────────────────────────────────────────────────
-    if (effectiveLayout === "minimal") {
-        return (
-            <div className="min-h-screen bg-background">
-                <main className="pb-28">
-                    <div className="p-6 max-w-5xl mx-auto">
-                        {children}
-                    </div>
-                </main>
-                <StudentMinimalNav />
-                <FloatingCoachWidget />
-                {showTour && <OnboardingTour onComplete={() => setShowTour(false)} />}
-            </div>
-        );
-    }
-
-    // ── Layout: Sidebar (padrão) ──────────────────────────────────────────────
     return (
-        <div className="flex h-screen bg-background overflow-hidden">
-            <StudentSidebar />
-            <div className="flex-1 flex flex-col min-w-0">
-                <TopBar />
-                <main className="flex-1 overflow-y-auto">
-                    <div className="p-6 max-w-7xl mx-auto">
-                        {children}
-                    </div>
-                </main>
+        <div className="bg-background min-h-screen">
+
+            {/* ══════════════════════════════════════════════════════
+                MOBILE (< lg): SEMPRE minimal — puro CSS, zero JS
+                Funciona desde o primeiro render do servidor.
+            ══════════════════════════════════════════════════════ */}
+            <div className="block lg:hidden">
+                <StudentMinimalNav />
             </div>
+
+            {/* ══════════════════════════════════════════════════════
+                DESKTOP (>= lg): layout configurado pelo produtor
+            ══════════════════════════════════════════════════════ */}
+
+            {/* Sidebar desktop */}
+            {layoutStudent === "sidebar" && (
+                <aside className="hidden lg:flex flex-col fixed left-0 top-0 h-screen w-64 border-r border-border bg-card z-30">
+                    <StudentSidebar desktopOnly />
+                </aside>
+            )}
+
+            {/* Topbar desktop */}
+            {layoutStudent === "topbar" && (
+                <div className="hidden lg:block">
+                    <StudentTopbar />
+                </div>
+            )}
+
+            {/* ══════════════════════════════════════════════════════
+                CONTEÚDO — renderizado UMA VEZ, padding via CSS
+            ══════════════════════════════════════════════════════ */}
+            <main className={cn(
+                // Mobile: espaço para topbar fixo + dock inferior
+                "pt-12 pb-28 min-h-screen",
+                // Desktop overrides por layout
+                layoutStudent === "sidebar" && "lg:pt-0 lg:pb-0 lg:ml-64 lg:flex lg:flex-col",
+                layoutStudent === "topbar" && "lg:pt-14 lg:pb-0",
+                layoutStudent === "minimal" && "lg:pt-0 lg:pb-28",
+            )}>
+                {/* TopBar interna — só no sidebar desktop */}
+                {layoutStudent === "sidebar" && (
+                    <div className="hidden lg:block">
+                        <TopBar />
+                    </div>
+                )}
+                <div className={cn(
+                    "p-6 max-w-7xl mx-auto",
+                    layoutStudent === "sidebar" && "lg:flex-1 lg:overflow-y-auto",
+                )}>
+                    {children}
+                </div>
+            </main>
+
             <FloatingCoachWidget />
             {showTour && <OnboardingTour onComplete={() => setShowTour(false)} />}
         </div>
