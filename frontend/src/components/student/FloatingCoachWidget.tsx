@@ -145,7 +145,7 @@ export function FloatingCoachWidget() {
                     )}>
                         <div className="flex items-center gap-2">
                             <Brain className="h-3.5 w-3.5 text-muted-foreground" />
-                            <span className="text-xs font-semibold text-foreground">Assistente</span>
+                            <span className="text-xs font-semibold text-foreground">Mentor Inteligente</span>
                             <span className={cn(
                                 "text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider",
                                 cfg.badge,
