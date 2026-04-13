@@ -61,11 +61,11 @@ export default function DashboardPage() {
                 </div>
                 <button
                     onClick={showCoach}
-                    title="Ver sugestão do assistente"
+                    title="Ver sugestão do Mentor Inteligente"
                     className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground border border-border hover:border-primary/40 px-2.5 py-1.5 rounded-lg transition-colors shrink-0"
                 >
                     <Brain className="h-3.5 w-3.5" />
-                    <span className="hidden sm:inline">Assistente</span>
+                    <span className="hidden sm:inline">Mentor Inteligente</span>
                 </button>
             </div>
 
