@@ -15,7 +15,7 @@ SQLAlchemy==2.0.36
 
 # ── Segurança ───────────────────────────────────────────────────────────────
 bcrypt==4.2.1                 # Hash de senhas (mais seguro que Werkzeug default)
-cryptography==44.0.0          # Criptografia de dados sensíveis
+cryptography==46.0.7          # Criptografia de dados sensíveis
 marshmallow==3.23.1           # Validação e serialização de entrada
 
 # ── Tarefas Assíncronas ─────────────────────────────────────────────────────
