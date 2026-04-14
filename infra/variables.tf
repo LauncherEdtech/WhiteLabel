@@ -7,7 +7,7 @@ variable "project_name" {
 
 variable "aws_region" {
   description = "Região AWS"
-  default     = "sa-east-1"
+  default     = "us-east-1"
 }
 
 variable "environment" {
@@ -57,4 +57,9 @@ variable "api_image" {
 variable "api_desired_count" {
   description = "Número de tarefas ECS da API"
   default     = 1
+}
+
+variable "s3_bucket" {
+  description = "Nome do bucket S3 para uploads"
+  default     = "launcher-edu-uploads-062677"
 }

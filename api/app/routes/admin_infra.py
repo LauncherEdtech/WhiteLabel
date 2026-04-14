@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 admin_infra_bp = Blueprint("admin_infra", __name__)
 
-AWS_REGION = os.environ.get("AWS_DEFAULT_REGION", "sa-east-1")
+AWS_REGION = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
 PROJECT_NAME = os.environ.get("PROJECT_NAME", "concurso-platform")
 
 # Cost Explorer é uma API GLOBAL que só responde em us-east-1

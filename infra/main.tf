@@ -18,9 +18,9 @@ terraform {
   }
 
   backend "s3" {
-    bucket         = "concurso-platform-terraform-state"
+    bucket         = "launcher-terraform-state-062677"
     key            = "terraform.tfstate"
-    region         = "sa-east-1"
+    region         = "us-east-1"
     encrypt        = true
     dynamodb_table = "terraform-locks"
   }
@@ -30,9 +30,11 @@ provider "aws" {
   region = var.aws_region
   default_tags {
     tags = {
-      Project     = var.project_name
+      Project     = "launcher-edu"
       Environment = var.environment
       ManagedBy   = "Terraform"
+      Owner       = "launcher"
+      CostCenter  = "platform"
     }
   }
 }
@@ -234,6 +236,7 @@ resource "aws_ecs_task_definition" "api" {
         { name = "JWT_SECRET_KEY",        value = var.jwt_secret_key },
         { name = "GEMINI_API_KEY",        value = var.gemini_api_key },
         { name = "AWS_DEFAULT_REGION",    value = var.aws_region },
+        { name = "AWS_S3_BUCKET",         value = var.s3_bucket },
       ]
 
       logConfiguration = {

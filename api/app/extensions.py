@@ -1,6 +1,6 @@
 # api/app/extensions.py
-# Instâncias das extensões Flask criadas SEM a app (padrão Application Factory).
-# Isso permite importar em qualquer módulo sem circular imports.
+import os
+import redis
 
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
@@ -19,8 +19,6 @@ migrate = Migrate()
 jwt = JWTManager()
 
 # ── Rate Limiter ─────────────────────────────────────────────────────────────
-# SEGURANÇA: Usa IP real do cliente como chave de limite.
-# Em produção atrás de ALB/CloudFront, ajustar para pegar X-Forwarded-For.
 limiter = Limiter(key_func=get_remote_address)
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
@@ -29,6 +27,20 @@ cors = CORS()
 # ── E-mail ───────────────────────────────────────────────────────────────────
 mail = Mail()
 
-# ── Celery (instância global, configurada na factory) ────────────────────────
+# ── Celery ───────────────────────────────────────────────────────────────────
 celery_app = Celery(__name__)
 celery_app.conf.include = ["app.tasks"]
+
+
+# ── Redis Cache ───────────────────────────────────────────────────────────────
+def _create_redis_client():
+    url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+    try:
+        client = redis.from_url(url, decode_responses=True, ssl_cert_reqs=None)
+        client.ping()
+        return client
+    except Exception:
+        return None
+
+
+redis_client = _create_redis_client()

@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # Configuração da métrica — deve bater com o Terraform (autoscaling.tf)
 CLOUDWATCH_NAMESPACE = "ConcursoPlataforma"
 METRIC_NAME = "ActiveUsers"
-AWS_REGION = "sa-east-1"
+AWS_REGION = "us-east-1"
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=10)

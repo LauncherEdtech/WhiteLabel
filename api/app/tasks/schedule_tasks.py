@@ -64,19 +64,26 @@ def adapt_after_question_attempt(self, user_id: str, tenant_id: str, subject_id:
         if not subject:
             return {"action": "skipped", "reason": "subject_not_found"}
 
-        # Calcula acurácia atual do aluno nesta disciplina
-        attempts = (
-            QuestionAttempt.query.filter_by(
+        # OTIMIZAÇÃO: Calcula acurácia via SQL em vez de carregar tudo em memória
+        from sqlalchemy import func, case as sql_case
+        from app.models.question import Question
+
+        row = (
+            db.session.query(
+                func.count(QuestionAttempt.id).label("total"),
+                func.sum(sql_case((QuestionAttempt.is_correct == True, 1), else_=0)).label("correct"),
+            )
+            .filter_by(
                 user_id=user_id,
                 tenant_id=tenant_id,
                 is_deleted=False,
             )
-            .join(QuestionAttempt.question)
+            .join(Question)
             .filter_by(subject_id=subject_id)
-            .all()
+            .one()
         )
 
-        total = len(attempts)
+        total = row.total or 0
         if total < 10:
             return {
                 "action": "skipped",
@@ -84,7 +91,7 @@ def adapt_after_question_attempt(self, user_id: str, tenant_id: str, subject_id:
                 "total": total,
             }
 
-        correct = sum(1 for a in attempts if a.is_correct)
+        correct = row.correct or 0
         accuracy = correct / total
 
         # Encontra cronogramas ativos para o curso desta disciplina
