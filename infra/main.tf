@@ -236,6 +236,7 @@ resource "aws_ecs_task_definition" "api" {
         { name = "JWT_SECRET_KEY",        value = var.jwt_secret_key },
         { name = "GEMINI_API_KEY",        value = var.gemini_api_key },
         { name = "AWS_DEFAULT_REGION",    value = var.aws_region },
+        { name = "AWS_S3_BUCKET",         value = var.s3_bucket },
       ]
 
       logConfiguration = {

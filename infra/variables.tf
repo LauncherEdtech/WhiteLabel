@@ -58,3 +58,8 @@ variable "api_desired_count" {
   description = "Número de tarefas ECS da API"
   default     = 1
 }
+
+variable "s3_bucket" {
+  description = "Nome do bucket S3 para uploads"
+  default     = "launcher-edu-uploads-062677"
+}
