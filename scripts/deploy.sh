@@ -12,7 +12,7 @@
 set -e
 
 # ── Configurações ─────────────────────────────────────────────────────────────
-AWS_REGION="sa-east-1"
+AWS_REGION="us-east-1"
 CLUSTER="concurso-platform-cluster"
 GHCR_BASE="ghcr.io/launcheredtech/whitelabel"
 GITHUB_ACTOR="${GITHUB_ACTOR:-launcheredtech}"

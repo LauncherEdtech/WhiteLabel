@@ -178,7 +178,7 @@ def _configure_celery(app: Flask) -> None:
             "visibility_timeout": 3600,
             "predefined_queues": {
                 "celery": {
-                    "url": "https://sqs.sa-east-1.amazonaws.com/853696859705/concurso-platform-celery",
+                    "url": "https://sqs.us-east-1.amazonaws.com/062677866928/concurso-platform-celery",
                 }
             },
         }

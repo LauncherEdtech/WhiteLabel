@@ -44,7 +44,7 @@ def _is_producer_or_above(claims: dict) -> bool:
 
 
 def _get_s3_client():
-    region = current_app.config.get("AWS_REGION", "sa-east-1")
+    region = current_app.config.get("AWS_REGION", "us-east-1")
     return boto3.client(
         "s3",
         region_name=region,
@@ -95,7 +95,7 @@ def generate_video_presigned_url(key: str, expiry: int = 7200) -> str | None:
 
     try:
         if not hasattr(g, "_s3_client_read"):
-            region = current_app.config.get("AWS_REGION", "sa-east-1")
+            region = current_app.config.get("AWS_REGION", "us-east-1")
             g._s3_client_read = boto3.client(
                 "s3",
                 region_name=region,
@@ -170,7 +170,7 @@ def logo_presigned_url():
             500,
         )
 
-    region = current_app.config.get("AWS_REGION", "sa-east-1")
+    region = current_app.config.get("AWS_REGION", "us-east-1")
     public_url = _s3_public_url(bucket, region, key)
 
     return (
@@ -263,7 +263,7 @@ def pdf_presigned_url():
         current_app.logger.error(f"S3 PDF presigned error: {e}")
         return jsonify({"error": "s3_error"}), 500
 
-    region = current_app.config.get("AWS_REGION", "sa-east-1")
+    region = current_app.config.get("AWS_REGION", "us-east-1")
     public_url = _s3_public_url(bucket, region, key)
 
     return jsonify({

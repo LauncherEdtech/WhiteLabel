@@ -7,7 +7,7 @@ variable "project_name" {
 
 variable "aws_region" {
   description = "Região AWS"
-  default     = "sa-east-1"
+  default     = "us-east-1"
 }
 
 variable "environment" {

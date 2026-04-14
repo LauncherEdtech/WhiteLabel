@@ -18,9 +18,9 @@ terraform {
   }
 
   backend "s3" {
-    bucket         = "concurso-platform-terraform-state"
+    bucket         = "launcher-terraform-state-062677"
     key            = "terraform.tfstate"
-    region         = "sa-east-1"
+    region         = "us-east-1"
     encrypt        = true
     dynamodb_table = "terraform-locks"
   }
@@ -30,9 +30,11 @@ provider "aws" {
   region = var.aws_region
   default_tags {
     tags = {
-      Project     = var.project_name
+      Project     = "launcher-edu"
       Environment = var.environment
       ManagedBy   = "Terraform"
+      Owner       = "launcher"
+      CostCenter  = "platform"
     }
   }
 }

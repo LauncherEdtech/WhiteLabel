@@ -15,7 +15,7 @@ on:
         options: [staging, production]
 
 env:
-  AWS_REGION: sa-east-1
+  AWS_REGION: us-east-1
   CLUSTER: concurso-platform-cluster
   GHCR_IMAGE: ghcr.io/launcheredtech/whitelabel/api
 
