@@ -27,8 +27,8 @@ from app.models.schedule import StudySchedule, ScheduleItem, ScheduleCheckIn
 class ScheduleEngine:
     BREAK_MINUTES = 10
     MAX_SCHEDULE_DAYS = 120
-    QUESTIONS_BLOCK_MINUTES = 30  # duração da sessão de questões
-    MIN_FREE_FOR_QUESTIONS = 20  # mínimo livre para adicionar questões
+    QUESTIONS_BLOCK_MINUTES = 20  # duração fixa da sessão de questões (obrigatória)
+    MIN_FREE_FOR_QUESTIONS = 0  # questões agora são obrigatórias (não precisa espaço livre)
     REVIEW_MINUTES = 25  # duração de uma revisão espaçada
     SIMULADO_INTERVAL_LESSONS = 12  # simulado a cada N aulas
     MAX_EFFECTIVE_MINUTES = 480  # teto de 8h/dia
@@ -683,21 +683,15 @@ class ScheduleEngine:
                     if consecutive_skips >= len(active_subjects):
                         break
 
-            # ── Questões para cada disciplina coberta no dia ──────────────────
+            # ── Questões obrigatórias (20 min fixo) para cada disciplina coberta ──
             for sid in day_subjects:
-                remaining = effective_minutes - day_used
-                if remaining < self.MIN_FREE_FOR_QUESTIONS:
-                    break
-
                 subject = subject_map.get(sid)
                 if not subject:
                     continue
 
-                q_min = min(
-                    self.QUESTIONS_BLOCK_MINUTES, remaining - self.BREAK_MINUTES
-                )
-                if q_min < 10:
-                    break
+                # Sempre 20 minutos de questões para fixação da aula do dia
+                questions_minutes = self.QUESTIONS_BLOCK_MINUTES  # 20 min fixo
+                needed = questions_minutes + self.BREAK_MINUTES  # 20 + 10 = 30 min
 
                 items_to_add.append(
                     ScheduleItem(
@@ -707,12 +701,12 @@ class ScheduleEngine:
                         subject_id=sid,
                         scheduled_date=slot_str,
                         order=day_order,
-                        estimated_minutes=q_min,
+                        estimated_minutes=questions_minutes,
                         priority_reason=f"Fixação: {subject.name}",
                         status="pending",
                     )
                 )
-                day_used += q_min + self.BREAK_MINUTES
+                day_used += needed
                 day_order += 1
 
             # Registra minutos usados para spaced reviews
@@ -834,7 +828,12 @@ class ScheduleEngine:
         items_to_add,
         effective_minutes: int = None,
     ):
-        """Agenda revisões espaçadas para disciplinas com histórico de questões."""
+        """
+        Revisões ADAPTATIVAS: apenas para disciplinas com BAIXO DESEMPENHO (< 50%).
+        - Accuracy < 50%: injeta revisão em 3, 5, 10, 21 dias após última aula/questão
+        - Accuracy >= 50%: sem revisão (aluno está aprendendo)
+        - Zero tentativas: sem revisão (aluno começa do zero)
+        """
         if effective_minutes is None:
             effective_minutes = self.minutes_per_day
 
@@ -859,38 +858,49 @@ class ScheduleEngine:
                 .filter_by(subject_id=subject.id)
                 .all()
             )
+
+            # Zero tentativas: pula revisão (aluno começando do zero)
             if not attempts:
+                continue
+
+            # Amostra < 10 tentativas: sem ação
+            if len(attempts) < self.ADAPTIVE_MIN_ATTEMPTS:
                 continue
 
             total = len(attempts)
             correct = sum(1 for a in attempts if a.is_correct)
             accuracy = correct / total
 
-            if accuracy < self.WEAK_ACCURACY_THRESHOLD:
-                level, intervals = "fraco", self.SPACED_REVIEW_INTERVALS["fraco"]
-            elif accuracy < self.STRONG_ACCURACY_THRESHOLD:
-                level, intervals = "regular", self.SPACED_REVIEW_INTERVALS["regular"]
-            else:
-                level, intervals = "forte", self.SPACED_REVIEW_INTERVALS["forte"]
+            # IMPORTANTE: Só injeta revisão se accuracy < 50% (BAIXO DESEMPENHO)
+            if accuracy >= self.ADAPTIVE_INJECT_THRESHOLD:
+                continue  # Aluno está aprendendo, sem revisão
 
-            last_review = (
+            # Accuracy < 50%: precisa revisar
+            level = "fraco"
+            intervals = self.SPACED_REVIEW_INTERVALS["fraco"]  # [3, 5, 10, 21]
+
+            # Encontra última aula OU questão desta disciplina
+            last_item = (
                 ScheduleItem.query.filter(
                     ScheduleItem.schedule_id == schedule.id,
                     ScheduleItem.subject_id == subject.id,
-                    ScheduleItem.item_type == "review",
+                    ScheduleItem.item_type.in_(["lesson", "questions"]),
                     ScheduleItem.is_deleted == False,
                 )
                 .order_by(ScheduleItem.scheduled_date.desc())
                 .first()
             )
 
+            # Base: 3 dias após última aula/questão (mínimo)
             base_date = today
-            if last_review:
+            if last_item:
                 try:
-                    base_date = date.fromisoformat(last_review.scheduled_date)
+                    last_date = date.fromisoformat(last_item.scheduled_date)
+                    base_date = last_date + timedelta(days=3)
                 except ValueError:
                     pass
 
+            # Agenda revisões nos intervalos
             for interval in intervals:
                 review_date = base_date + timedelta(days=interval)
                 review_str = review_date.isoformat()
@@ -900,6 +910,7 @@ class ScheduleEngine:
                     continue
                 if tracker_key in review_tracker:
                     continue
+
                 already = any(
                     i.item_type == "review"
                     and i.subject_id == subject.id
@@ -923,15 +934,15 @@ class ScheduleEngine:
                         order=50,
                         estimated_minutes=self.REVIEW_MINUTES,
                         priority_reason=(
-                            f"Revisão espaçada ({level}): {subject.name} "
-                            f"— acerto {round(accuracy * 100)}%"
+                            f"Revisão adaptativa ({level}): {subject.name} "
+                            f"— acerto {round(accuracy * 100)}% (abaixo de 50%)"
                         ),
                         status="pending",
                     )
                 )
                 used_minutes[review_date] = used_minutes.get(review_date, 0) + needed
                 review_tracker.add(tracker_key)
-                break
+                break  # Só uma revisão por intervalo
 
     def _calculate_subject_priorities(self) -> dict:
         subjects = (
