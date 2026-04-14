@@ -11,6 +11,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from marshmallow import Schema, fields, validate, ValidationError, EXCLUDE
 from sqlalchemy import func, case
+from sqlalchemy.orm import joinedload
 
 from app.extensions import db, limiter
 from app.models.user import User, UserRole
@@ -171,7 +172,7 @@ def get_schedule():
     today_str = today.isoformat()
     end_str = end_date.isoformat()
 
-    # ── Itens da janela de exibição ───────────────────────────────────────────
+    # ── Itens da janela de exibição com EAGER LOADING ────────────────────────
     items = (
         ScheduleItem.query.filter(
             ScheduleItem.schedule_id == schedule.id,
@@ -179,9 +180,29 @@ def get_schedule():
             ScheduleItem.scheduled_date <= end_str,
             ScheduleItem.is_deleted == False,
         )
+        .options(
+            joinedload(ScheduleItem.lesson),  # Carrega aulas antes (evita N+1)
+            joinedload(ScheduleItem.subject),  # Carrega disciplinas antes
+        )
         .order_by(ScheduleItem.scheduled_date, ScheduleItem.order)
         .all()
     )
+
+    # ── Gera presigned URLs em LOTE (não por item) ────────────────────────────
+    s3_keys = set()
+    for item in items:
+        if item.lesson and item.lesson.video_s3_key:
+            s3_keys.add(item.lesson.video_s3_key)
+
+    presigned_urls = {}
+    if s3_keys:
+        try:
+            from app.routes.uploads import generate_video_presigned_url
+
+            for s3_key in s3_keys:
+                presigned_urls[s3_key] = generate_video_presigned_url(s3_key)
+        except Exception:
+            pass  # Se falhar geração de URLs, continua sem elas
 
     # ── Agrupa por data ───────────────────────────────────────────────────────
     days_map = {}
@@ -189,7 +210,7 @@ def get_schedule():
         d = item.scheduled_date
         if d not in days_map:
             days_map[d] = []
-        days_map[d].append(_serialize_item(item))
+        days_map[d].append(_serialize_item(item, presigned_urls))
 
     days_list = [
         {"date": d, "items": day_items} for d, day_items in sorted(days_map.items())
@@ -565,7 +586,17 @@ def _serialize_schedule(schedule: StudySchedule) -> dict:
     }
 
 
-def _serialize_item(item: ScheduleItem) -> dict:
+def _serialize_item(item: ScheduleItem, presigned_urls: dict = None) -> dict:
+    """
+    Serializa um item do cronograma.
+
+    Args:
+        item: ScheduleItem para serializar
+        presigned_urls: Dict pré-calculado de {s3_key: presigned_url}.
+                       Se não fornecido, gera URLs sob demanda (lento).
+    """
+    presigned_urls = presigned_urls or {}
+
     data = {
         "id": item.id,
         "item_type": item.item_type,
@@ -582,10 +613,18 @@ def _serialize_item(item: ScheduleItem) -> dict:
 
     if item.lesson_id and item.lesson:
         lesson = item.lesson
-        if lesson.video_s3_key:
-            from app.routes.uploads import generate_video_presigned_url
+        video_url = None
 
-            video_url = generate_video_presigned_url(lesson.video_s3_key)
+        if lesson.video_s3_key:
+            # Tenta usar URL presignada pré-gerada (rápido)
+            video_url = presigned_urls.get(lesson.video_s3_key)
+            # Se não existir no dict, gera sob demanda (fallback)
+            if not video_url:
+                try:
+                    from app.routes.uploads import generate_video_presigned_url
+                    video_url = generate_video_presigned_url(lesson.video_s3_key)
+                except Exception:
+                    video_url = None
         else:
             video_url = lesson.video_url
 
