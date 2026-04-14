@@ -52,6 +52,12 @@ class ScheduleEngine:
         "forte": [14, 30],
     }
 
+    # Configurações para tempo de questões e revisões
+    QUESTIONS_MIN_MINUTES = 10
+    QUESTIONS_MAX_MINUTES = 25
+    REVIEW_MIN_MINUTES = 15
+    REVIEW_MAX_MINUTES = 30
+
     def __init__(self, user_id: str, tenant_id: str, course_id: str):
         self.user_id = user_id
         self.tenant_id = tenant_id
@@ -348,19 +354,28 @@ class ScheduleEngine:
         return removed
 
     def _get_subject_accuracy(self, subject_id: str) -> float:
-        attempts = (
-            QuestionAttempt.query.filter_by(
+        """OTIMIZAÇÃO: Usa SQL COUNT/SUM em vez de carregar tudo em memória"""
+        from sqlalchemy import func, case as sql_case
+        from app.models.question import Question
+
+        row = (
+            db.session.query(
+                func.count(QuestionAttempt.id).label("total"),
+                func.sum(sql_case((QuestionAttempt.is_correct == True, 1), else_=0)).label("correct"),
+            )
+            .filter_by(
                 user_id=self.user_id,
                 tenant_id=self.tenant_id,
                 is_deleted=False,
             )
-            .join(QuestionAttempt.question)
+            .join(Question)
             .filter_by(subject_id=subject_id)
-            .all()
+            .one()
         )
-        if not attempts:
+        total = row.total or 0
+        if total == 0:
             return 0.0
-        return sum(1 for a in attempts if a.is_correct) / len(attempts)
+        return (row.correct or 0) / total
 
     def _all_lessons_completed(self) -> bool:
         total = (
@@ -399,23 +414,31 @@ class ScheduleEngine:
         return watched >= total
 
     def calculate_abandonment_risk(self) -> float:
+        """OTIMIZAÇÃO: Consolidou 4 queries COUNT separadas em 2 queries com aggregation"""
+        from sqlalchemy import func, case as sql_case
+
         risk = 0.0
 
-        last_attempt = (
-            QuestionAttempt.query.filter_by(
+        # Query 1: Inatividade + Acurácia geral
+        qa_row = (
+            db.session.query(
+                func.max(QuestionAttempt.created_at).label("last_attempt"),
+                func.count(QuestionAttempt.id).label("total"),
+                func.sum(sql_case((QuestionAttempt.is_correct == True, 1), else_=0)).label("correct"),
+            )
+            .filter_by(
                 user_id=self.user_id,
                 tenant_id=self.tenant_id,
                 is_deleted=False,
             )
-            .order_by(QuestionAttempt.created_at.desc())
-            .first()
+            .one()
         )
 
-        if not last_attempt:
+        # Inatividade
+        if not qa_row.last_attempt:
             risk += 0.4
         else:
-            # FIX: compatível com naive (SQLite/testes) e aware (PostgreSQL/produção)
-            created_at = last_attempt.created_at
+            created_at = qa_row.last_attempt
             if created_at.tzinfo is None:
                 created_at = created_at.replace(tzinfo=timezone.utc)
             days_inactive = (datetime.now(timezone.utc) - created_at).days
@@ -425,6 +448,14 @@ class ScheduleEngine:
                 else 0.25 if days_inactive >= 7 else 0.1 if days_inactive >= 3 else 0
             )
 
+        # Acurácia geral
+        total = qa_row.total or 0
+        if total >= 10:
+            correct = qa_row.correct or 0
+            accuracy = correct / total
+            risk += 0.3 if accuracy < 0.3 else 0.15 if accuracy < 0.4 else 0
+
+        # Query 2: Itens atrasados do cronograma
         schedule = StudySchedule.query.filter_by(
             user_id=self.user_id,
             course_id=self.course_id,
@@ -445,21 +476,6 @@ class ScheduleEngine:
                 if overdue >= 10
                 else 0.2 if overdue >= 5 else 0.1 if overdue >= 2 else 0
             )
-
-        total = QuestionAttempt.query.filter_by(
-            user_id=self.user_id,
-            tenant_id=self.tenant_id,
-            is_deleted=False,
-        ).count()
-        if total >= 10:
-            correct = QuestionAttempt.query.filter_by(
-                user_id=self.user_id,
-                tenant_id=self.tenant_id,
-                is_correct=True,
-                is_deleted=False,
-            ).count()
-            accuracy = correct / total
-            risk += 0.3 if accuracy < 0.3 else 0.15 if accuracy < 0.4 else 0
 
         return round(min(risk, 1.0), 2)
 
@@ -683,30 +699,63 @@ class ScheduleEngine:
                     if consecutive_skips >= len(active_subjects):
                         break
 
-            # ── Questões obrigatórias (20 min fixo) para cada disciplina coberta ──
+            # ── Questões PROPORCIONAIS: calcular e validar espaço antes de adicionar ──
+            # Encontra as aulas adicionadas hoje para calcular tempo total
+            lessons_today = [
+                item for item in items_to_add
+                if item.scheduled_date == slot_str and item.item_type == "lesson"
+            ]
+            lessons_by_subject_today = defaultdict(list)
+            for lesson_item in lessons_today:
+                if lesson_item.subject_id:
+                    lessons_by_subject_today[lesson_item.subject_id].append(lesson_item)
+
+            # Calcula tempo proporcional de questões para cada disciplina
+            questions_to_add = []
             for sid in day_subjects:
                 subject = subject_map.get(sid)
                 if not subject:
                     continue
 
-                # Sempre 20 minutos de questões para fixação da aula do dia
-                questions_minutes = self.QUESTIONS_BLOCK_MINUTES  # 20 min fixo
-                needed = questions_minutes + self.BREAK_MINUTES  # 20 + 10 = 30 min
+                # Encontra a aula desta disciplina hoje
+                lessons_for_subject = lessons_by_subject_today.get(sid, [])
+                if not lessons_for_subject:
+                    continue
 
+                # Usa a primeira aula para calcular tempo proporcional
+                aula_item = lessons_for_subject[0]
+                questions_minutes = self._calculate_questions_minutes(aula_item.estimated_minutes)
+                needed = questions_minutes + self.BREAK_MINUTES  # + 10 min de intervalo
+
+                # ✅ VALIDAR: Só adiciona se cabe no dia (com 30% de margem)
+                max_allowed = int(effective_minutes * 1.3)
+                if day_used + needed > max_allowed:
+                    # Se não cabe, pula para próximo dia
+                    continue
+
+                questions_to_add.append({
+                    "sid": sid,
+                    "subject": subject,
+                    "minutes": questions_minutes,
+                    "needed": needed,
+                })
+
+            # ── Adiciona questões ao cronograma ──
+            for q_info in questions_to_add:
                 items_to_add.append(
                     ScheduleItem(
                         tenant_id=self.tenant_id,
                         schedule_id=schedule.id,
                         item_type="questions",
-                        subject_id=sid,
+                        subject_id=q_info["sid"],
                         scheduled_date=slot_str,
                         order=day_order,
-                        estimated_minutes=questions_minutes,
-                        priority_reason=f"Fixação: {subject.name}",
+                        estimated_minutes=q_info["minutes"],
+                        priority_reason=f"Fixação: {q_info['subject'].name}",
                         status="pending",
                     )
                 )
-                day_used += needed
+                day_used += q_info["needed"]
                 day_order += 1
 
             # Registra minutos usados para spaced reviews
@@ -769,6 +818,37 @@ class ScheduleEngine:
     # Helpers internos
     # ─────────────────────────────────────────────────────────────────────────
 
+    def _calculate_questions_minutes(self, lesson_minutes: int) -> int:
+        """
+        Calcula tempo proporcional de questões baseado na duração da aula.
+
+        Fórmula: tempo_questoes = 10 + (lesson_minutes × 0.3)
+        Limites: mínimo 10 min, máximo 25 min
+
+        Exemplos:
+        - Aula 30 min → 10 + 9 = 19 min
+        - Aula 50 min → 10 + 15 = 25 min (capped)
+        - Aula 20 min → 10 + 6 = 16 min
+        """
+        proportional = self.QUESTIONS_MIN_MINUTES + (lesson_minutes * 0.3)
+        return int(min(self.QUESTIONS_MAX_MINUTES, max(self.QUESTIONS_MIN_MINUTES, proportional)))
+
+    def _calculate_review_minutes(self, accuracy: float) -> int:
+        """
+        Calcula tempo de revisão proporcional à acurácia da disciplina.
+
+        Fórmula: tempo_revisao = 15 + ((1 - accuracy) × 15)
+        Limites: mínimo 15 min, máximo 30 min
+
+        Exemplos:
+        - Acurácia 20% → 15 + (0.8 × 15) = 27 min
+        - Acurácia 50% → 15 + (0.5 × 15) = 22.5 min
+        - Acurácia 80% → 15 + (0.2 × 15) = 18 min
+        - Acurácia 100% → 15 + (0 × 15) = 15 min
+        """
+        proportional = self.REVIEW_MIN_MINUTES + ((1.0 - accuracy) * 15)
+        return int(min(self.REVIEW_MAX_MINUTES, max(self.REVIEW_MIN_MINUTES, proportional)))
+
     def _add_review_only_plan(self, schedule, priority_map, start_date):
         """Plano de revisão + questões para quem já assistiu tudo."""
         slots = self._generate_day_slots(start_date)
@@ -829,10 +909,15 @@ class ScheduleEngine:
         effective_minutes: int = None,
     ):
         """
-        Revisões ADAPTATIVAS: apenas para disciplinas com BAIXO DESEMPENHO (< 50%).
-        - Accuracy < 50%: injeta revisão em 3, 5, 10, 21 dias após última aula/questão
-        - Accuracy >= 50%: sem revisão (aluno está aprendendo)
-        - Zero tentativas: sem revisão (aluno começa do zero)
+        Revisões ADAPTATIVAS com nova lógica (v7):
+
+        1. Apenas para disciplinas com BAIXO DESEMPENHO (accuracy < 50%)
+        2. Tempo proporcional: 15-30 min baseado na acurácia
+        3. Máximo 2 dias depois da aula/questão relacionada
+        4. Máximo 2 revisões no mesmo dia
+        5. Respeita orçamento diário (com 30% de margem)
+
+        OTIMIZAÇÃO: Consolidou N+1 queries em 2 bulk queries
         """
         if effective_minutes is None:
             effective_minutes = self.minutes_per_day
@@ -845,106 +930,144 @@ class ScheduleEngine:
 
         today = date.today()
         slot_date_set = {s.isoformat(): s for s in slots}
-        review_tracker = set()
+        reviews_per_day = defaultdict(int)  # Rastreia revisões por dia
+        items_to_add_set = {
+            (i.subject_id, i.scheduled_date) for i in items_to_add
+            if i.item_type == "review"
+        }
+
+        # OTIMIZAÇÃO: Buscar stats de accuracy em 1 query
+        from sqlalchemy import func, case as sql_case
+        from app.models.question import Question
+
+        subject_ids = [s.id for s in subjects]
+
+        accuracy_stats = (
+            db.session.query(
+                Question.subject_id,
+                func.count(QuestionAttempt.id).label("total"),
+                func.sum(sql_case((QuestionAttempt.is_correct == True, 1), else_=0)).label("correct"),
+            )
+            .join(Question)
+            .filter(
+                QuestionAttempt.user_id == self.user_id,
+                QuestionAttempt.tenant_id == self.tenant_id,
+                QuestionAttempt.is_deleted == False,
+                Question.subject_id.in_(subject_ids),
+            )
+            .group_by(Question.subject_id)
+            .all()
+        )
+
+        accuracy_map = {
+            row[0]: (row[2] or 0) / row[1] if row[1] > 0 else 0.0
+            for row in accuracy_stats
+        }
+
+        # OTIMIZAÇÃO: Buscar últimas aulas/questões de TODOS os subjects em 1 query
+        last_items_rows = (
+            db.session.query(
+                ScheduleItem.subject_id,
+                func.max(ScheduleItem.scheduled_date).label("last_date"),
+            )
+            .filter(
+                ScheduleItem.schedule_id == schedule.id,
+                ScheduleItem.subject_id.in_(subject_ids),
+                ScheduleItem.item_type.in_(["lesson", "questions"]),
+                ScheduleItem.is_deleted == False,
+            )
+            .group_by(ScheduleItem.subject_id)
+            .all()
+        )
+
+        last_dates = {row[0]: row[1] for row in last_items_rows}
 
         for subject in subjects:
-            attempts = (
-                QuestionAttempt.query.filter_by(
-                    user_id=self.user_id,
-                    tenant_id=self.tenant_id,
-                    is_deleted=False,
-                )
-                .join(QuestionAttempt.question)
-                .filter_by(subject_id=subject.id)
-                .all()
+            accuracy = accuracy_map.get(subject.id, 0.0)
+            total_attempts = next(
+                (row[1] for row in accuracy_stats if row[0] == subject.id),
+                0,
             )
 
             # Zero tentativas: pula revisão (aluno começando do zero)
-            if not attempts:
+            if total_attempts == 0:
                 continue
 
             # Amostra < 10 tentativas: sem ação
-            if len(attempts) < self.ADAPTIVE_MIN_ATTEMPTS:
+            if total_attempts < self.ADAPTIVE_MIN_ATTEMPTS:
                 continue
-
-            total = len(attempts)
-            correct = sum(1 for a in attempts if a.is_correct)
-            accuracy = correct / total
 
             # IMPORTANTE: Só injeta revisão se accuracy < 50% (BAIXO DESEMPENHO)
             if accuracy >= self.ADAPTIVE_INJECT_THRESHOLD:
                 continue  # Aluno está aprendendo, sem revisão
 
             # Accuracy < 50%: precisa revisar
-            level = "fraco"
-            intervals = self.SPACED_REVIEW_INTERVALS["fraco"]  # [3, 5, 10, 21]
+            review_minutes = self._calculate_review_minutes(accuracy)
+            needed = review_minutes + self.BREAK_MINUTES  # + 10 min de intervalo
 
-            # Encontra última aula OU questão desta disciplina
-            last_item = (
-                ScheduleItem.query.filter(
-                    ScheduleItem.schedule_id == schedule.id,
-                    ScheduleItem.subject_id == subject.id,
-                    ScheduleItem.item_type.in_(["lesson", "questions"]),
-                    ScheduleItem.is_deleted == False,
-                )
-                .order_by(ScheduleItem.scheduled_date.desc())
-                .first()
-            )
-
-            # Base: 3 dias após última aula/questão (mínimo)
-            base_date = today
-            if last_item:
+            # ✅ RESTRIÇÃO: Máximo 2 dias depois da última aula/questão
+            last_date_str = last_dates.get(subject.id)
+            if last_date_str:
                 try:
-                    last_date = date.fromisoformat(last_item.scheduled_date)
-                    base_date = last_date + timedelta(days=3)
+                    last_date = date.fromisoformat(last_date_str)
+                    earliest = last_date + timedelta(days=1)  # Próximo dia
+                    latest = last_date + timedelta(days=2)    # No máximo 2 dias depois
                 except ValueError:
-                    pass
-
-            # Agenda revisões nos intervalos
-            for interval in intervals:
-                review_date = base_date + timedelta(days=interval)
-                review_str = review_date.isoformat()
-                tracker_key = (subject.id, review_str)
-
-                if review_str not in slot_date_set:
                     continue
-                if tracker_key in review_tracker:
-                    continue
+            else:
+                earliest = today
+                latest = today + timedelta(days=2)
 
-                already = any(
-                    i.item_type == "review"
-                    and i.subject_id == subject.id
-                    and i.scheduled_date == review_str
-                    for i in items_to_add
-                )
-                if already:
+            # ✅ Busca slot disponível respeitando restrições
+            found_slot = False
+            for slot in slots:
+                if slot < earliest or slot > latest:
+                    continue  # Fora da janela de 2 dias
+
+                slot_str = slot.isoformat()
+                if (subject.id, slot_str) in items_to_add_set:
+                    continue  # Já tem revisão deste subject neste dia
+
+                # ✅ RESTRIÇÃO: Máximo 2 revisões por dia
+                if reviews_per_day[slot_str] >= 2:
                     continue
 
-                needed = self.REVIEW_MINUTES + self.BREAK_MINUTES
-                if used_minutes.get(review_date, 0) + needed > effective_minutes:
+                # ✅ VALIDAR: Cabe no orçamento (com 30% de margem)
+                max_allowed = int(effective_minutes * 1.3)
+                if used_minutes.get(slot, 0) + needed > max_allowed:
                     continue
 
+                # ✅ Adiciona revisão
                 items_to_add.append(
                     ScheduleItem(
                         tenant_id=self.tenant_id,
                         schedule_id=schedule.id,
                         item_type="review",
                         subject_id=subject.id,
-                        scheduled_date=review_str,
+                        scheduled_date=slot_str,
                         order=50,
-                        estimated_minutes=self.REVIEW_MINUTES,
+                        estimated_minutes=review_minutes,
                         priority_reason=(
-                            f"Revisão adaptativa ({level}): {subject.name} "
+                            f"Revisão adaptativa: {subject.name} "
                             f"— acerto {round(accuracy * 100)}% (abaixo de 50%)"
                         ),
                         status="pending",
                     )
                 )
-                used_minutes[review_date] = used_minutes.get(review_date, 0) + needed
-                review_tracker.add(tracker_key)
-                break  # Só uma revisão por intervalo
+                used_minutes[slot] = used_minutes.get(slot, 0) + needed
+                reviews_per_day[slot_str] += 1
+                items_to_add_set.add((subject.id, slot_str))
+                found_slot = True
+                break  # Uma revisão por disciplina
+
+            # Se não achou slot, log (silencioso, não aborta o fluxo)
+            if not found_slot:
+                pass  # Revisão não foi agendada por restrições de slot
 
     def _calculate_subject_priorities(self) -> dict:
+        from sqlalchemy import func, case as sql_case
+        from app.models.question import Question
+
         subjects = (
             Subject.query.filter_by(
                 course_id=self.course_id,
@@ -955,25 +1078,36 @@ class ScheduleEngine:
             .all()
         )
 
+        # OTIMIZAÇÃO: Calcula stats de accuracy em 1 QUERY via SQL
+        subject_ids = [s.id for s in subjects]
+        stats_rows = (
+            db.session.query(
+                Question.subject_id,
+                func.count(QuestionAttempt.id).label("total"),
+                func.sum(sql_case((QuestionAttempt.is_correct == True, 1), else_=0)).label("correct"),
+            )
+            .join(Question)
+            .filter(
+                QuestionAttempt.user_id == self.user_id,
+                QuestionAttempt.tenant_id == self.tenant_id,
+                QuestionAttempt.is_deleted == False,
+                Question.subject_id.in_(subject_ids),
+            )
+            .group_by(Question.subject_id)
+            .all()
+        )
+
+        stats_map = {row[0]: {"total": row[1], "correct": row[2] or 0} for row in stats_rows}
+
         priorities = {}
         for subject in subjects:
             base = float(subject.edital_weight or 1.0)
-            attempts = (
-                QuestionAttempt.query.filter_by(
-                    user_id=self.user_id,
-                    tenant_id=self.tenant_id,
-                    is_deleted=False,
-                )
-                .join(QuestionAttempt.question)
-                .filter_by(subject_id=subject.id)
-                .all()
-            )
-            if not attempts:
+            stats = stats_map.get(subject.id)
+
+            if not stats or stats["total"] == 0:
                 priority = base * self.NEVER_STUDIED_MULTIPLIER
             else:
-                total = len(attempts)
-                correct = sum(1 for a in attempts if a.is_correct)
-                accuracy = correct / total
+                accuracy = stats["correct"] / stats["total"]
                 if accuracy < self.WEAK_ACCURACY_THRESHOLD:
                     priority = base * self.WEAK_DISCIPLINE_MULTIPLIER
                 elif accuracy > self.STRONG_ACCURACY_THRESHOLD:
