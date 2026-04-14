@@ -165,25 +165,29 @@ def _register_error_handlers(app: Flask) -> None:
             500,
         )
 
-
 def _configure_celery(app: Flask) -> None:
-    # Detecta se está usando SQS ou Redis como broker
     broker_url = app.config["CELERY_BROKER_URL"]
     is_sqs = broker_url.startswith("sqs://")
 
     if is_sqs:
-        # SQS: usa predefined_queues para apontar direto para a fila criada
-        # evita que o kombu tente criar/listar filas desnecessariamente
+        queue_name = os.environ.get("CELERY_DEFAULT_QUEUE", "concurso-platform-celery")
+        region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+
+        try:
+            import boto3
+            account_id = boto3.client("sts", region_name=region).get_caller_identity()["Account"]
+        except Exception:
+            account_id = "062677866928"
+
         transport_options = {
             "visibility_timeout": 3600,
             "predefined_queues": {
                 "celery": {
-                    "url": "https://sqs.us-east-1.amazonaws.com/062677866928/concurso-platform-celery",
+                    "url": f"https://sqs.{region}.amazonaws.com/{account_id}/{queue_name}",
                 }
             },
         }
     else:
-        # Redis (dev local): sem opções especiais
         transport_options = {
             "visibility_timeout": 3600,
         }
