@@ -17,8 +17,8 @@ export function useCourse(id: string) {
         queryKey: QUERY_KEYS.COURSE(id),
         queryFn: () => coursesApi.get(id),
         enabled: !!id,
-        staleTime: 10 * 60 * 1000,        // 10 minutos (dados de curso não mudam frequentemente)
-        refetchOnWindowFocus: false,      // Não refaz ao ganhar foco
+        staleTime: 0,        // 10 minutos (dados de curso não mudam frequentemente)
+        refetchOnWindowFocus: true,      // Não refaz ao ganhar foco
     });
 }
 
