@@ -44,10 +44,14 @@ class Config:
     # ── Redis ────────────────────────────────────────────────────────────────
     # Usado para: rate limiting, cache dashboard/insights, activity tracker,
     # celery result backend. NÃO mais usado como Celery broker em produção.
+    #
+    # FIX: separa a URL limpa (sem query params) da URL com ssl_cert_reqs.
+    # O flask-limiter e alguns clientes não entendem ?ssl_cert_reqs=CERT_NONE
+    # na URL — precisam receber a opção SSL separadamente via storage options.
     REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-    _redis_ssl_suffix = (
-        "?ssl_cert_reqs=CERT_NONE" if REDIS_URL.startswith("rediss://") else ""
-    )
+    _redis_url_clean = REDIS_URL.split("?")[0]  # remove ?ssl_cert_reqs=CERT_NONE
+    _is_rediss = _redis_url_clean.startswith("rediss://")
+    _redis_ssl_suffix = "?ssl_cert_reqs=CERT_NONE" if _is_rediss else ""
 
     # ── Celery Broker ────────────────────────────────────────────────────────
     # Produção: CELERY_BROKER_URL=sqs:// (definido na ECS task definition)
@@ -55,13 +59,13 @@ class Config:
     # Fallback: constrói a partir de REDIS_URL (compatibilidade)
     CELERY_BROKER_URL = os.environ.get(
         "CELERY_BROKER_URL",
-        REDIS_URL + _redis_ssl_suffix,
+        _redis_url_clean + _redis_ssl_suffix,
     )
 
     # Result backend sempre no Redis (SQS não suporta result backend)
     CELERY_RESULT_BACKEND = os.environ.get(
         "CELERY_RESULT_BACKEND",
-        REDIS_URL + _redis_ssl_suffix,
+        _redis_url_clean + _redis_ssl_suffix,
     )
 
     CELERY_TASK_SERIALIZER = "json"
@@ -69,7 +73,15 @@ class Config:
     CELERY_ACCEPT_CONTENT = ["json"]
 
     # ── Rate Limiting ────────────────────────────────────────────────────────
-    RATELIMIT_STORAGE_URI = REDIS_URL
+    # FIX: flask-limiter não aceita ?ssl_cert_reqs=CERT_NONE na URL.
+    # A URL deve ser limpa (sem query params) e as opções SSL passadas
+    # separadamente via RATELIMIT_STORAGE_OPTIONS.
+    RATELIMIT_STORAGE_URI = _redis_url_clean
+    RATELIMIT_STORAGE_OPTIONS = (
+        {"ssl_cert_reqs": None}  # equivale a ssl.CERT_NONE para Upstash
+        if _is_rediss
+        else {}
+    )
     RATELIMIT_DEFAULT = "200 per hour"
     RATELIMIT_HEADERS_ENABLED = True
 
