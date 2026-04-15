@@ -19,4 +19,4 @@ USER appuser
 EXPOSE 5000
 
 # Usa wsgi.py para evitar conflito entre app.py e o pacote app/
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "120", "--preload", "wsgi:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--threads", "2", "--timeout", "120", "--preload", "wsgi:app"]
