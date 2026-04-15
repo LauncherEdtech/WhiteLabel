@@ -1,32 +1,29 @@
 # api/app/routes/health.py
-# Health check para ALB, ECS e monitoramento.
-# SEGURANÇA: Não expõe informações internas — apenas status operacional.
-
 from flask import Blueprint, jsonify
-from app.extensions import db
+from app.extensions import db, limiter
 from sqlalchemy import text
 
 health_bp = Blueprint("health", __name__)
 
 
 @health_bp.route("/health", methods=["GET"])
+@limiter.exempt
 def health_check():
     """
-    Health check básico para load balancer.
-    Retorna 200 se o serviço está de pé.
+    Health check básico para ECS e monitoramento.
+    Isento do rate limiter — ECS chama a cada 30s (120x/hora por worker).
     """
     return jsonify({"status": "ok"}), 200
 
 
 @health_bp.route("/health/ready", methods=["GET"])
+@limiter.exempt
 def readiness_check():
     """
-    Readiness check: verifica se a API está pronta para receber tráfego.
-    Testa conectividade com o banco de dados.
+    Readiness check: verifica conectividade com o banco de dados.
     """
     try:
         db.session.execute(text("SELECT 1"))
         return jsonify({"status": "ready", "database": "ok"}), 200
     except Exception:
-        # SEGURANÇA: Não expõe detalhes do erro de banco
         return jsonify({"status": "not_ready", "database": "error"}), 503
