@@ -3,6 +3,7 @@ cat > /workspaces/WhiteLabel/.gitignore << 'EOF'
 __pycache__/
 *.py[cod]
 *.pyo
+*.pyc
 *.pyd
 .Python
 *.egg

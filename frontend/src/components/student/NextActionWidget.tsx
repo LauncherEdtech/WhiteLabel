@@ -90,7 +90,7 @@ export function NextActionWidget() {
         queryKey: ["next-action"],
         queryFn: () =>
             apiClient.get("/analytics/student/next-action").then(r => r.data),
-        staleTime: 5 * 60 * 1000, // 5 min
+        staleTime: 15 * 60 * 1000, // 15 min (sincronizado com backend)
         refetchOnWindowFocus: false,
     });
 

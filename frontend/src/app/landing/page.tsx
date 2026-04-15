@@ -1,855 +1,1939 @@
+// frontend/src/app/landing/page.tsx
+// Landing Page de Alta Conversão — Launcher EdTech
+// Experiência interativa: visitante "sente" como é ter a plataforma personalizada
+
 "use client";
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Fraunces, Plus_Jakarta_Sans } from "next/font/google";
+import { ProducerAccessForm } from "./ProducerAccessForm";
 
-const fraunces = Fraunces({ subsets: ["latin"], variable: "--font-fraunces", weight: ["400", "600", "700", "800", "900"], style: ["normal", "italic"], display: "swap" });
-const jakarta = Plus_Jakarta_Sans({ subsets: ["latin"], variable: "--font-jakarta", weight: ["300", "400", "500", "600", "700"], display: "swap" });
+// ─── DADOS ───────────────────────────────────────────────────────────────────
 
-// ─── DADOS REAIS DA PLATAFORMA ────────────────────────────────────────────────
-
-const GAMI_THEMES = [
-  {
-    key: "militar", label: "Militar", emoji: "⚔️", accent: "#F59E0B", tagline: "EsPCEx · IME · AMAN · PM",
-    ranks: ["Recruta", "Soldado", "Cabo", "Sargento", "Tenente", "Capitão", "Major", "Coronel", "General"],
-    icons: ["🪖", "🎖️", "⭐", "⭐⭐", "⭐⭐⭐", "🔰", "🏅", "🦅", "👑"], pts: [0, 100, 300, 600, 1000, 1600, 2500, 4000, 6000],
-    insight: { icon: "⚠️", label: "Vulnerabilidade tática", msg: 'Sargento, Direito Penal está em 38% de acerto. Reforce essa posição antes do combate final.' }
-  },
-  {
-    key: "policial", label: "Policial", emoji: "🚔", accent: "#3B82F6", tagline: "PC · PF · PRF · Guarda",
-    ranks: ["Recruta", "Investigador", "Inspetor", "Delegado", "Del. Chefe", "Del. Regional", "Superintendente", "Diretor", "Delegado-Geral"],
-    icons: ["🪖", "🔍", "📋", "👮", "⭐", "⭐⭐", "🔰", "🦅", "👑"], pts: [0, 100, 300, 600, 1000, 1600, 2500, 4000, 6000],
-    insight: { icon: "📌", label: "Próxima diligência", msg: 'Investigador, revise os últimos 3 erros de D. Administrativo. Os detalhes fazem diferença no inquérito.' }
-  },
-  {
-    key: "juridico", label: "Jurídico", emoji: "⚖️", accent: "#8B5CF6", tagline: "Magistratura · MP · OAB · PGE",
-    ranks: ["Estagiário", "Bacharel", "Advogado", "Promotor", "Juiz Substituto", "Juiz", "Desembargador", "Ministro", "Pres. STF"],
-    icons: ["📝", "🎓", "⚖️", "📜", "⭐", "⭐⭐", "🏛️", "🦅", "👑"], pts: [0, 100, 300, 600, 1000, 1600, 2500, 4000, 6000],
-    insight: { icon: "🎯", label: "Jurisprudência firmada", msg: 'Bacharel, você acertou 68% esta semana. Sua jurisprudência pessoal está se consolidando.' }
-  },
-  {
-    key: "fiscal", label: "Fiscal", emoji: "📊", accent: "#10B981", tagline: "RFB · SEFAZ · TCU · CGU",
-    ranks: ["Aprendiz", "Assistente", "Analista", "Auditor Jr.", "Auditor-Fiscal", "Auditor Sênior", "Auditor-Chefe", "Superintendente", "Secretário RFB"],
-    icons: ["📊", "📋", "💼", "🔍", "⭐", "⭐⭐", "🏅", "🦅", "👑"], pts: [0, 100, 300, 600, 1000, 1600, 2500, 4000, 6000],
-    insight: { icon: "⚠️", label: "Inconsistência detectada", msg: 'Analista, Direito Tributário com 39% de acerto. Essa inconsistência pode comprometer seu relatório final.' }
-  },
-  {
-    key: "administrativo", label: "Administrativo", emoji: "🏛️", accent: "#7C3AED", tagline: "INSS · BB · Correios · Câmara",
-    ranks: ["Trainee", "Assistente", "Analista Jr.", "Analista Pleno", "Analista Sênior", "Coordenador", "Gerente", "Diretor", "Presidente"],
-    icons: ["📝", "💼", "📊", "⭐", "⭐⭐", "🔰", "🏅", "🦅", "👑"], pts: [0, 100, 300, 600, 1000, 1600, 2500, 4000, 6000],
-    insight: { icon: "📌", label: "Próxima entrega", msg: 'Analista, resolva 15 questões de Português hoje. A próxima entrega depende desse resultado.' }
-  },
-  {
-    key: "saude", label: "Saúde", emoji: "🩺", accent: "#EC4899", tagline: "ANVISA · ANS · SMS · SUS",
-    ranks: ["Estagiário", "Técnico", "Auxiliar", "Especialista", "Supervisor", "Coordenador", "Gerente", "Diretor", "Secretário"],
-    icons: ["🩺", "💊", "🩻", "⭐", "⭐⭐", "🔰", "🏅", "🦅", "👑"], pts: [0, 100, 300, 600, 1000, 1600, 2500, 4000, 6000],
-    insight: { icon: "🎯", label: "Protocolo cumprido", msg: 'Especialista, você cumpriu 73% do protocolo semanal. Indicadores positivos, mantenha o ritmo.' }
-  },
-];
-
-const BRAND_SWATCHES = [
-  { color: "#5D5FEF", name: "Jurídico Pro", letter: "J", e1: "⚖️", e2: "🏛️" },
-  { color: "#7C3AED", name: "Carreiras Policiais", letter: "C", e1: "🚔", e2: "🔫" },
-  { color: "#DC2626", name: "Carreiras Militares", letter: "M", e1: "🎖️", e2: "⚔️" },
-  { color: "#059669", name: "Fiscal Federal", letter: "F", e1: "📋", e2: "💼" },
-  { color: "#D97706", name: "Aprovação Total", letter: "A", e1: "📚", e2: "🎯" },
+const BRAND_COLORS = [
+  { name: "Seu Azul", color: "#3B82F6", accent: "#60A5FA" },
+  { name: "Verde Militar", color: "#16A34A", accent: "#4ADE80" },
+  { name: "Vermelho Bombeiro", color: "#DC2626", accent: "#F87171" },
+  { name: "Roxo Premium", color: "#7C3AED", accent: "#A78BFA" },
+  { name: "Dourado Elite", color: "#D97706", accent: "#FBBF24" },
 ];
 
 const LAYOUTS = [
-  { key: "sidebar", label: "Sidebar", desc: "Menu fixo na lateral esquerda" },
-  { key: "topbar", label: "Topbar", desc: "Barra de navegação no topo" },
-  { key: "minimal", label: "Dock", desc: "Dock flutuante na parte inferior" },
+  { key: "sidebar", label: "Sidebar", desc: "Menu lateral completo" },
+  { key: "topbar", label: "Top Bar", desc: "Navegação superior" },
+  { key: "minimal", label: "Minimal", desc: "Clean e direto" },
 ];
 
-const CAPSULE_STYLES = [
-  { key: "operativo", label: "Operativo", color: "#5D5FEF", bg: "#08101E" },
-  { key: "campeao", label: "Campeão", color: "#F59E0B", bg: "#160F00" },
-  { key: "relatorio", label: "Relatório", color: "#10B981", bg: "#001610" },
+const GAMIFICATION_THEMES = [
+  { key: "militar", title: "Militar", ranks: ["Recruta", "Soldado", "Cabo", "Sargento", "Tenente", "Capitão", "Major", "Coronel", "General"], emoji: "🎖️" },
+  { key: "espacial", title: "Espacial", ranks: ["Cadete", "Piloto", "Navegador", "Comandante", "Almirante"], emoji: "🚀" },
+  { key: "medieval", title: "Medieval", ranks: ["Escudeiro", "Cavaleiro", "Barão", "Conde", "Duque", "Rei"], emoji: "⚔️" },
+];
+
+const FEATURES = [
+  {
+    id: "cronograma",
+    icon: "📅",
+    title: "Cronograma Inteligente",
+    description: "Adapta a rotina dos seus alunos automaticamente. Se ele ficou devendo ontem, o sistema reorganiza hoje. Se acertou tudo em Constitucional, foca em Administrativo.",
+    benefit: "Seus alunos estudam o que realmente precisam, não o que acham que precisam.",
+  },
+  {
+    id: "questoes",
+    icon: "❓",
+    title: "Banco de Questões com IA",
+    description: "Correção detalhada de todas as alternativas. Dicas que não entregam a resposta, mas direcionam o raciocínio. Seu aluno aprende de verdade.",
+    benefit: "Taxa de acerto sobe porque o aluno entende, não decora.",
+  },
+  {
+    id: "simulados",
+    icon: "📋",
+    title: "Simulados Realistas",
+    description: "Tempo limitado que simula o dia da prova. Gere simulados personalizados em segundos com a cara do concurso que seu aluno vai prestar.",
+    benefit: "Aluno chega no dia D preparado para a pressão.",
+  },
+  {
+    id: "dashboard",
+    icon: "📊",
+    title: "Dashboard de Performance",
+    description: "Leitura completa do desempenho do aluno sintetizada em dados claros. Feedback com insights que mostram exatamente onde ele deve focar.",
+    benefit: "Você vê quem está performando e quem precisa de atenção.",
+  },
+  {
+    id: "gamificacao",
+    icon: "🏆",
+    title: "Motor de Retenção",
+    description: "O que faz seu aluno abrir a plataforma na segunda de manhã mesmo quando a rotina aperta. Níveis, medalhas, rankings. Tudo personalizável com sua identidade.",
+    benefit: "Aluno que joga, fica. Aluno que fica, renova.",
+  },
+  {
+    id: "mentor",
+    icon: "🤖",
+    title: "Mentor Inteligente",
+    description: "É impossível seu aluno ficar perdido. O mentor diz exatamente qual é o próximo passo de forma automática conforme o avanço dele.",
+    benefit: "Você não precisa responder dúvida básica às 23h.",
+  },
+  {
+    id: "capsula",
+    icon: "📱",
+    title: "Cápsula de Estudos",
+    description: "Todo mês, cada aluno recebe um card com seus resultados reais, a patente conquistada e uma frase motivacional. Ele posta no Instagram e te marca.",
+    benefit: "Marketing zero custo. Sua marca se espalha sozinha.",
+  },
+];
+
+const COMPETITOR_PROBLEMS = [
+  { name: "Área de membros comum", problem: "Aluno esquece que comprou", icon: "💤" },
+  { name: "Plataforma genérica", problem: "Zero diferenciação", icon: "🏭" },
+  { name: "Sem gamificação", problem: "Desistência em 30 dias", icon: "📉" },
+  { name: "Analytics básico", problem: "Você não sabe o que funciona", icon: "🎯" },
+];
+
+const PRICING_MONTHLY = [
+  {
+    name: "Starter",
+    price: "597",
+    fee: "5%",
+    desc: "Para quem quer começar e validar",
+    features: ["Produto customizável", "Analytics completo", "Gestão de alunos", "Mentor Inteligente", "Cronograma personalizado", "Dashboard inteligente", "Banco de questões + simulados"],
+    excluded: ["Domínio personalizado", "Gamificação"],
+    highlight: false,
+  },
+  {
+    name: "Growth",
+    price: "897",
+    fee: "4,5%",
+    desc: "Para quem já está vendendo",
+    features: ["Tudo do Starter", "Domínio personalizado", "Gamificação completa", "Suporte prioritário", "Onboarding dedicado"],
+    excluded: [],
+    highlight: true,
+  },
+  {
+    name: "Scale",
+    price: "1.127",
+    fee: "4%",
+    desc: "Para operações em escala",
+    features: ["Tudo do Growth", "API de integração", "Relatórios avançados", "Account manager", "SLA garantido"],
+    excluded: [],
+    highlight: false,
+  },
+];
+
+const PRICING_YEARLY = [
+  {
+    name: "Starter",
+    price: "297",
+    fee: "3,5%",
+    desc: "Para quem quer começar e validar",
+    features: ["Produto customizável", "Analytics completo", "Gestão de alunos", "Mentor Inteligente", "Cronograma personalizado", "Dashboard inteligente", "Banco de questões + simulados"],
+    excluded: ["Domínio personalizado", "Gamificação"],
+    highlight: false,
+  },
+  {
+    name: "Growth",
+    price: "597",
+    fee: "3%",
+    desc: "Para quem já está vendendo",
+    features: ["Tudo do Starter", "Domínio personalizado", "Gamificação completa", "Suporte prioritário", "Onboarding dedicado"],
+    excluded: [],
+    highlight: true,
+  },
+  {
+    name: "Scale",
+    price: "897",
+    fee: "2,5%",
+    desc: "Para operações em escala",
+    features: ["Tudo do Growth", "API de integração", "Relatórios avançados", "Account manager", "SLA garantido"],
+    excluded: [],
+    highlight: false,
+  },
+];
+
+const INTEGRATIONS = [
+  { name: "Hotmart", color: "#F04E23" },
+  { name: "Kiwify", color: "#00D4AA" },
+  { name: "Eduzz", color: "#5956E9" },
+  { name: "PagarMe", color: "#65A300" },
+];
+
+const FAQS = [
+  {
+    q: "Preciso de equipe técnica para usar a Launcher?",
+    a: "Não. A Launcher foi feita para infoprodutores que focam em ensinar, não em código. Você configura tudo pelo painel sem precisar de desenvolvedor. Se precisar de ajuda, nosso time está no WhatsApp."
+  },
+  {
+    q: "Em quanto tempo consigo migrar meus alunos?",
+    a: "Normalmente em menos de 24 horas. Fazemos a importação da sua base atual e você já pode operar. Seu aluno nem percebe que mudou, só percebe que ficou melhor."
+  },
+  {
+    q: "A plataforma funciona para qualquer tipo de concurso?",
+    a: "Sim. Seja concurso policial, fiscal, tribunal, carreiras federais ou estaduais. O sistema se adapta ao edital e à banca que você trabalha."
+  },
+  {
+    q: "Como funciona a taxa por venda?",
+    a: "Você paga o valor fixo mensal mais uma porcentagem sobre cada venda processada. Isso alinha nosso interesse: quanto mais você vende, melhor para os dois."
+  },
+  {
+    q: "Posso usar meu próprio domínio?",
+    a: "Sim. A partir do plano Growth, você pode usar seudominio.com.br. Seus alunos nunca veem a marca Launcher, só a sua."
+  },
+  {
+    q: "E se eu quiser cancelar?",
+    a: "Sem burocracia. Não tem multa, não tem fidelidade. Se não estiver funcionando para você, é só avisar. Mas a gente confia que você vai querer ficar."
+  },
 ];
 
 const TESTIMONIALS = [
-  { text: "Antes eu passava horas montando planilhas de questões. Hoje colo o link da aula, a IA gera tudo em 40 segundos e eu publico. Mudou como eu opero completamente.", name: "João Figueiredo", role: "Delegado · Carreiras Policiais", bg: "#7C3AED", av: "JF" },
-  { text: "Meus alunos ficam me mandando print quando viram Tenente, Capitão. A retenção da turma subiu 40% depois que ativei a gamificação. Não esperava que fosse funcionar assim.", name: "Carla Azevedo", role: "Professora · Fiscal de Rendas", bg: "#059669", av: "CA" },
-  { text: "A Cápsula de Estudos foi genial. Todo mês meus alunos postam no Instagram e me marcam. É marketing zero custo e parece que foi minha equipe que criou.", name: "Rafael Mendes", role: "Servidor · Tribunal Regional", bg: "#D97706", av: "RM" },
+  {
+    text: "Antes eu perdia aluno porque ele esquecia de estudar. Agora ele abre a plataforma todo dia porque quer subir de patente. A retenção da minha turma subiu 40%.",
+    name: "João Figueiredo",
+    role: "Carreiras Policiais",
+    avatar: "JF",
+    color: "#7C3AED"
+  },
+  {
+    text: "A Cápsula de Estudos foi genial. Todo mês meus alunos postam no Instagram e me marcam. É marketing zero custo e parece que foi minha equipe que criou.",
+    name: "Carla Azevedo",
+    role: "Fiscal de Rendas",
+    avatar: "CA",
+    color: "#059669"
+  },
+  {
+    text: "Finalmente consigo ver quem está estudando de verdade e quem está só pagando. Os dados mudaram como eu estruturo minhas turmas.",
+    name: "Rafael Mendes",
+    role: "Tribunal Regional",
+    avatar: "RM",
+    color: "#D97706"
+  },
 ];
 
 // ─── CSS ─────────────────────────────────────────────────────────────────────
+
 const css = `
-.lp{--bg:#070A1A;--bg2:#0C0F26;--bg3:#121530;--tx:#EDE8D8;--tx2:#8A90B0;--tx3:#4E5470;--pr:#5D5FEF;--prl:#8183F4;--pglow:rgba(93,95,239,.2);--ac:#10B981;--aglow:rgba(16,185,129,.16);--gold:#F59E0B;--bd:rgba(255,255,255,.065);--bd2:rgba(255,255,255,.12);--ff:var(--font-jakarta),sans-serif;--ffd:var(--font-fraunces),serif;font-family:var(--ff);color:var(--tx);background:var(--bg);overflow-x:hidden;-webkit-font-smoothing:antialiased}
-.nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:18px 0;background:rgba(7,10,26,.72);backdrop-filter:blur(20px);border-bottom:1px solid var(--bd);transition:padding .3s}
-.nav.sc{padding:12px 0;border-color:var(--bd2)}
-.navi{display:flex;align-items:center;justify-content:space-between;max-width:1160px;margin:0 auto;padding:0 28px}
-.logo{display:flex;align-items:center;gap:9px;font-family:var(--ffd);font-size:18px;font-weight:800;color:var(--tx);text-decoration:none;letter-spacing:-.02em}
-.logo-mk{width:30px;height:30px;border-radius:7px;background:var(--pr);display:flex;align-items:center;justify-content:center}
-.nav-lnk{display:flex;align-items:center;gap:28px;list-style:none}
-.nav-lnk a{color:var(--tx2);text-decoration:none;font-size:13.5px;font-weight:500;transition:color .2s}
-.nav-lnk a:hover{color:var(--tx)}
-.nav-cta{display:flex;align-items:center;gap:9px}
-.bp{display:inline-flex;align-items:center;gap:8px;background:var(--pr);color:#fff;font-family:var(--ff);font-size:15px;font-weight:600;padding:13px 26px;border-radius:9px;border:none;cursor:pointer;text-decoration:none;transition:transform .2s,box-shadow .2s;box-shadow:0 0 26px var(--pglow)}
-.bp:hover{transform:translateY(-2px);box-shadow:0 10px 40px var(--pglow)}
-.bo{display:inline-flex;align-items:center;gap:7px;background:transparent;color:var(--tx2);font-family:var(--ff);font-size:15px;font-weight:500;padding:12px 22px;border-radius:9px;border:1px solid var(--bd2);cursor:pointer;text-decoration:none;transition:all .2s}
-.bo:hover{color:var(--tx);border-color:var(--tx3)}
-.rv{opacity:0;transform:translateY(22px);transition:opacity .7s ease,transform .7s ease}
-.rv.on{opacity:1;transform:none}
-.rv.d1{transition-delay:.1s}.rv.d2{transition-delay:.2s}.rv.d3{transition-delay:.3s}
-.ct{max-width:1160px;margin:0 auto;padding:0 28px}
-.pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;padding:4px 13px;border-radius:100px}
-.pg{color:var(--ac);background:var(--aglow);border:1px solid rgba(16,185,129,.2)}
-.pp{color:var(--prl);background:var(--pglow);border:1px solid rgba(93,95,239,.2)}
-.pk{color:#F472B6;background:rgba(236,72,153,.1);border:1px solid rgba(236,72,153,.18)}
-.pgo{color:var(--gold);background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.18)}
-.ttl{font-family:var(--ffd);font-size:clamp(28px,3.8vw,46px);font-weight:900;line-height:1.1;letter-spacing:-.025em;color:var(--tx)}
-.sub{font-size:16px;color:var(--tx2);line-height:1.78}
-.hl{font-style:italic;font-weight:800;background:linear-gradient(135deg,var(--prl) 0%,var(--ac) 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.sec{padding:96px 0}
-.sec2{padding:96px 0;background:var(--bg2)}
-.hero{min-height:100vh;display:flex;flex-direction:column;justify-content:center;padding:130px 0 80px;position:relative;overflow:hidden}
-.hbg{position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse 800px 600px at 72% 40%,rgba(93,95,239,.1) 0%,transparent 65%),radial-gradient(ellipse 400px 500px at 10% 85%,rgba(16,185,129,.07) 0%,transparent 70%)}
-.hg{display:grid;grid-template-columns:1fr 1.1fr;align-items:center;gap:64px}
-.htl{font-family:var(--ffd);font-size:clamp(36px,5vw,64px);font-weight:900;line-height:1.07;letter-spacing:-.03em;margin-bottom:22px;color:var(--tx)}
-.hs{font-size:17px;color:var(--tx2);line-height:1.78;max-width:460px;margin-bottom:36px}
-.ha{display:flex;align-items:center;gap:12px;margin-bottom:44px;flex-wrap:wrap}
-.hso{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--tx3)}
-.avs{display:flex}.avs span{width:28px;height:28px;border-radius:50%;border:2.5px solid var(--bg);display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:700;margin-right:-8px}
-.mw{position:relative}
-.mf{background:var(--bg2);border:1px solid var(--bd2);border-radius:16px;overflow:hidden;box-shadow:0 40px 100px rgba(0,0,0,.55)}
-.mbar{background:var(--bg3);border-bottom:1px solid var(--bd);padding:11px 14px;display:flex;align-items:center;gap:7px}
-.dot{width:9px;height:9px;border-radius:50%}.dr{background:#FF5F56}.dy{background:#FFBD2E}.dg{background:#27C93F}
-.murl{flex:1;background:rgba(255,255,255,.05);border-radius:5px;padding:3px 10px;font-size:10.5px;color:var(--tx3);font-family:monospace;margin-left:6px}
-.mb{display:flex;height:316px}
-.msb{width:158px;border-right:1px solid var(--bd);padding:12px 10px;display:flex;flex-direction:column;gap:2px;flex-shrink:0}
-.msb-br{display:flex;align-items:center;gap:7px;padding:6px 8px 12px;border-bottom:1px solid var(--bd);margin-bottom:5px}
-.msb-lg{width:24px;height:24px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#fff;flex-shrink:0}
-.msb-nm{font-size:10.5px;font-weight:700;color:var(--tx)}.msb-pl{font-size:8px;color:var(--tx3)}
-.mi{display:flex;align-items:center;gap:7px;padding:6px 9px;border-radius:6px;font-size:11px;color:var(--tx2);cursor:default}
-.mi.on{background:var(--pr);color:#fff}
-.mm{flex:1;padding:13px;overflow:hidden}
-.mh{font-size:11.5px;font-weight:700;color:var(--tx);margin-bottom:10px}
-.mst{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:10px}
-.msc{background:var(--bg3);border:1px solid var(--bd);border-radius:6px;padding:8px}
-.msl{font-size:8px;color:var(--tx3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px}
-.msv{font-size:16px;font-weight:700;font-family:var(--ffd)}
-.msd{font-size:8px;color:var(--ac);margin-top:1px}
-.mpr{margin-bottom:7px}
-.mph{display:flex;justify-content:space-between;font-size:9px;color:var(--tx2);margin-bottom:3px}
-.mpb{height:4px;background:var(--bg3);border-radius:2px;overflow:hidden}
-.mpf{height:100%;border-radius:2px;transition:width 1.5s cubic-bezier(.22,.68,0,1.2)}
-.mch{display:flex;gap:4px;flex-wrap:wrap;margin-top:7px}
-.mcc{font-size:8px;padding:2px 7px;border-radius:100px;background:rgba(245,158,11,.1);color:var(--gold);border:1px solid rgba(245,158,11,.17)}
-.mrc{font-size:8px;padding:2px 7px;border-radius:100px;background:rgba(93,95,239,.17);color:var(--prl);border:1px solid var(--pglow);font-weight:600}
-.fl{position:absolute;background:var(--bg2);border:1px solid var(--bd2);border-radius:11px;box-shadow:0 12px 36px rgba(0,0,0,.5);animation:lfl 3.8s ease-in-out infinite}
-.fln{bottom:55px;right:-20px;padding:9px 13px;display:flex;align-items:center;gap:8px;background:linear-gradient(135deg,#F59E0B,#EF4444);animation-delay:.3s;white-space:nowrap;border:none}
-.flc{top:48px;left:-26px;padding:11px 14px;animation-delay:.8s}
-.fnt{font-size:10px;font-weight:700;color:#fff}.fns{font-size:9px;color:rgba(255,255,255,.7)}
-.fcl{font-size:8px;color:var(--tx3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px}
-.fcv{font-size:19px;font-weight:800;font-family:var(--ffd);color:var(--ac)}
-.fcs{font-size:9px;color:var(--tx2)}
-@keyframes lfl{0%,100%{transform:translateY(0)}50%{transform:translateY(-7px)}}
-.nums{border-top:1px solid var(--bd);border-bottom:1px solid var(--bd);padding:44px 0;background:var(--bg2)}
-.ng{display:grid;grid-template-columns:repeat(4,1fr)}
-.ni{text-align:center;padding:0 20px;border-right:1px solid var(--bd)}
-.ni:last-child{border-right:none}
-.nv{font-family:var(--ffd);font-size:44px;font-weight:900;line-height:1;margin-bottom:7px;letter-spacing:-.03em;background:linear-gradient(135deg,var(--tx) 30%,var(--tx2) 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.nl{font-size:14px;color:var(--tx2)}
-.brand-g{display:grid;grid-template-columns:1fr 1fr;gap:80px;align-items:center}
-.sw-wrap{display:flex;gap:9px;margin-bottom:20px}
-.sw{width:32px;height:32px;border-radius:50%;cursor:pointer;border:3px solid transparent;transition:all .22s}
-.sw.sel{border-color:#fff;transform:scale(1.18)}
-.lt-tabs{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
-.lt-tab{padding:7px 14px;border-radius:7px;font-size:12.5px;font-weight:600;cursor:pointer;border:1px solid var(--bd2);color:var(--tx2);transition:all .2s;background:transparent}
-.lt-tab.on{background:var(--pr);color:#fff;border-color:var(--pr)}
-.ck{list-style:none;display:flex;flex-direction:column;gap:12px}
-.ck li{display:flex;align-items:flex-start;gap:10px;font-size:15px;color:var(--tx2)}
-.ck-ic{width:20px;height:20px;border-radius:50%;flex-shrink:0;margin-top:2px;background:var(--aglow);border:1px solid rgba(16,185,129,.22);display:flex;align-items:center;justify-content:center}
-.phone{width:262px;margin:0 auto;background:#181B35;border-radius:24px;border:1px solid var(--bd2);overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.5)}
-.ph-notch{height:22px;background:#0E1022;display:flex;align-items:center;justify-content:center}
-.ph-nb{width:68px;height:3px;background:#2A2D44;border-radius:2px}
-.ph-hd{padding:11px 13px 8px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--bd)}
-.ph-tb{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--bg3);border-bottom:1px solid var(--bd)}
-.ph-logo{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:#fff;flex-shrink:0;transition:background .35s}
-.ph-ttl{font-size:11.5px;font-weight:700;color:var(--tx)}
-.ph-hint{font-size:9px;color:var(--tx3)}
-.ph-body{padding:12px}
-.ph-wl{font-size:10.5px;color:var(--tx2);margin-bottom:8px}
-.ph-wl strong{color:var(--tx)}
-.ph-btn{width:100%;padding:9px;border-radius:7px;font-size:11px;font-weight:700;color:#fff;text-align:center;margin-bottom:8px;transition:background .35s}
-.ph-cs{display:flex;flex-direction:column;gap:5px}
-.ph-c{background:rgba(255,255,255,.04);border:1px solid var(--bd);border-radius:7px;padding:7px 9px;display:flex;align-items:center;gap:7px}
-.ph-ci{width:22px;height:22px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:11px;transition:background .35s}
-.ph-cn{font-size:10px;font-weight:600;color:var(--tx)}
-.ph-cp{font-size:8px;color:var(--tx3)}
-.ph-pb{height:3px;background:var(--bg3);border-radius:2px;margin-top:3px}
-.ph-pf{height:100%;border-radius:2px;transition:background .35s}
-.ph-dock{height:44px;background:rgba(255,255,255,.04);border-top:1px solid var(--bd);display:flex;align-items:center;justify-content:center;gap:20px}
-.ph-dock span{font-size:16px;opacity:.55}.ph-dock span.da{opacity:1}
-.gd{background:var(--bg3);border:1px solid var(--bd2);border-radius:16px;overflow:hidden}
-.gd-tabs{display:flex;border-bottom:1px solid var(--bd);overflow-x:auto;scrollbar-width:none}
-.gd-tabs::-webkit-scrollbar{display:none}
-.gd-tab{padding:11px 18px;font-size:12.5px;font-weight:600;cursor:pointer;color:var(--tx2);border-bottom:2px solid transparent;white-space:nowrap;transition:all .2s;flex-shrink:0;background:transparent;border-top:none;border-left:none;border-right:none}
-.gd-tab.on{color:var(--tx);border-bottom-color:var(--pr)}
-.gd-body{display:grid;grid-template-columns:1fr 1fr;gap:0}
-.gd-l{padding:20px 22px;border-right:1px solid var(--bd)}
-.gd-r{padding:20px 22px}
-.gd-lbl{font-size:10px;color:var(--tx3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px;font-weight:600}
-.rks{display:flex;flex-direction:column;gap:4px}
-.rk{display:flex;align-items:center;gap:8px;padding:5px 9px;border-radius:7px;transition:background .15s}
-.rk:hover{background:rgba(255,255,255,.04)}
-.rk.tp{background:rgba(245,158,11,.07);border:1px solid rgba(245,158,11,.18)}
-.rk-n{font-size:9px;color:var(--tx3);width:14px;text-align:right}
-.rk-i{font-size:13px;width:18px;text-align:center}
-.rk-nm{font-size:12px;color:var(--tx);flex:1}
-.rk-p{font-size:9px;color:var(--tx3);font-family:monospace}
-.ic{background:var(--bg2);border:1px solid var(--bd2);border-radius:10px;padding:14px;margin-bottom:10px}
-.ic-lbl{font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;display:flex;align-items:center;gap:5px}
-.ic-m{font-size:12px;color:var(--tx2);line-height:1.65}
-.gd-tags{display:flex;gap:5px;flex-wrap:wrap;margin-top:10px}
-.gtag{font-size:10px;padding:2px 9px;border-radius:100px;background:rgba(255,255,255,.05);color:var(--tx2);border:1px solid var(--bd)}
-.fg{display:grid;grid-template-columns:repeat(2,1fr);gap:20px}
-.fc{background:var(--bg2);border:1px solid var(--bd);border-radius:14px;padding:28px;transition:border-color .3s,transform .3s}
-.fc:hover{border-color:var(--bd2);transform:translateY(-3px)}
-.fi{width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;margin-bottom:16px}
-.ft-c{font-family:var(--ffd);font-size:18.5px;font-weight:800;margin-bottom:8px;color:var(--tx);letter-spacing:-.015em}
-.fp{font-size:14px;color:var(--tx2);line-height:1.73;margin-bottom:16px}
-.fps{display:flex;flex-wrap:wrap;gap:5px}
-.fpl{font-size:10.5px;padding:3px 9px;border-radius:100px;border:1px solid var(--bd2);color:var(--tx3)}
-.cap-g{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:24px}
-.cap-prev{border-radius:12px;overflow:hidden;border:2px solid transparent;cursor:pointer;transition:all .25s}
-.cap-prev:hover,.cap-prev.sel{transform:translateY(-3px);box-shadow:0 12px 36px rgba(0,0,0,.4)}
-.cap-bar{height:6px}
-.cap-pb{padding:14px}
-.cap-pnm{font-family:var(--ffd);font-size:15px;font-weight:800;margin-bottom:2px}
-.cap-prk{font-size:9.5px;display:flex;align-items:center;gap:3px;margin-bottom:10px;opacity:.8}
-.cap-ps{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px}
-.cap-sv{font-family:var(--ffd);font-size:18px;font-weight:800}
-.cap-sl{font-size:7.5px;text-transform:uppercase;letter-spacing:.05em;opacity:.55}
-.cap-fr{font-size:9px;font-style:italic;line-height:1.5;opacity:.65;border-top:1px solid rgba(255,255,255,.08);padding-top:8px}
-.cap-tag{margin-top:8px;display:inline-flex;align-items:center;gap:4px;font-size:9px;padding:2px 8px;border-radius:100px;background:rgba(255,255,255,.08);color:rgba(255,255,255,.7)}
-.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:40px;position:relative}
-.steps::before{content:'';position:absolute;top:26px;left:calc(16.67% + 26px);right:calc(16.67% + 26px);height:1px;background:linear-gradient(90deg,var(--pr),var(--ac));opacity:.22}
-.step{text-align:center;padding:0 14px}
-.sn{width:52px;height:52px;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 20px;position:relative;z-index:1;font-family:var(--ffd);font-size:20px;font-weight:800}
-.s1{color:var(--prl);border:1px solid rgba(93,95,239,.3);background:rgba(93,95,239,.08)}
-.s2{color:var(--ac);border:1px solid rgba(16,185,129,.3);background:rgba(16,185,129,.08)}
-.s3{color:var(--gold);border:1px solid rgba(245,158,11,.3);background:rgba(245,158,11,.08)}
-.st-t{font-family:var(--ffd);font-size:17px;font-weight:800;margin-bottom:8px;letter-spacing:-.015em}
-.st-d{font-size:14px;color:var(--tx2);line-height:1.72}
-.tg{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
-.tc{background:var(--bg2);border:1px solid var(--bd);border-radius:14px;padding:26px;transition:border-color .3s}
-.tc:hover{border-color:var(--bd2)}
-.stars{color:var(--gold);font-size:13px;margin-bottom:12px;letter-spacing:2px}
-.tt{font-size:14px;color:var(--tx2);line-height:1.76;margin-bottom:18px;font-style:italic}
-.ta{display:flex;align-items:center;gap:9px}
-.tav{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;flex-shrink:0}
-.tn{font-size:12.5px;font-weight:700;color:var(--tx)}.tr{font-size:10.5px;color:var(--tx3)}
-.fq-g{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
-.fq{background:var(--bg3);border:1px solid var(--bd);border-radius:13px;padding:22px}
-.fqq{font-family:var(--ffd);font-size:15px;font-weight:800;color:var(--tx);margin-bottom:8px;letter-spacing:-.01em}
-.fqa{font-size:13.5px;color:var(--tx2);line-height:1.72}
-.fqa strong{color:var(--tx);font-weight:600}
-.cta{padding:120px 0;text-align:center;position:relative;overflow:hidden}
-.cta-bg{position:absolute;inset:0;background:radial-gradient(ellipse 800px 500px at 50% 50%,rgba(93,95,239,.1) 0%,transparent 70%);pointer-events:none}
-.cta-t{font-family:var(--ffd);font-size:clamp(34px,5.5vw,60px);font-weight:900;line-height:1.09;letter-spacing:-.03em;margin-bottom:18px}
-.cta-s{font-size:17.5px;color:var(--tx2);max-width:500px;margin:0 auto 38px;line-height:1.72}
-.cta-a{display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
-.cta-f{font-size:12px;color:var(--tx3)}
-.lft{border-top:1px solid var(--bd);padding:36px 0;background:var(--bg2)}
-.lft-i{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px}
-.lft-c{font-size:13px;color:var(--tx3);display:flex;align-items:center;gap:8px}
-.lft-links{display:flex;gap:22px}
-.lft-links a{font-size:12.5px;color:var(--tx3);text-decoration:none;transition:color .2s}
-.lft-links a:hover{color:var(--tx2)}
-.lft-soc{display:flex;gap:14px;align-items:center}
-.lft-soc a{font-size:13px;color:var(--tx2);text-decoration:none;display:flex;align-items:center;gap:6px;transition:color .2s}
-.lft-soc a:hover{color:var(--tx)}
-/* métrica destaque */
-.metric-strip{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:40px}
-.metric-card{background:var(--bg3);border:1px solid var(--bd);border-radius:12px;padding:20px 22px}
-.mc-val{font-family:var(--ffd);font-size:32px;font-weight:900;letter-spacing:-.02em;margin-bottom:4px}
-.mc-lbl{font-size:13px;color:var(--tx2);line-height:1.5}
-.mc-hint{font-size:11px;color:var(--tx3);margin-top:2px}
-@media(max-width:900px){
-  .hg,.brand-g{grid-template-columns:1fr;gap:36px}
-  .mw{display:none}
-  .ng{grid-template-columns:repeat(2,1fr)}
-  .ni{border-right:none;border-bottom:1px solid var(--bd);padding:16px 0}
-  .ni:nth-child(2n){border-bottom:none}
-  .fg,.steps,.tg,.fq-g{grid-template-columns:1fr}
-  .steps::before{display:none}
-  .gd-body{grid-template-columns:1fr}
-  .gd-l{border-right:none;border-bottom:1px solid var(--bd)}
-  .cap-g{grid-template-columns:1fr}
-  .metric-strip{grid-template-columns:1fr}
-  .nav-lnk{display:none}
-  .lft-i{justify-content:center;text-align:center}
+/* ─── RESET & TOKENS ─────────────────────────────────────────────────────── */
+.lp {
+    --bg: #050810;
+    --bg2: #0a0f1a;
+    --bg3: #0f1525;
+    --bg4: #151d2e;
+    --tx: #f0ece0;
+    --tx2: #9ca3bf;
+    --tx3: #5c6380;
+    --pr: #5D5FEF;
+    --pr-light: #8183F4;
+    --pr-glow: rgba(93, 95, 239, 0.25);
+    --ac: #10B981;
+    --ac-glow: rgba(16, 185, 129, 0.2);
+    --gold: #F59E0B;
+    --border: rgba(255, 255, 255, 0.08);
+    --border2: rgba(255, 255, 255, 0.15);
+    --ff: 'Plus Jakarta Sans', -apple-system, sans-serif;
+    --ff-display: 'Fraunces', Georgia, serif;
+    --radius: 12px;
+    --radius-lg: 20px;
+    
+    font-family: var(--ff);
+    background: var(--bg);
+    color: var(--tx);
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.6;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* ─── UTILITY ────────────────────────────────────────────────────────────── */
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+.section { padding: 120px 0; }
+.section-alt { padding: 120px 0; background: var(--bg2); }
+
+/* Reveal animations */
+.reveal { opacity: 0; transform: translateY(30px); transition: all 0.8s cubic-bezier(0.16, 1, 0.3, 1); }
+.reveal.visible { opacity: 1; transform: translateY(0); }
+.reveal-d1 { transition-delay: 0.1s; }
+.reveal-d2 { transition-delay: 0.2s; }
+.reveal-d3 { transition-delay: 0.3s; }
+
+/* Typography */
+.headline {
+    font-family: var(--ff-display);
+    font-size: clamp(40px, 6vw, 72px);
+    font-weight: 900;
+    line-height: 1.05;
+    letter-spacing: -0.03em;
+    color: var(--tx);
+}
+.headline-sm {
+    font-family: var(--ff-display);
+    font-size: clamp(28px, 4vw, 48px);
+    font-weight: 800;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+}
+.subheadline { font-size: 18px; color: var(--tx2); line-height: 1.7; max-width: 560px; }
+.gradient-text {
+    background: linear-gradient(135deg, var(--pr-light) 0%, var(--ac) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+.section-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--pr-light);
+    margin-bottom: 16px;
+}
+.section-label::before {
+    content: '';
+    width: 24px;
+    height: 2px;
+    background: var(--pr);
+    border-radius: 2px;
+}
+
+/* Buttons */
+.btn-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    background: var(--pr);
+    color: #fff;
+    font-family: var(--ff);
+    font-size: 16px;
+    font-weight: 600;
+    padding: 16px 32px;
+    border-radius: var(--radius);
+    border: none;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 0.25s ease;
+    box-shadow: 0 0 40px var(--pr-glow);
+}
+.btn-primary:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 20px 50px var(--pr-glow);
+}
+.btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: transparent;
+    color: var(--tx);
+    font-family: var(--ff);
+    font-size: 16px;
+    font-weight: 500;
+    padding: 15px 28px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border2);
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 0.25s ease;
+}
+.btn-secondary:hover {
+    border-color: var(--tx2);
+    background: rgba(255,255,255,0.03);
+}
+
+/* ─── NAVBAR ─────────────────────────────────────────────────────────────── */
+.navbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 1000;
+    padding: 20px 0;
+    background: rgba(5, 8, 16, 0.85);
+    backdrop-filter: blur(20px);
+    border-bottom: 1px solid transparent;
+    transition: all 0.3s ease;
+}
+.navbar.scrolled {
+    padding: 14px 0;
+    border-color: var(--border);
+}
+.navbar-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--ff-display);
+    font-size: 20px;
+    font-weight: 800;
+    color: var(--tx);
+    text-decoration: none;
+}
+.logo-icon {
+    width: 36px;
+    height: 36px;
+    background: var(--pr);
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.nav-links {
+    display: flex;
+    align-items: center;
+    gap: 36px;
+    list-style: none;
+}
+.nav-links a {
+    color: var(--tx2);
+    text-decoration: none;
+    font-size: 14px;
+    font-weight: 500;
+    transition: color 0.2s;
+}
+.nav-links a:hover { color: var(--tx); }
+.nav-cta { display: flex; gap: 12px; }
+
+/* ─── HERO ───────────────────────────────────────────────────────────────── */
+.hero {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    padding: 140px 0 100px;
+    position: relative;
+    overflow: hidden;
+}
+.hero-bg {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+        radial-gradient(ellipse 900px 700px at 75% 35%, rgba(93, 95, 239, 0.12) 0%, transparent 60%),
+        radial-gradient(ellipse 500px 600px at 5% 80%, rgba(16, 185, 129, 0.08) 0%, transparent 65%);
+}
+.hero-grid {
+    display: grid;
+    grid-template-columns: 1fr 1.15fr;
+    gap: 80px;
+    align-items: center;
+}
+.hero-content { position: relative; z-index: 2; }
+.hero-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--ac-glow);
+    border: 1px solid rgba(16, 185, 129, 0.25);
+    color: var(--ac);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 8px 16px;
+    border-radius: 100px;
+    margin-bottom: 28px;
+}
+.hero-badge::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    background: var(--ac);
+    border-radius: 50%;
+    animation: pulse 2s infinite;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(1.3); }
+}
+.hero h1 { margin-bottom: 24px; }
+.hero .subheadline { margin-bottom: 40px; }
+.hero-actions { display: flex; gap: 16px; flex-wrap: wrap; }
+.hero-social {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-top: 48px;
+    padding-top: 32px;
+    border-top: 1px solid var(--border);
+}
+.avatars { display: flex; }
+.avatars span {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 3px solid var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    margin-right: -10px;
+}
+.hero-social-text {
+    font-size: 14px;
+    color: var(--tx2);
+}
+.hero-social-text strong {
+    color: var(--tx);
+    font-weight: 600;
+}
+
+/* ─── DEMO PREVIEW (Interactive) ─────────────────────────────────────────── */
+.demo-preview {
+    position: relative;
+    perspective: 1200px;
+}
+.demo-frame {
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    box-shadow:
+        0 50px 100px rgba(0, 0, 0, 0.5),
+        0 0 100px rgba(93, 95, 239, 0.1);
+    transform: rotateY(-3deg) rotateX(2deg);
+    transition: transform 0.5s ease;
+}
+.demo-frame:hover {
+    transform: rotateY(0) rotateX(0);
+}
+.demo-topbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 14px 18px;
+    background: var(--bg3);
+    border-bottom: 1px solid var(--border);
+}
+.demo-dot { width: 10px; height: 10px; border-radius: 50%; }
+.demo-dot-red { background: #FF5F56; }
+.demo-dot-yellow { background: #FFBD2E; }
+.demo-dot-green { background: #27C93F; }
+.demo-url {
+    flex: 1;
+    margin-left: 12px;
+    background: rgba(255,255,255,0.05);
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--tx3);
+}
+.demo-url strong { color: var(--tx2); }
+.demo-body { display: flex; min-height: 380px; }
+.demo-sidebar {
+    width: 180px;
+    border-right: 1px solid var(--border);
+    padding: 16px;
+    flex-shrink: 0;
+    transition: all 0.4s ease;
+}
+.demo-sidebar.hidden { display: none; }
+.demo-sidebar-logo {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 800;
+    color: #fff;
+    margin-bottom: 20px;
+    transition: background 0.4s ease;
+}
+.demo-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    color: var(--tx2);
+    margin-bottom: 4px;
+    transition: all 0.2s;
+}
+.demo-nav-item:hover { background: rgba(255,255,255,0.04); }
+.demo-nav-item.active {
+    background: rgba(93, 95, 239, 0.15);
+    color: var(--pr-light);
+}
+.demo-main { flex: 1; padding: 20px; overflow: hidden; }
+.demo-main-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+}
+.demo-welcome { font-size: 13px; color: var(--tx2); }
+.demo-welcome strong { color: var(--tx); }
+.demo-user {
+    width: 32px;
+    height: 32px;
+    background: var(--pr);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    color: #fff;
+}
+.demo-card {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 12px;
+}
+.demo-card-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--tx3);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 12px;
+}
+.demo-progress-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+.demo-progress-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    transition: background 0.4s ease;
+}
+.demo-progress-info { flex: 1; }
+.demo-progress-name { font-size: 12px; font-weight: 600; color: var(--tx); }
+.demo-progress-pct { font-size: 10px; color: var(--tx3); }
+.demo-progress-bar {
+    height: 4px;
+    background: var(--bg4);
+    border-radius: 2px;
+    margin-top: 4px;
+    overflow: hidden;
+}
+.demo-progress-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: all 0.4s ease;
+}
+.demo-rank-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), rgba(245, 158, 11, 0.02));
+    border: 1px solid rgba(245, 158, 11, 0.2);
+    border-radius: 12px;
+    padding: 14px 16px;
+}
+.demo-rank-badge {
+    width: 44px;
+    height: 44px;
+    background: rgba(245, 158, 11, 0.15);
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+}
+.demo-rank-info { flex: 1; }
+.demo-rank-title { font-size: 10px; color: var(--tx3); text-transform: uppercase; letter-spacing: 0.05em; }
+.demo-rank-name { font-size: 16px; font-weight: 700; color: var(--gold); }
+.demo-rank-next { font-size: 11px; color: var(--tx2); }
+
+/* Demo Topbar Layout */
+.demo-topbar-layout { display: none; }
+.demo-topbar-layout.visible { display: block; }
+.demo-topbar-nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    background: var(--bg3);
+    border-bottom: 1px solid var(--border);
+}
+.demo-topbar-links {
+    display: flex;
+    gap: 24px;
+}
+.demo-topbar-link {
+    font-size: 13px;
+    color: var(--tx2);
+    padding: 6px 0;
+    border-bottom: 2px solid transparent;
+}
+.demo-topbar-link.active {
+    color: var(--tx);
+    border-color: var(--pr);
+}
+
+/* Demo Minimal Layout */
+.demo-minimal-dock {
+    display: none;
+    height: 56px;
+    background: rgba(255,255,255,0.03);
+    border-top: 1px solid var(--border);
+    align-items: center;
+    justify-content: center;
+    gap: 32px;
+}
+.demo-minimal-dock.visible { display: flex; }
+.demo-minimal-dock span {
+    font-size: 20px;
+    opacity: 0.5;
+    transition: all 0.2s;
+}
+.demo-minimal-dock span.active { opacity: 1; }
+
+/* ─── VSL SECTION ────────────────────────────────────────────────────────── */
+.vsl-section {
+    padding: 100px 0;
+    background: var(--bg2);
+    text-align: center;
+}
+.vsl-wrapper {
+    max-width: 900px;
+    margin: 0 auto;
+}
+.vsl-placeholder {
+    aspect-ratio: 16/9;
+    background: var(--bg3);
+    border: 2px dashed var(--border2);
+    border-radius: var(--radius-lg);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+.vsl-placeholder:hover {
+    border-color: var(--pr);
+    background: rgba(93, 95, 239, 0.05);
+}
+.vsl-play-btn {
+    width: 80px;
+    height: 80px;
+    background: var(--pr);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 0 60px var(--pr-glow);
+}
+.vsl-text { font-size: 14px; color: var(--tx2); }
+
+/* ─── FEATURES GRID ──────────────────────────────────────────────────────── */
+.features-section { text-align: center; }
+.features-header { max-width: 700px; margin: 0 auto 80px; }
+.features-header .headline-sm { margin-bottom: 16px; }
+.features-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 24px;
+}
+.feature-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 32px;
+    text-align: left;
+    transition: all 0.4s ease;
+    position: relative;
+    overflow: hidden;
+}
+.feature-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--pr), var(--ac));
+    opacity: 0;
+    transition: opacity 0.3s;
+}
+.feature-card:hover {
+    border-color: var(--border2);
+    transform: translateY(-4px);
+}
+.feature-card:hover::before { opacity: 1; }
+.feature-icon {
+    width: 56px;
+    height: 56px;
+    background: var(--bg3);
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 26px;
+    margin-bottom: 20px;
+}
+.feature-title {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--tx);
+    margin-bottom: 12px;
+}
+.feature-desc {
+    font-size: 15px;
+    color: var(--tx2);
+    line-height: 1.7;
+    margin-bottom: 16px;
+}
+.feature-benefit {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 14px 16px;
+    background: var(--ac-glow);
+    border: 1px solid rgba(16, 185, 129, 0.15);
+    border-radius: 10px;
+    font-size: 14px;
+    color: var(--tx);
+}
+.feature-benefit-icon {
+    width: 20px;
+    height: 20px;
+    background: var(--ac);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+/* ─── EXPERIENCE SECTION (Interactive Demo) ──────────────────────────────── */
+.experience-section {
+    padding: 140px 0;
+    background: var(--bg);
+}
+.experience-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 100px;
+    align-items: center;
+}
+.experience-controls { position: sticky; top: 140px; }
+.experience-controls h2 { margin-bottom: 8px; }
+.experience-controls p { margin-bottom: 40px; color: var(--tx2); font-size: 16px; }
+
+.control-group { margin-bottom: 36px; }
+.control-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--tx3);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 14px;
+}
+.color-swatches {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.color-swatch {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    cursor: pointer;
+    border: 3px solid transparent;
+    transition: all 0.25s ease;
+}
+.color-swatch:hover { transform: scale(1.1); }
+.color-swatch.selected {
+    border-color: #fff;
+    transform: scale(1.15);
+    box-shadow: 0 0 20px rgba(255,255,255,0.2);
+}
+.layout-tabs {
+    display: flex;
+    gap: 8px;
+}
+.layout-tab {
+    padding: 12px 20px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--tx2);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.layout-tab:hover { border-color: var(--border2); }
+.layout-tab.selected {
+    background: var(--pr);
+    border-color: var(--pr);
+    color: #fff;
+}
+.gami-theme-buttons {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.gami-theme-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--tx2);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.gami-theme-btn:hover { border-color: var(--border2); }
+.gami-theme-btn.selected {
+    background: rgba(245, 158, 11, 0.1);
+    border-color: var(--gold);
+    color: var(--gold);
+}
+
+/* ─── COMPARISON SECTION ─────────────────────────────────────────────────── */
+.comparison-section {
+    padding: 140px 0;
+    background: var(--bg2);
+}
+.comparison-header {
+    text-align: center;
+    max-width: 800px;
+    margin: 0 auto 80px;
+}
+.comparison-header h2 { margin-bottom: 16px; }
+.comparison-header p { color: var(--tx2); font-size: 18px; }
+
+.comparison-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 40px;
+    max-width: 1000px;
+    margin: 0 auto;
+}
+.comparison-col h3 {
+    font-size: 16px;
+    font-weight: 700;
+    margin-bottom: 24px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.comparison-problems { display: flex; flex-direction: column; gap: 16px; }
+.problem-card {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 20px;
+    background: rgba(239, 68, 68, 0.05);
+    border: 1px solid rgba(239, 68, 68, 0.15);
+    border-radius: var(--radius);
+}
+.problem-icon {
+    width: 48px;
+    height: 48px;
+    background: rgba(239, 68, 68, 0.1);
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    flex-shrink: 0;
+}
+.problem-text { flex: 1; }
+.problem-name { font-size: 15px; font-weight: 600; color: var(--tx); margin-bottom: 2px; }
+.problem-desc { font-size: 13px; color: #EF4444; }
+
+.solution-list { display: flex; flex-direction: column; gap: 12px; }
+.solution-item {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 18px 20px;
+    background: var(--ac-glow);
+    border: 1px solid rgba(16, 185, 129, 0.2);
+    border-radius: var(--radius);
+}
+.solution-check {
+    width: 28px;
+    height: 28px;
+    background: var(--ac);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.solution-text { font-size: 15px; color: var(--tx); font-weight: 500; }
+
+/* ─── TESTIMONIALS ───────────────────────────────────────────────────────── */
+.testimonials-section { padding: 140px 0; text-align: center; }
+.testimonials-header { max-width: 600px; margin: 0 auto 60px; }
+.testimonials-header h2 { margin-bottom: 16px; }
+
+.testimonials-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 24px;
+}
+.testimonial-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 32px;
+    text-align: left;
+    transition: all 0.3s ease;
+}
+.testimonial-card:hover {
+    border-color: var(--border2);
+    transform: translateY(-4px);
+}
+.testimonial-text {
+    font-size: 15px;
+    color: var(--tx2);
+    line-height: 1.8;
+    margin-bottom: 24px;
+    font-style: italic;
+}
+.testimonial-text::before {
+    content: '"';
+    font-size: 48px;
+    font-family: Georgia, serif;
+    color: var(--pr);
+    line-height: 0;
+    display: block;
+    margin-bottom: 8px;
+}
+.testimonial-author {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+.testimonial-avatar {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    font-weight: 700;
+    color: #fff;
+}
+.testimonial-info {}
+.testimonial-name { font-size: 15px; font-weight: 700; color: var(--tx); }
+.testimonial-role { font-size: 13px; color: var(--tx3); }
+
+/* ─── PRICING ────────────────────────────────────────────────────────────── */
+.pricing-section {
+    padding: 140px 0;
+    background: var(--bg2);
+}
+.pricing-header {
+    text-align: center;
+    max-width: 700px;
+    margin: 0 auto 60px;
+}
+.pricing-header h2 { margin-bottom: 16px; }
+.pricing-header p { color: var(--tx2); font-size: 17px; margin-bottom: 32px; }
+
+.pricing-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 16px;
+    background: var(--bg3);
+    padding: 6px;
+    border-radius: 100px;
+    border: 1px solid var(--border);
+}
+.pricing-toggle-btn {
+    padding: 12px 28px;
+    border-radius: 100px;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--tx2);
+    cursor: pointer;
+    transition: all 0.25s;
+    border: none;
+    background: transparent;
+}
+.pricing-toggle-btn.active {
+    background: var(--pr);
+    color: #fff;
+}
+.pricing-toggle-badge {
+    background: var(--ac);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 4px 10px;
+    border-radius: 100px;
+}
+
+.pricing-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 24px;
+    max-width: 1100px;
+    margin: 0 auto;
+}
+.pricing-card {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 36px;
+    transition: all 0.3s ease;
+    position: relative;
+}
+.pricing-card.highlighted {
+    border-color: var(--pr);
+    box-shadow: 0 0 60px var(--pr-glow);
+}
+.pricing-card.highlighted::before {
+    content: 'Mais popular';
+    position: absolute;
+    top: -12px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--pr);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 6px 16px;
+    border-radius: 100px;
+}
+.pricing-name {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--tx);
+    margin-bottom: 4px;
+}
+.pricing-desc {
+    font-size: 14px;
+    color: var(--tx3);
+    margin-bottom: 24px;
+}
+.pricing-amount {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    margin-bottom: 4px;
+}
+.pricing-currency { font-size: 18px; color: var(--tx2); }
+.pricing-value {
+    font-family: var(--ff-display);
+    font-size: 52px;
+    font-weight: 800;
+    color: var(--tx);
+    line-height: 1;
+}
+.pricing-period { font-size: 14px; color: var(--tx3); }
+.pricing-fee {
+    font-size: 14px;
+    color: var(--tx2);
+    margin-bottom: 28px;
+    padding-bottom: 28px;
+    border-bottom: 1px solid var(--border);
+}
+.pricing-fee strong { color: var(--pr-light); }
+.pricing-features { margin-bottom: 28px; }
+.pricing-feature {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 14px;
+    color: var(--tx2);
+    margin-bottom: 12px;
+}
+.pricing-feature-icon {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.pricing-feature-icon.check { background: var(--ac); }
+.pricing-feature-icon.cross { background: rgba(239, 68, 68, 0.2); }
+.pricing-feature.excluded { color: var(--tx3); text-decoration: line-through; opacity: 0.6; }
+.pricing-cta { width: 100%; }
+
+/* ─── INTEGRATIONS ───────────────────────────────────────────────────────── */
+.integrations-section { padding: 100px 0; text-align: center; }
+.integrations-header { margin-bottom: 48px; }
+.integrations-header h2 { font-size: 28px; margin-bottom: 12px; }
+.integrations-header p { color: var(--tx2); font-size: 16px; }
+.integrations-logos {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 48px;
+    flex-wrap: wrap;
+}
+.integration-logo {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+.integration-icon {
+    width: 72px;
+    height: 72px;
+    border-radius: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 28px;
+    font-weight: 800;
+    color: #fff;
+}
+.integration-name { font-size: 14px; color: var(--tx2); }
+
+/* ─── FAQ ────────────────────────────────────────────────────────────────── */
+.faq-section {
+    padding: 140px 0;
+    background: var(--bg2);
+}
+.faq-header {
+    text-align: center;
+    max-width: 600px;
+    margin: 0 auto 60px;
+}
+.faq-header h2 { margin-bottom: 16px; }
+
+.faq-grid {
+    max-width: 800px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+.faq-item {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    transition: all 0.3s ease;
+}
+.faq-item:hover { border-color: var(--border2); }
+.faq-question {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 24px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    text-align: left;
+}
+.faq-question-text {
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--tx);
+}
+.faq-icon {
+    width: 32px;
+    height: 32px;
+    background: var(--bg4);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    color: var(--tx2);
+    transition: all 0.3s;
+    flex-shrink: 0;
+}
+.faq-item.open .faq-icon { transform: rotate(45deg); background: var(--pr); color: #fff; }
+.faq-answer {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.4s ease;
+}
+.faq-item.open .faq-answer { max-height: 300px; }
+.faq-answer-inner {
+    padding: 0 24px 24px;
+    font-size: 15px;
+    color: var(--tx2);
+    line-height: 1.8;
+}
+
+/* ─── FINAL CTA ──────────────────────────────────────────────────────────── */
+.final-cta {
+    padding: 140px 0;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+}
+.final-cta-bg {
+    position: absolute;
+    inset: 0;
+    background:
+        radial-gradient(ellipse 600px 400px at 50% 50%, var(--pr-glow) 0%, transparent 70%);
+    pointer-events: none;
+}
+.final-cta-content { position: relative; z-index: 2; max-width: 700px; margin: 0 auto; }
+.final-cta h2 { margin-bottom: 20px; }
+.final-cta p { font-size: 18px; color: var(--tx2); margin-bottom: 40px; }
+.final-cta-actions { display: flex; justify-content: center; gap: 16px; flex-wrap: wrap; }
+.final-cta-note {
+    margin-top: 32px;
+    font-size: 14px;
+    color: var(--tx3);
+}
+
+/* ─── FOOTER ─────────────────────────────────────────────────────────────── */
+.footer {
+    padding: 60px 0;
+    border-top: 1px solid var(--border);
+    background: var(--bg);
+}
+.footer-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 24px;
+}
+.footer-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 14px;
+    color: var(--tx2);
+}
+.footer-links {
+    display: flex;
+    gap: 32px;
+}
+.footer-links a {
+    font-size: 14px;
+    color: var(--tx2);
+    text-decoration: none;
+    transition: color 0.2s;
+}
+.footer-links a:hover { color: var(--tx); }
+.footer-social {
+    display: flex;
+    gap: 20px;
+}
+.footer-social a {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: var(--tx2);
+    text-decoration: none;
+    transition: color 0.2s;
+}
+.footer-social a:hover { color: var(--tx); }
+
+/* ─── RESPONSIVE ─────────────────────────────────────────────────────────── */
+@media (max-width: 1024px) {
+    .hero-grid { grid-template-columns: 1fr; gap: 60px; }
+    .demo-preview { max-width: 600px; margin: 0 auto; }
+    .demo-frame { transform: none; }
+    .experience-grid { grid-template-columns: 1fr; gap: 60px; }
+    .experience-controls { position: static; }
+    .comparison-grid { grid-template-columns: 1fr; gap: 32px; }
+    .pricing-grid { grid-template-columns: 1fr; max-width: 400px; }
+    .testimonials-grid { grid-template-columns: 1fr; }
+    .nav-links { display: none; }
+}
+
+@media (max-width: 768px) {
+    .section, .section-alt { padding: 80px 0; }
+    .hero { padding: 120px 0 60px; }
+    .hero-actions { flex-direction: column; }
+    .hero-actions .btn-primary, .hero-actions .btn-secondary { width: 100%; }
+    .demo-sidebar { width: 140px; padding: 12px; }
+    .features-grid { grid-template-columns: 1fr; }
+    .pricing-toggle { flex-direction: column; gap: 8px; }
+    .footer-inner { flex-direction: column; text-align: center; }
 }
 `;
 
-// ─── PHONE COMPONENT ──────────────────────────────────────────────────────────
-function PhoneMock({ color, name, letter, e1, e2, layout }: {
-  color: string; name: string; letter: string; e1: string; e2: string; layout: string;
-}) {
-  return (
-    <div className="phone">
-      <div className="ph-notch"><div className="ph-nb" /></div>
-      {layout === "topbar" && (
-        <div className="ph-tb">
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <div className="ph-logo" style={{ width: 22, height: 22, fontSize: 10, borderRadius: 5, background: color }}>{letter}</div>
-            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--tx)" }}>{name}</span>
-          </div>
-          <div style={{ display: "flex", gap: 10, fontSize: 10, color: "var(--tx2)" }}>
-            {["📚", "🎯", "📊", "👤"].map(i => <span key={i}>{i}</span>)}
-          </div>
-        </div>
-      )}
-      {layout === "sidebar" && (
-        <div className="ph-hd">
-          <div className="ph-logo" style={{ background: color }}>{letter}</div>
-          <div><div className="ph-ttl">{name}</div><div className="ph-hint">Painel do Aluno</div></div>
-        </div>
-      )}
-      <div className="ph-body">
-        {layout === "minimal" && (
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
-            <div className="ph-logo" style={{ width: 22, height: 22, fontSize: 10, borderRadius: 5, background: color }}>{letter}</div>
-            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--tx)" }}>{name}</span>
-          </div>
-        )}
-        <div className="ph-wl">Olá, <strong>Maria Silva</strong> 👋<br />Continue de onde parou:</div>
-        <div className="ph-btn" style={{ background: color }}>📚 Continuar estudando</div>
-        <div className="ph-cs">
-          {[{ icon: e1, name: "Dir. Constitucional", p: 68 }, { icon: e2, name: "Dir. Administrativo", p: 45 }].map(c => (
-            <div className="ph-c" key={c.name}>
-              <div className="ph-ci" style={{ background: color + "25" }}>{c.icon}</div>
-              <div style={{ flex: 1 }}>
-                <div className="ph-cn">{c.name}</div>
-                <div className="ph-cp">{c.p}% concluído</div>
-                <div className="ph-pb"><div className="ph-pf" style={{ width: `${c.p}%`, background: color }} /></div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-      {layout === "minimal" && (
-        <div className="ph-dock">
-          <span className="da">🏠</span><span>📚</span><span>🎯</span><span>📊</span><span>👤</span>
-        </div>
-      )}
-    </div>
-  );
-}
+// ─── COMPONENT ───────────────────────────────────────────────────────────────
 
-// ─── MAIN ─────────────────────────────────────────────────────────────────────
 export default function LandingPage() {
   const navRef = useRef<HTMLElement>(null);
   const [brandIdx, setBrandIdx] = useState(0);
-  const [layout, setLayout] = useState("sidebar");
+  const [layout, setLayout] = useState<"sidebar" | "topbar" | "minimal">("sidebar");
   const [gamiIdx, setGamiIdx] = useState(0);
-  const [capIdx, setCapIdx] = useState(0);
+  const [pricingPeriod, setPricingPeriod] = useState<"monthly" | "yearly">("yearly");
+  const [openFaq, setOpenFaq] = useState<number | null>(null);
 
-  const sw = BRAND_SWATCHES[brandIdx];
-  const gt = GAMI_THEMES[gamiIdx];
-  const cs = CAPSULE_STYLES[capIdx];
+  const currentBrand = BRAND_COLORS[brandIdx];
+  const currentGami = GAMIFICATION_THEMES[gamiIdx];
+  const pricing = pricingPeriod === "yearly" ? PRICING_YEARLY : PRICING_MONTHLY;
 
+  // Scroll handler for navbar
   useEffect(() => {
-    const onScroll = () => navRef.current?.classList.toggle("sc", window.scrollY > 20);
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
+    const handleScroll = () => {
+      navRef.current?.classList.toggle("scrolled", window.scrollY > 40);
+    };
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
+  // Reveal on scroll
   useEffect(() => {
-    const els = document.querySelectorAll<HTMLElement>(".rv");
-    const ro = new IntersectionObserver(
-      e => e.forEach(x => { if (x.isIntersecting) { x.target.classList.add("on"); ro.unobserve(x.target); } }),
-      { threshold: 0.07, rootMargin: "0px 0px -32px 0px" }
+    const reveals = document.querySelectorAll<HTMLElement>(".reveal");
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("visible");
+            observer.unobserve(entry.target);
+          }
+        });
+      },
+      { threshold: 0.1, rootMargin: "0px 0px -50px 0px" }
     );
-    els.forEach(el => ro.observe(el));
-
-    const cnts = document.querySelectorAll<HTMLElement>("[data-count]");
-    const co = new IntersectionObserver(e => {
-      e.forEach(x => {
-        if (!x.isIntersecting) return;
-        const el = x.target as HTMLElement;
-        const target = parseInt(el.dataset.count ?? "0");
-        const suf = el.dataset.suffix ?? "";
-        let v = 0; const inc = target / 70;
-        const t = setInterval(() => {
-          v = Math.min(v + inc, target);
-          let d = "";
-          if (suf === "k") d = Math.round(v / 1000) + "k";
-          else if (suf === "M") d = (v / 1_000_000).toFixed(1) + "M";
-          else d = Math.round(v).toLocaleString("pt-BR") + suf;
-          el.textContent = d;
-          if (v >= target) clearInterval(t);
-        }, 22);
-        co.unobserve(el);
-      });
-    }, { threshold: 0.5 });
-    cnts.forEach(el => co.observe(el));
-
-    setTimeout(() => {
-      const p1 = document.getElementById("pf1");
-      const p2 = document.getElementById("pf2");
-      if (p1) p1.style.width = "68%";
-      if (p2) p2.style.width = "45%";
-    }, 900);
-
-    return () => { ro.disconnect(); co.disconnect(); };
+    reveals.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
   }, []);
 
   return (
-    <div className={`lp ${fraunces.variable} ${jakarta.variable}`}>
+    <div className="lp">
       <style>{css}</style>
 
-      {/* NAV */}
-      <nav className="nav" ref={navRef}>
-        <div className="navi">
+      {/* ─── NAVBAR ─── */}
+      <nav className="navbar" ref={navRef}>
+        <div className="container navbar-inner">
           <Link href="/" className="logo">
-            <div className="logo-mk">
-              <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
-                <path d="M9 2L15.5 6v6L9 16 2.5 12V6L9 2z" stroke="white" strokeWidth="1.6" strokeLinejoin="round" />
-                <path d="M9 6v6M6 7.5l3 1.5 3-1.5" stroke="white" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            <div className="logo-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <path d="M12 2L20 7v10l-8 5-8-5V7l8-5z" stroke="white" strokeWidth="2" strokeLinejoin="round" />
               </svg>
             </div>
             Launcher
           </Link>
-          <ul className="nav-lnk">
-            <li><a href="#plataforma">A plataforma</a></li>
-            <li><a href="#retencao">Retenção</a></li>
-            <li><a href="#como-funciona">Como funciona</a></li>
+
+          <ul className="nav-links">
+            <li><a href="#features">Funcionalidades</a></li>
+            <li><a href="#experience">Experiência</a></li>
+            <li><a href="#pricing">Preços</a></li>
+            <li><a href="#faq">FAQ</a></li>
           </ul>
+
           <div className="nav-cta">
-            <a href="https://wa.me/5562995594055" className="bo" style={{ padding: "9px 17px", fontSize: "13px" }} target="_blank" rel="noopener">WhatsApp</a>
-            <a href="#cta" className="bp" style={{ padding: "9px 17px", fontSize: "13px" }}>Começar agora</a>
+            <a href="https://wa.me/5562995594055" target="_blank" rel="noopener" className="btn-secondary">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z" />
+              </svg>
+              Falar no WhatsApp
+            </a>
+            <a href="#pricing" className="btn-primary">Começar agora</a>
           </div>
         </div>
       </nav>
 
-      {/* ══ HERO ══ */}
+      {/* ─── HERO ─── */}
       <section className="hero">
-        <div className="hbg" />
-        <div className="ct">
-          <div className="hg">
-            <div>
-              <div style={{ marginBottom: 20 }} className="rv">
-                <span className="pill pg">Infraestrutura de crescimento para infoprodutores de provas</span>
-              </div>
-              <h1 className="htl rv d1">
-                Seu aluno fica mais.<br />
-                Consome mais. Renova.<br />
-                <em className="hl">Isso é a Launcher.</em>
-              </h1>
-              <p className="hs rv d2">
-                Você não precisa de mais uma área de membros. Você precisa de uma operação que faz seu aluno estudar mais, permanecer mais e te dar clareza sobre o que está funcionando.
-              </p>
-              <div className="ha rv d2">
-                <a href="#cta" className="bp">
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v12M1 7h12" stroke="white" strokeWidth="2" strokeLinecap="round" /></svg>
-                  Quero essa infraestrutura
-                </a>
-                <a href="#como-funciona" className="bo">Ver como funciona</a>
-              </div>
-              <div className="hso rv d3">
-                <div className="avs">
-                  {["#7C3AED", "#D97706", "#059669", "#DC2626"].map((c, i) => (
-                    <span key={i} style={{ background: c }}>{["JF", "RM", "CA", "TP"][i]}</span>
-                  ))}
-                </div>
-                <span>mais de 340 operações educacionais já no ar</span>
-              </div>
+        <div className="hero-bg" />
+        <div className="container hero-grid">
+          <div className="hero-content">
+            <div className="hero-badge reveal">
+              Feito para concursos públicos
             </div>
 
-            {/* Dashboard mockup */}
-            <div className="mw rv d1">
-              <div className="fl flc">
-                <div className="fcl">Retenção do mês</div>
-                <div className="fcv">94%</div>
-                <div className="fcs">dos alunos ativos na última semana</div>
-              </div>
-              <div className="mf">
-                <div className="mbar">
-                  <span className="dot dr" /><span className="dot dy" /><span className="dot dg" />
-                  <div className="murl">alunos.cursojuridico.com.br</div>
-                </div>
-                <div className="mb">
-                  <div className="msb">
-                    <div className="msb-br">
-                      <div className="msb-lg" style={{ background: "#7C3AED" }}>JR</div>
-                      <div><div className="msb-nm">Jurídico Pro</div><div className="msb-pl">Pro</div></div>
-                    </div>
-                    {["Dashboard", "Questões", "Simulados", "Cronograma", "Hall da Fama"].map((l, i) => (
-                      <div key={l} className={`mi${i === 0 ? " on" : ""}`}>
-                        <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
-                          <rect x=".5" y=".5" width="4.5" height="4.5" rx=".6" stroke="currentColor" strokeWidth="1" fill={i === 0 ? "currentColor" : "none"} />
-                          <rect x="7" y=".5" width="4.5" height="4.5" rx=".6" stroke="currentColor" strokeWidth="1" fill={i === 0 ? "currentColor" : "none"} />
-                          <rect x=".5" y="7" width="4.5" height="4.5" rx=".6" stroke="currentColor" strokeWidth="1" fill={i === 0 ? "currentColor" : "none"} />
-                          <rect x="7" y="7" width="4.5" height="4.5" rx=".6" stroke="currentColor" strokeWidth="1" fill={i === 0 ? "currentColor" : "none"} />
-                        </svg>
-                        {l}
-                      </div>
-                    ))}
-                  </div>
-                  <div className="mm">
-                    <div className="mh">Bom dia, Maria 👋</div>
-                    <div className="mst">
-                      {[{ l: "Questões", v: "1.284", c: "#8183F4", d: "↑ +47 hoje" }, { l: "Acerto", v: "73%", c: "#10B981", d: "↑ +4pp" }, { l: "Streak", v: "21🔥", c: "#F59E0B", d: "dias seguidos" }].map(s => (
-                        <div className="msc" key={s.l}>
-                          <div className="msl">{s.l}</div>
-                          <div className="msv" style={{ color: s.c }}>{s.v}</div>
-                          <div className="msd">{s.d}</div>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="mpr"><div className="mph"><span>Dir. Constitucional</span><span>68%</span></div><div className="mpb"><div id="pf1" className="mpf" style={{ width: 0, background: "var(--pr)" }} /></div></div>
-                    <div className="mpr"><div className="mph"><span>Dir. Administrativo</span><span>45%</span></div><div className="mpb"><div id="pf2" className="mpf" style={{ width: 0, background: "var(--ac)" }} /></div></div>
-                    <div className="mch">
-                      <span className="mrc">🎖️ Cabo</span>
-                      <span className="mcc">🔥 21 dias</span>
-                      <span className="mcc">💯 Perfeccionista</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div className="fl fln">
-                <span style={{ fontSize: 17 }}>🏆</span>
-                <div><div className="fnt">Aluno subiu de patente!</div><div className="fns">Sargento · dia 21 de estudo</div></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
+            <h1 className="headline reveal reveal-d1">
+              O sistema que faz seu aluno <span className="gradient-text">estudar mais</span> e você <span className="gradient-text">vender mais</span>
+            </h1>
 
-      {/* NUMBERS */}
-      <div className="nums">
-        <div className="ct">
-          <div className="ng">
-            {[
-              { c: "340", s: "", l: "operações educacionais ativas" },
-              { c: "48000", s: "k", l: "alunos engajados na plataforma" },
-              { c: "2100000", s: "M", l: "questões respondidas" },
-              { c: "40", s: "%", l: "de aumento médio na retenção" },
-            ].map(n => (
-              <div key={n.l} className="ni rv">
-                <div className="nv" data-count={n.c} data-suffix={n.s}>0</div>
-                <div className="nl">{n.l}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* BRAND / WHITE-LABEL */}
-      <section className="sec2" id="plataforma">
-        <div className="ct">
-          <div className="brand-g">
-            <div>
-              <div className="rv" style={{ marginBottom: 28 }}>
-                <span className="pill pg" style={{ marginBottom: 14, display: "inline-flex" }}>Operação no seu nome</span>
-                <h2 className="ttl" style={{ marginTop: 14, marginBottom: 14 }}>
-                  Sua marca na frente.<br />
-                  <em className="hl">A Launcher nos bastidores.</em>
-                </h2>
-                <p className="sub">
-                  Seus alunos entram em <strong style={{ color: "var(--tx)", fontWeight: 600 }}>alunos.seucurso.com.br</strong>, veem o seu logo, suas cores, o seu nome. Você colhe o valor percebido de uma operação premium. A gente garante que a tecnologia não trava.
-                </p>
-              </div>
-
-              <div className="rv" style={{ marginBottom: 20 }}>
-                <div style={{ fontSize: 12, color: "var(--tx3)", marginBottom: 10 }}>Clique e veja como fica com a identidade do seu negócio</div>
-                <div className="sw-wrap">
-                  {BRAND_SWATCHES.map((s, i) => (
-                    <div key={s.color} className={`sw${brandIdx === i ? " sel" : ""}`} style={{ background: s.color }} onClick={() => setBrandIdx(i)} title={s.name} />
-                  ))}
-                </div>
-                <div style={{ fontSize: 11, color: "var(--tx2)", marginBottom: 16 }}>{BRAND_SWATCHES[brandIdx].name}</div>
-              </div>
-
-              <div className="rv" style={{ marginBottom: 22 }}>
-                <div style={{ fontSize: 12, color: "var(--tx3)", marginBottom: 10 }}>Layout de navegação</div>
-                <div className="lt-tabs">
-                  {LAYOUTS.map(l => (
-                    <button key={l.key} className={`lt-tab${layout === l.key ? " on" : ""}`} onClick={() => setLayout(l.key)}>{l.label}</button>
-                  ))}
-                </div>
-                <div style={{ fontSize: 12, color: "var(--tx3)" }}>{LAYOUTS.find(l => l.key === layout)?.desc}</div>
-              </div>
-
-              <ul className="ck rv d1">
-                {[
-                  "Domínio próprio com verificação DNS inclusa",
-                  "Logo, favicon, 7 paletas de cores ou cor personalizada",
-                  "Tela de acesso editável com banner, chamada e diferenciais",
-                  "Layouts de navegação: Sidebar, Topbar ou Dock",
-                  "Dados de cada aluno completamente isolados por operação",
-                ].map(item => (
-                  <li key={item}>
-                    <div className="ck-ic"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 5l2 2 4-4" stroke="#10B981" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg></div>
-                    <span>{item}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-
-            <div className="rv d1" style={{ display: "flex", justifyContent: "center" }}>
-              <PhoneMock color={sw.color} name={sw.name} letter={sw.letter} e1={sw.e1} e2={sw.e2} layout={layout} />
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* RETENÇÃO — gamificação */}
-      <section className="sec" id="retencao">
-        <div className="ct">
-          <div className="rv" style={{ textAlign: "center", maxWidth: 640, margin: "0 auto 48px" }}>
-            <span className="pill pgo" style={{ marginBottom: 14, display: "inline-flex" }}>O motor de retenção</span>
-            <h2 className="ttl" style={{ marginBottom: 14 }}>
-              Aluno que vira Sargento<br />
-              <em className="hl">não cancela no mês seguinte.</em>
-            </h2>
-            <p className="sub">
-              A gamificação não é enfeite. É o que faz seu aluno abrir a plataforma na segunda-feira mesmo quando a rotina aperta. São 6 temas de patentes e linguagem de IA diferentes, cada um pensado pro nicho certo. Explore abaixo.
+            <p className="subheadline reveal reveal-d2">
+              Você não precisa de mais uma área de membros. Você precisa de uma infraestrutura
+              que aumenta retenção, valor percebido e receita com dados de verdade.
             </p>
-          </div>
 
-          <div className="gd rv">
-            <div className="gd-tabs">
-              {GAMI_THEMES.map((t, i) => (
-                <button key={t.key} className={`gd-tab${gamiIdx === i ? " on" : ""}`} onClick={() => setGamiIdx(i)}>
-                  {t.emoji} {t.label}
-                </button>
-              ))}
+            <div className="hero-actions reveal reveal-d3">
+              <a href="#pricing" className="btn-primary">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+                Quero essa infraestrutura
+              </a>
+              <a href="https://wa.me/5562995594055" target="_blank" rel="noopener" className="btn-secondary">
+                Conversar pelo WhatsApp
+              </a>
             </div>
-            <div className="gd-body">
-              <div className="gd-l">
-                <div className="gd-lbl">Hierarquia de patentes do aluno</div>
-                <div className="rks">
-                  {gt.ranks.map((r, i) => (
-                    <div key={r} className={`rk${i === gt.ranks.length - 1 ? " tp" : ""}`}>
-                      <span className="rk-n">{i + 1}</span>
-                      <span className="rk-i">{gt.icons[i]}</span>
-                      <span className="rk-nm">{r}</span>
-                      <span className="rk-p">{gt.pts[i].toLocaleString("pt-BR")} pts</span>
-                    </div>
-                  ))}
-                </div>
+
+            <div className="hero-social reveal reveal-d3">
+              <div className="avatars">
+                <span style={{ background: "#7C3AED" }}>JF</span>
+                <span style={{ background: "#059669" }}>CA</span>
+                <span style={{ background: "#D97706" }}>RM</span>
+                <span style={{ background: "#3B82F6" }}>+12</span>
               </div>
-              <div className="gd-r">
-                <div className="gd-lbl">Insight gerado pela IA com a linguagem do nicho</div>
-                <div className="ic" style={{ borderLeft: `3px solid ${gt.accent}` }}>
-                  <div className="ic-lbl"><span>{gt.insight.icon}</span><span style={{ color: gt.accent }}>{gt.insight.label}</span></div>
-                  <div className="ic-m">{gt.insight.msg}</div>
-                </div>
-                <div className="gd-lbl" style={{ marginTop: 16 }}>Concursos desse tema</div>
-                <div className="gd-tags">
-                  {gt.tagline.split(" · ").map(t2 => <span key={t2} className="gtag">{t2}</span>)}
-                </div>
-                <div style={{ marginTop: 16, padding: "12px 14px", borderRadius: 9, background: "rgba(255,255,255,.03)", border: "1px solid var(--bd)", fontSize: 12.5, color: "var(--tx2)", lineHeight: 1.65 }}>
-                  <strong style={{ color: "var(--tx)", fontWeight: 600 }}>Temas de patente e insight são independentes.</strong> Você pode usar linguagem militar com hierarquia jurídica, por exemplo. Configura como fizer mais sentido pro seu público.
-                </div>
+              <div className="hero-social-text">
+                <strong>+15 infoprodutores</strong> já usam a Launcher
               </div>
             </div>
           </div>
 
-          {/* Métricas de retenção */}
-          <div className="metric-strip rv d1">
-            {[
-              { val: "+40%", color: "var(--ac)", label: "de aumento na retenção mensal", hint: "média entre operações que ativaram gamificação" },
-              { val: "3,2x", color: "var(--prl)", label: "mais sessões por semana por aluno", hint: "comparado com operações sem gamificação ativa" },
-              { val: "21d", color: "var(--gold)", label: "streak médio dos alunos ativos", hint: "dias consecutivos de estudo na plataforma" },
-            ].map(m => (
-              <div className="metric-card" key={m.val}>
-                <div className="mc-val" style={{ color: m.color }}>{m.val}</div>
-                <div className="mc-lbl">{m.label}</div>
-                <div className="mc-hint">{m.hint}</div>
+          {/* ─── DEMO PREVIEW ─── */}
+          <div className="demo-preview reveal">
+            <div className="demo-frame">
+              <div className="demo-topbar">
+                <div className="demo-dot demo-dot-red" />
+                <div className="demo-dot demo-dot-yellow" />
+                <div className="demo-dot demo-dot-green" />
+                <div className="demo-url">
+                  <strong>seudominio</strong>.launcheredu.com.br
+                </div>
               </div>
-            ))}
-          </div>
-        </div>
-      </section>
 
-      {/* CÁPSULA DE ESTUDOS */}
-      <section className="sec2">
-        <div className="ct">
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 80, alignItems: "center" }}>
-            <div className="rv">
-              <span className="pill pk" style={{ marginBottom: 14, display: "inline-flex" }}>Marketing que o aluno faz por você</span>
-              <h2 className="ttl" style={{ marginBottom: 14 }}>
-                Seu aluno compartilha.<br />
-                Sua marca se espalha.<br />
-                <em className="hl">Custo zero pra você.</em>
-              </h2>
-              <p className="sub" style={{ marginBottom: 22 }}>
-                Todo mês, automaticamente, cada aluno recebe um card com os resultados reais dele, a patente conquistada e uma frase gerada pela IA. Ele posta no Instagram, te marca, e novos alunos chegam sem você gastar um real em anúncio.
-              </p>
-              <div style={{ fontSize: 12, color: "var(--tx3)", marginBottom: 10 }}>Escolha o estilo visual da sua operação</div>
-              <div className="cap-g rv">
-                {CAPSULE_STYLES.map((c2, i) => (
+              {/* Topbar Layout */}
+              {layout === "topbar" && (
+                <div className="demo-topbar-nav">
                   <div
-                    key={c2.key}
-                    className={`cap-prev${capIdx === i ? " sel" : ""}`}
-                    style={{ background: c2.bg, borderColor: capIdx === i ? c2.color : "var(--bd2)" }}
-                    onClick={() => setCapIdx(i)}
+                    className="demo-sidebar-logo"
+                    style={{ background: currentBrand.color, width: 32, height: 32, marginBottom: 0 }}
                   >
-                    <div className="cap-bar" style={{ background: c2.color }} />
-                    <div className="cap-pb">
-                      <div className="cap-pnm" style={{ color: "#fff" }}>Maria S.</div>
-                      <div className="cap-prk" style={{ color: c2.color }}>🦅 Coronel</div>
-                      <div className="cap-ps">
-                        {[{ v: "847", l: "min" }, { v: "73%", l: "acerto" }, { v: "1.284", l: "questões" }].map(s => (
-                          <div key={s.l}>
-                            <div className="cap-sv" style={{ color: c2.color }}>{s.v}</div>
-                            <div className="cap-sl" style={{ color: "rgba(255,255,255,.5)" }}>{s.l}</div>
-                          </div>
-                        ))}
+                    SN
+                  </div>
+                  <div className="demo-topbar-links">
+                    <span className="demo-topbar-link active">Dashboard</span>
+                    <span className="demo-topbar-link">Cursos</span>
+                    <span className="demo-topbar-link">Questões</span>
+                    <span className="demo-topbar-link">Simulados</span>
+                  </div>
+                  <div className="demo-user">AL</div>
+                </div>
+              )}
+
+              <div className="demo-body">
+                {/* Sidebar (only for sidebar layout) */}
+                {layout === "sidebar" && (
+                  <div className="demo-sidebar">
+                    <div
+                      className="demo-sidebar-logo"
+                      style={{ background: currentBrand.color }}
+                    >
+                      SN
+                    </div>
+                    <div className="demo-nav-item active">
+                      <span>📊</span> Dashboard
+                    </div>
+                    <div className="demo-nav-item">
+                      <span>📚</span> Cursos
+                    </div>
+                    <div className="demo-nav-item">
+                      <span>❓</span> Questões
+                    </div>
+                    <div className="demo-nav-item">
+                      <span>📋</span> Simulados
+                    </div>
+                    <div className="demo-nav-item">
+                      <span>📅</span> Cronograma
+                    </div>
+                    <div className="demo-nav-item">
+                      <span>🏆</span> Conquistas
+                    </div>
+                  </div>
+                )}
+
+                <div className="demo-main">
+                  <div className="demo-main-header">
+                    <div className="demo-welcome">
+                      Olá, <strong>Aluno</strong>! Bora estudar?
+                    </div>
+                    {layout !== "topbar" && <div className="demo-user">AL</div>}
+                  </div>
+
+                  {/* Rank Card */}
+                  <div className="demo-rank-card">
+                    <div className="demo-rank-badge">{currentGami.emoji}</div>
+                    <div className="demo-rank-info">
+                      <div className="demo-rank-title">Sua patente atual</div>
+                      <div className="demo-rank-name">{currentGami.ranks[3]}</div>
+                      <div className="demo-rank-next">
+                        Faltam 240 XP para {currentGami.ranks[4]}
                       </div>
-                      <div className="cap-fr" style={{ color: "rgba(255,255,255,.6)" }}>"Cada questão respondida hoje é uma barreira a menos na prova."</div>
-                      <div className="cap-tag">{c2.label}</div>
+                    </div>
+                  </div>
+
+                  {/* Progress Card */}
+                  <div className="demo-card" style={{ marginTop: 12 }}>
+                    <div className="demo-card-title">Progresso por matéria</div>
+                    {[
+                      { name: "Dir. Constitucional", pct: 68, icon: "⚖️" },
+                      { name: "Dir. Administrativo", pct: 45, icon: "📜" },
+                      { name: "Português", pct: 82, icon: "📝" },
+                    ].map((item) => (
+                      <div key={item.name} className="demo-progress-item">
+                        <div
+                          className="demo-progress-icon"
+                          style={{ background: `${currentBrand.color}25` }}
+                        >
+                          {item.icon}
+                        </div>
+                        <div className="demo-progress-info">
+                          <div className="demo-progress-name">{item.name}</div>
+                          <div className="demo-progress-pct">{item.pct}% concluído</div>
+                          <div className="demo-progress-bar">
+                            <div
+                              className="demo-progress-fill"
+                              style={{
+                                width: `${item.pct}%`,
+                                background: currentBrand.color,
+                              }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Minimal Dock */}
+              {layout === "minimal" && (
+                <div className="demo-minimal-dock visible">
+                  <span className="active">🏠</span>
+                  <span>📚</span>
+                  <span>🎯</span>
+                  <span>📊</span>
+                  <span>👤</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ─── VSL SECTION ─── */}
+      <section className="vsl-section">
+        <div className="container">
+          <div className="vsl-wrapper reveal">
+            <div className="vsl-placeholder">
+              <div className="vsl-play-btn">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="white">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              </div>
+              <span className="vsl-text">
+                Não somos uma plataforma. Somos a infraestrutura de aumento de receita do infoprodutor.
+              </span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ─── FEATURES ─── */}
+      <section id="features" className="section features-section">
+        <div className="container">
+          <div className="features-header reveal">
+            <span className="section-label">Funcionalidades</span>
+            <h2 className="headline-sm">
+              Um mentor inteligente em <span className="gradient-text">toda parte</span>
+            </h2>
+            <p className="subheadline" style={{ margin: "0 auto" }}>
+              A engrenagem que direciona seu aluno e aumenta o valor percebido do seu produto.
+            </p>
+          </div>
+
+          <div className="features-grid">
+            {FEATURES.map((feature, idx) => (
+              <div
+                key={feature.id}
+                className={`feature-card reveal reveal-d${(idx % 3) + 1}`}
+              >
+                <div className="feature-icon">{feature.icon}</div>
+                <h3 className="feature-title">{feature.title}</h3>
+                <p className="feature-desc">{feature.description}</p>
+                <div className="feature-benefit">
+                  <div className="feature-benefit-icon">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="white">
+                      <path d="M20 6L9 17l-5-5" stroke="white" strokeWidth="3" fill="none" />
+                    </svg>
+                  </div>
+                  {feature.benefit}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ─── EXPERIENCE (Interactive Customization) ─── */}
+      <section id="experience" className="experience-section">
+        <div className="container experience-grid">
+          <div className="experience-controls">
+            <span className="section-label reveal">Personalização</span>
+            <h2 className="headline-sm reveal reveal-d1">
+              Sua marca na frente.<br />
+              <span className="gradient-text">A Launcher nos bastidores.</span>
+            </h2>
+            <p className="reveal reveal-d2">
+              Personalize cada detalhe. Cores, layout, gamificação. Seus alunos nunca veem nossa marca, só a sua.
+            </p>
+
+            {/* Color Swatches */}
+            <div className="control-group reveal reveal-d2">
+              <div className="control-label">Cor da sua marca</div>
+              <div className="color-swatches">
+                {BRAND_COLORS.map((color, idx) => (
+                  <div
+                    key={color.name}
+                    className={`color-swatch${brandIdx === idx ? " selected" : ""}`}
+                    style={{ background: color.color }}
+                    onClick={() => setBrandIdx(idx)}
+                    title={color.name}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {/* Layout Tabs */}
+            <div className="control-group reveal reveal-d2">
+              <div className="control-label">Layout de navegação</div>
+              <div className="layout-tabs">
+                {LAYOUTS.map((l) => (
+                  <button
+                    key={l.key}
+                    className={`layout-tab${layout === l.key ? " selected" : ""}`}
+                    onClick={() => setLayout(l.key as "sidebar" | "topbar" | "minimal")}
+                  >
+                    {l.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Gamification Theme */}
+            <div className="control-group reveal reveal-d3">
+              <div className="control-label">Tema de gamificação</div>
+              <div className="gami-theme-buttons">
+                {GAMIFICATION_THEMES.map((theme, idx) => (
+                  <button
+                    key={theme.key}
+                    className={`gami-theme-btn${gamiIdx === idx ? " selected" : ""}`}
+                    onClick={() => setGamiIdx(idx)}
+                  >
+                    {theme.emoji} {theme.title}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Live Preview */}
+          <div className="demo-preview reveal">
+            <div className="demo-frame" style={{ transform: "none" }}>
+              <div className="demo-topbar">
+                <div className="demo-dot demo-dot-red" />
+                <div className="demo-dot demo-dot-yellow" />
+                <div className="demo-dot demo-dot-green" />
+                <div className="demo-url">
+                  <strong>seudominio</strong>.launcheredu.com.br
+                </div>
+              </div>
+
+              {layout === "topbar" && (
+                <div className="demo-topbar-nav">
+                  <div
+                    className="demo-sidebar-logo"
+                    style={{ background: currentBrand.color, width: 32, height: 32, marginBottom: 0 }}
+                  >
+                    SN
+                  </div>
+                  <div className="demo-topbar-links">
+                    <span className="demo-topbar-link active">Dashboard</span>
+                    <span className="demo-topbar-link">Cursos</span>
+                    <span className="demo-topbar-link">Questões</span>
+                    <span className="demo-topbar-link">Simulados</span>
+                  </div>
+                  <div className="demo-user">AL</div>
+                </div>
+              )}
+
+              <div className="demo-body">
+                {layout === "sidebar" && (
+                  <div className="demo-sidebar">
+                    <div
+                      className="demo-sidebar-logo"
+                      style={{ background: currentBrand.color }}
+                    >
+                      SN
+                    </div>
+                    <div className="demo-nav-item active">
+                      <span>📊</span> Dashboard
+                    </div>
+                    <div className="demo-nav-item">
+                      <span>📚</span> Cursos
+                    </div>
+                    <div className="demo-nav-item">
+                      <span>❓</span> Questões
+                    </div>
+                    <div className="demo-nav-item">
+                      <span>📋</span> Simulados
+                    </div>
+                    <div className="demo-nav-item">
+                      <span>📅</span> Cronograma
+                    </div>
+                    <div className="demo-nav-item">
+                      <span>🏆</span> Conquistas
+                    </div>
+                  </div>
+                )}
+
+                <div className="demo-main">
+                  <div className="demo-main-header">
+                    <div className="demo-welcome">
+                      Olá, <strong>Aluno</strong>! Bora estudar?
+                    </div>
+                    {layout !== "topbar" && <div className="demo-user">AL</div>}
+                  </div>
+
+                  <div className="demo-rank-card">
+                    <div className="demo-rank-badge">{currentGami.emoji}</div>
+                    <div className="demo-rank-info">
+                      <div className="demo-rank-title">Sua patente atual</div>
+                      <div className="demo-rank-name">{currentGami.ranks[3]}</div>
+                      <div className="demo-rank-next">
+                        Faltam 240 XP para {currentGami.ranks[4]}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="demo-card" style={{ marginTop: 12 }}>
+                    <div className="demo-card-title">Progresso por matéria</div>
+                    {[
+                      { name: "Dir. Constitucional", pct: 68, icon: "⚖️" },
+                      { name: "Dir. Administrativo", pct: 45, icon: "📜" },
+                    ].map((item) => (
+                      <div key={item.name} className="demo-progress-item">
+                        <div
+                          className="demo-progress-icon"
+                          style={{ background: `${currentBrand.color}25` }}
+                        >
+                          {item.icon}
+                        </div>
+                        <div className="demo-progress-info">
+                          <div className="demo-progress-name">{item.name}</div>
+                          <div className="demo-progress-pct">{item.pct}% concluído</div>
+                          <div className="demo-progress-bar">
+                            <div
+                              className="demo-progress-fill"
+                              style={{
+                                width: `${item.pct}%`,
+                                background: currentBrand.color,
+                              }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {layout === "minimal" && (
+                <div className="demo-minimal-dock visible">
+                  <span className="active">🏠</span>
+                  <span>📚</span>
+                  <span>🎯</span>
+                  <span>📊</span>
+                  <span>👤</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ─── COMPARISON ─── */}
+      <section className="comparison-section">
+        <div className="container">
+          <div className="comparison-header reveal">
+            <h2 className="headline-sm">
+              Enquanto nas outras plataformas seu aluno <span style={{ color: "#EF4444" }}>estuda</span>,<br />
+              na Launcher ele é <span className="gradient-text">aprovado</span>
+            </h2>
+            <p>E você coloca mais dinheiro no bolso.</p>
+          </div>
+
+          <div className="comparison-grid">
+            <div className="reveal">
+              <h3><span style={{ color: "#EF4444" }}>❌</span> O problema das outras</h3>
+              <div className="comparison-problems">
+                {COMPETITOR_PROBLEMS.map((problem) => (
+                  <div key={problem.name} className="problem-card">
+                    <div className="problem-icon">{problem.icon}</div>
+                    <div className="problem-text">
+                      <div className="problem-name">{problem.name}</div>
+                      <div className="problem-desc">{problem.problem}</div>
                     </div>
                   </div>
                 ))}
               </div>
             </div>
-            <div className="rv d1">
-              <div style={{ background: "var(--bg3)", border: "1px solid var(--bd2)", borderRadius: 16, overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,.4)" }}>
-                <div style={{ padding: "15px 18px", background: "linear-gradient(135deg,#1A2744,#152135)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <div>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,.4)", textTransform: "uppercase", letterSpacing: ".06em" }}>Cápsula de Estudos</div>
-                    <div style={{ fontSize: 9.5, color: "rgba(255,255,255,.3)" }}>Abril 2026</div>
+
+            <div className="reveal reveal-d2">
+              <h3><span style={{ color: "var(--ac)" }}>✓</span> Com a Launcher você consegue</h3>
+              <div className="solution-list">
+                {[
+                  "Aumentar ticket médio",
+                  "Melhorar taxa de conversão",
+                  "Aplicar order bump e upsell com mais eficiência",
+                  "Tomar decisões com base em dados reais",
+                  "Profissionalizar sua operação",
+                  "Fazer seu aluno performar melhor",
+                ].map((item) => (
+                  <div key={item} className="solution-item">
+                    <div className="solution-check">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="white">
+                        <path d="M20 6L9 17l-5-5" stroke="white" strokeWidth="3" fill="none" />
+                      </svg>
+                    </div>
+                    <span className="solution-text">{item}</span>
                   </div>
-                  <span style={{ fontSize: 22 }}>🦅</span>
-                </div>
-                <div style={{ padding: 18 }}>
-                  <div style={{ fontFamily: "var(--ffd)", fontSize: 22, fontWeight: 800, color: "var(--tx)", marginBottom: 3 }}>Maria S.</div>
-                  <div style={{ fontSize: 11, color: cs.color, display: "flex", alignItems: "center", gap: 4, marginBottom: 18 }}>🦅 Coronel · 4.120 pontos</div>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 14 }}>
-                    {[{ v: "847", c: cs.color, l: "minutos" }, { v: "73%", c: "#60A5FA", l: "acerto" }, { v: "1.284", c: "var(--gold)", l: "questões" }].map(s => (
-                      <div key={s.l} style={{ textAlign: "center" }}>
-                        <div style={{ fontFamily: "var(--ffd)", fontSize: 26, fontWeight: 800, color: s.c, letterSpacing: "-.02em" }}>{s.v}</div>
-                        <div style={{ fontSize: 8.5, color: "var(--tx3)", textTransform: "uppercase", letterSpacing: ".05em" }}>{s.l}</div>
-                      </div>
-                    ))}
-                  </div>
-                  <div style={{ background: "rgba(255,255,255,.04)", border: "1px solid var(--bd)", borderRadius: 8, padding: 11, fontSize: 12, color: "var(--tx2)", fontStyle: "italic", lineHeight: 1.65 }}>
-                    "Cada questão respondida hoje é uma barreira que a banca não vai conseguir te colocar na prova."
-                  </div>
-                  <div style={{ display: "flex", gap: 7, marginTop: 11 }}>
-                    {[{ l: "WhatsApp", c: "#25D366" }, { l: "Instagram", c: "linear-gradient(135deg,#E1306C,#833AB4)" }, { l: "⬇ Baixar", c: "var(--bg3)" }].map(b => (
-                      <div key={b.l} style={{ flex: 1, padding: 8, borderRadius: 6, fontSize: 11, fontWeight: 700, textAlign: "center", background: b.c, color: b.l === "⬇ Baixar" ? "var(--tx2)" : "#fff", border: b.l === "⬇ Baixar" ? "1px solid var(--bd2)" : "none", cursor: "pointer" }}>{b.l}</div>
-                    ))}
-                  </div>
-                </div>
+                ))}
               </div>
             </div>
           </div>
         </div>
       </section>
 
-      {/* FEATURES — reframed as business outcomes */}
-      <section className="sec">
-        <div className="ct">
-          <div className="rv" style={{ textAlign: "center", maxWidth: 640, margin: "0 auto 56px" }}>
-            <span className="pill pp" style={{ marginBottom: 14, display: "inline-flex" }}>O que a infraestrutura entrega</span>
-            <h2 className="ttl" style={{ marginBottom: 14 }}>
-              Não é hospedagem de conteúdo.<br />
-              <em className="hl">É operação educacional completa.</em>
+      {/* ─── TESTIMONIALS ─── */}
+      <section className="testimonials-section">
+        <div className="container">
+          <div className="testimonials-header reveal">
+            <span className="section-label">Depoimentos</span>
+            <h2 className="headline-sm">
+              Quem usa, <span className="gradient-text">recomenda</span>
             </h2>
-            <p className="sub">
-              Cada módulo foi construído pra resolver um problema real de quem vende preparação pra provas. Não tem feature por feature: tem resultado por resultado.
-            </p>
           </div>
-          <div className="fg">
-            {[
-              {
-                bg: "rgba(93,95,239,.13)", stroke: "#8183F4",
-                title: "IA que produz conteúdo enquanto você dorme",
-                text: "Cola o link da sua aula no YouTube. Em menos de um minuto o Gemini leu a transcrição, criou as questões, escreveu os distratores plausíveis e as justificativas. Você só revisa e publica. Nada de planilha, nada de digitação.",
-                pills: ["Gemini 2.5 Flash", "Geração por vídeo", "Banco compartilhado", "Tutor por chat"]
-              },
-              {
-                bg: "rgba(16,185,129,.12)", stroke: "#10B981",
-                title: "Você sabe quem está prestes a cancelar",
-                text: "Taxa de acerto por disciplina, tempo de estudo, frequência semanal e alerta de alunos em risco de churn. Quais aulas geraram avaliações ruins e o que a IA sugere pra melhorar. Tudo numa tela, sem precisar exportar nada.",
-                pills: ["Alunos em risco", "Performance por disciplina", "Engajamento semanal", "Insights de conteúdo"]
-              },
-              {
-                bg: "rgba(245,158,11,.12)", stroke: "#F59E0B",
-                title: "Simulados que provam resultado pro aluno",
-                text: "Crie simulados cronometrados e acesse o banco de questões de concurso público da plataforma. Seu aluno vê o progresso, você comprova que a operação funciona. Prova de resultado é o melhor argumento de renovação.",
-                pills: ["Banco compartilhado", "Simulados cronometrados", "Gabarito comentado", "Importação em massa"]
-              },
-              {
-                bg: "rgba(236,72,153,.12)", stroke: "#F472B6",
-                title: "Cronograma que o aluno realmente segue",
-                text: "O aluno informa a data da prova e quantas horas estuda por dia. A IA monta o cronograma com repetição espaçada (SM-2) e adapta automaticamente conforme o desempenho real. Aluno com cronograma usa a plataforma muito mais.",
-                pills: ["Algoritmo SM-2", "Adaptação automática", "Templates do produtor", "Meta de aprovação"]
-              },
-            ].map(f => (
-              <div className="fc rv" key={f.title}>
-                <div className="fi" style={{ background: f.bg }}>
-                  <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
-                    <circle cx="11" cy="11" r="8" stroke={f.stroke} strokeWidth="1.4" />
-                    <path d="M8 11l2 2 4-4" stroke={f.stroke} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </div>
-                <div className="ft-c">{f.title}</div>
-                <p className="fp">{f.text}</p>
-                <div className="fps">{f.pills.map(p => <span key={p} className="fpl">{p}</span>)}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
 
-      {/* HOW IT WORKS */}
-      <section className="sec2" id="como-funciona">
-        <div className="ct">
-          <div className="rv" style={{ textAlign: "center", maxWidth: 560, margin: "0 auto 56px" }}>
-            <span className="pill pp" style={{ marginBottom: 14, display: "inline-flex" }}>Como funciona</span>
-            <h2 className="ttl">Três passos pra sua operação estar no ar.<em className="hl"> Hoje.</em></h2>
-          </div>
-          <div className="steps">
-            {[
-              {
-                n: "1", c: "s1",
-                t: "Você configura. A gente não deixa travar.",
-                d: "Logo, cores, domínio, nome. Tudo no painel do produtor, feito pra você fazer sozinho em menos de uma hora. Qualquer dúvida, o suporte via WhatsApp responde antes de você perder o pique."
-              },
-              {
-                n: "2", c: "s2",
-                t: "A IA constrói o banco de questões por você",
-                d: "Cola os links das suas videoaulas. O Gemini extrai a transcrição, cria as questões, escreve as alternativas e define a dificuldade. Você revisa e publica. Sem planilha, sem digitação."
-              },
-              {
-                n: "3", c: "s3",
-                t: "Seus alunos chegam e a retenção se cuida sozinha",
-                d: "Integra com Hotmart, Kiwify ou qualquer plataforma de venda. O aluno entra, cria o cronograma, responde questões, sobe de patente. A gamificação faz o trabalho de engajar. Você acompanha nos dados."
-              },
-            ].map(s => (
-              <div key={s.n} className="step rv">
-                <div className={`sn ${s.c}`}>{s.n}</div>
-                <div className="st-t">{s.t}</div>
-                <p className="st-d">{s.d}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* TESTIMONIALS */}
-      <section className="sec">
-        <div className="ct">
-          <div className="rv" style={{ textAlign: "center", marginBottom: 48 }}>
-            <h2 className="ttl">Quem já usa conta diferente.</h2>
-          </div>
-          <div className="tg">
-            {TESTIMONIALS.map((t, i) => (
-              <div key={t.name} className={`tc rv${i > 0 ? ` d${i}` : ""}`}>
-                <div className="stars">★★★★★</div>
-                <p className="tt">&ldquo;{t.text}&rdquo;</p>
-                <div className="ta">
-                  <div className="tav" style={{ background: t.bg }}>{t.av}</div>
-                  <div><div className="tn">{t.name}</div><div className="tr">{t.role}</div></div>
+          <div className="testimonials-grid">
+            {TESTIMONIALS.map((t, idx) => (
+              <div key={t.name} className={`testimonial-card reveal reveal-d${idx + 1}`}>
+                <p className="testimonial-text">{t.text}</p>
+                <div className="testimonial-author">
+                  <div className="testimonial-avatar" style={{ background: t.color }}>
+                    {t.avatar}
+                  </div>
+                  <div className="testimonial-info">
+                    <div className="testimonial-name">{t.name}</div>
+                    <div className="testimonial-role">{t.role}</div>
+                  </div>
                 </div>
               </div>
             ))}
@@ -857,101 +1941,206 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* FAQ */}
-      <section className="sec2">
-        <div className="ct">
-          <div className="rv" style={{ textAlign: "center", marginBottom: 48 }}>
-            <span className="pill pg" style={{ marginBottom: 14, display: "inline-flex" }}>Sem enrolação</span>
-            <h2 className="ttl">As perguntas que todo mundo faz.</h2>
+      {/* ─── PRICING ─── */}
+      <section id="pricing" className="pricing-section">
+        <div className="container">
+          <div className="pricing-header reveal">
+            <span className="section-label">Preços</span>
+            <h2 className="headline-sm">
+              Aqui você ganha um <span className="gradient-text">parceiro</span>
+            </h2>
+            <p>Sem burocracia. Sem taxa de implantação. Evoluímos junto com você.</p>
+
+            <div className="pricing-toggle">
+              <button
+                className={`pricing-toggle-btn${pricingPeriod === "monthly" ? " active" : ""}`}
+                onClick={() => setPricingPeriod("monthly")}
+              >
+                Mensal
+              </button>
+              <button
+                className={`pricing-toggle-btn${pricingPeriod === "yearly" ? " active" : ""}`}
+                onClick={() => setPricingPeriod("yearly")}
+              >
+                Anual
+              </button>
+              {pricingPeriod === "yearly" && (
+                <span className="pricing-toggle-badge">Economize até 50%</span>
+              )}
+            </div>
           </div>
-          <div className="fq-g">
-            {[
-              {
-                q: "Preciso saber programar?",
-                a: "<strong>Não.</strong> O painel foi feito pra você configurar tudo sozinho. Logo, cores, domínio, conteúdo. Sem uma linha de código. Se travar em alguma coisa, o suporte resolve pelo WhatsApp."
-              },
-              {
-                q: "Serve pra qualquer nicho de prova?",
-                a: "<strong>Sim.</strong> Concursos, OAB, medicina, militares, fiscais. Cada nicho tem tema próprio de gamificação e linguagem de IA. Se você prepara pra prova, a Launcher tem tema pra isso."
-              },
-              {
-                q: "E se eu quiser cancelar?",
-                a: "<strong>Sem problema.</strong> Sem multa, sem contrato anual. Você exporta seus dados e vai embora sem atrito. A gente prefere que você fique pelo resultado, não por contrato."
-              },
-              {
-                q: "Meus alunos sabem que a Launcher existe?",
-                a: "<strong>Não.</strong> Seu domínio, seu logo, seu nome. A Launcher não aparece em nenhum lugar pra seus alunos. A marca que cresce é a sua."
-              },
-              {
-                q: "A IA gera questões de qualidade real?",
-                a: "<strong>Sim.</strong> O Gemini usa a transcrição real da sua aula e não inventa conteúdo. As questões são baseadas no que você ensinou. Você revisa antes de publicar."
-              },
-              {
-                q: "Como integra com onde eu vendo?",
-                a: "<strong>Via webhook automático.</strong> Hotmart, Kiwify, Eduzz. Quando o aluno compra, ele já entra na plataforma sem precisar de nenhuma ação manual da sua parte."
-              },
-            ].map(f => (
-              <div key={f.q} className="fq rv">
-                <div className="fqq">{f.q}</div>
-                <p className="fqa" dangerouslySetInnerHTML={{ __html: f.a }} />
+
+          <div className="pricing-grid">
+            {pricing.map((plan, idx) => (
+              <div
+                key={plan.name}
+                className={`pricing-card reveal reveal-d${idx + 1}${plan.highlight ? " highlighted" : ""}`}
+              >
+                <div className="pricing-name">{plan.name}</div>
+                <div className="pricing-desc">{plan.desc}</div>
+
+                <div className="pricing-amount">
+                  <span className="pricing-currency">R$</span>
+                  <span className="pricing-value">{plan.price}</span>
+                  <span className="pricing-period">/mês</span>
+                </div>
+
+                <div className="pricing-fee">
+                  + <strong>{plan.fee}</strong> de taxa por venda
+                </div>
+
+                <div className="pricing-features">
+                  {plan.features.map((f) => (
+                    <div key={f} className="pricing-feature">
+                      <div className="pricing-feature-icon check">
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="white">
+                          <path d="M20 6L9 17l-5-5" stroke="white" strokeWidth="3" fill="none" />
+                        </svg>
+                      </div>
+                      {f}
+                    </div>
+                  ))}
+                  {plan.excluded.map((f) => (
+                    <div key={f} className="pricing-feature excluded">
+                      <div className="pricing-feature-icon cross">
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="#EF4444">
+                          <path d="M18 6L6 18M6 6l12 12" stroke="#EF4444" strokeWidth="2" fill="none" />
+                        </svg>
+                      </div>
+                      {f}
+                    </div>
+                  ))}
+                </div>
+
+                <a
+                  href="https://wa.me/5562995594055"
+                  target="_blank"
+                  rel="noopener"
+                  className={`pricing-cta ${plan.highlight ? "btn-primary" : "btn-secondary"}`}
+                >
+                  Começar com {plan.name}
+                </a>
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      {/* CTA */}
-      <section className="cta" id="cta">
-        <div className="cta-bg" />
-        <div className="ct" style={{ position: "relative" }}>
-          <div className="rv" style={{ marginBottom: 22 }}>
-            <span className="pill pg">Pronto pra começar?</span>
+      {/* ─── INTEGRATIONS ─── */}
+      <section className="integrations-section">
+        <div className="container">
+          <div className="integrations-header reveal">
+            <h2 className="headline-sm">Desbloqueie o potencial máximo</h2>
+            <p>Integramos com os maiores provedores do mercado digital. Fácil e rápido.</p>
           </div>
-          <h2 className="cta-t rv d1">
-            Transforme sua operação<br />
-            <em className="hl">em uma máquina de retenção.</em>
+
+          <div className="integrations-logos reveal">
+            {INTEGRATIONS.map((i) => (
+              <div key={i.name} className="integration-logo">
+                <div className="integration-icon" style={{ background: i.color }}>
+                  {i.name.charAt(0)}
+                </div>
+                <span className="integration-name">{i.name}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ─── FAQ ─── */}
+      <section id="faq" className="faq-section">
+        <div className="container">
+          <div className="faq-header reveal">
+            <span className="section-label">FAQ</span>
+            <h2 className="headline-sm">Perguntas frequentes</h2>
+          </div>
+
+          <div className="faq-grid">
+            {FAQS.map((faq, idx) => (
+              <div
+                key={idx}
+                className={`faq-item reveal${openFaq === idx ? " open" : ""}`}
+                style={{ transitionDelay: `${idx * 0.05}s` }}
+              >
+                <button
+                  className="faq-question"
+                  onClick={() => setOpenFaq(openFaq === idx ? null : idx)}
+                >
+                  <span className="faq-question-text">{faq.q}</span>
+                  <span className="faq-icon">+</span>
+                </button>
+                <div className="faq-answer">
+                  <div className="faq-answer-inner">{faq.a}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ─── FINAL CTA ─── */}
+      <section className="final-cta">
+        <div className="final-cta-bg" />
+        <div className="container final-cta-content">
+          <h2 className="headline-sm reveal">
+            Pronto para transformar<br />
+            <span className="gradient-text">seu negócio?</span>
           </h2>
-          <p className="cta-s rv d2">
-            Sem montar nada do zero. Sem equipe de dev.<br />
-            Você foca em ensinar. A Launcher garante que seus alunos ficam.
+          <p className="reveal reveal-d1">
+            Pare de perder alunos para plataformas genéricas. Comece a vender mais
+            com uma infraestrutura que realmente funciona.
           </p>
-          <div className="cta-a rv d2">
-            <a href="#" className="bp" style={{ fontSize: 15.5, padding: "15px 30px" }}>
-              <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M7.5 1.5v12M1.5 7.5h12" stroke="white" strokeWidth="2" strokeLinecap="round" /></svg>
+          <div className="final-cta-actions reveal reveal-d2">
+            <a href="#pricing" className="btn-primary">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
               Quero essa infraestrutura
             </a>
-            <a href="https://wa.me/5562995594055" target="_blank" rel="noopener" className="bo" style={{ fontSize: 15.5, padding: "14px 28px" }}>
-              Conversar pelo WhatsApp
+            <a href="https://wa.me/5562995594055" target="_blank" rel="noopener" className="btn-secondary">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z" />
+              </svg>
+              Falar no WhatsApp
             </a>
           </div>
-          <div className="cta-f rv d3">Sem contrato anual · Setup em menos de um dia · Suporte via WhatsApp (62) 99559-4055</div>
+          <div className="final-cta-note reveal reveal-d3">
+            Sem contrato anual · Setup em menos de um dia · Suporte via WhatsApp
+          </div>
         </div>
       </section>
 
-      {/* FOOTER */}
-      <footer className="lft">
-        <div className="ct">
-          <div className="lft-i">
-            <div className="lft-c">
-              <div className="logo-mk" style={{ width: 24, height: 24 }}>
-                <svg width="13" height="13" viewBox="0 0 18 18" fill="none"><path d="M9 2L15.5 6v6L9 16 2.5 12V6L9 2z" stroke="white" strokeWidth="1.6" strokeLinejoin="round" /></svg>
-              </div>
-              <span>Launcher · <a href="https://launcheredu.com.br" style={{ color: "var(--tx2)", textDecoration: "none" }}>launcheredu.com.br</a></span>
+      {/* ─── FOOTER ─── */}
+      <footer className="footer">
+        <div className="container footer-inner">
+          <div className="footer-brand">
+            <div className="logo-icon" style={{ width: 28, height: 28 }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                <path d="M12 2L20 7v10l-8 5-8-5V7l8-5z" stroke="white" strokeWidth="2" strokeLinejoin="round" />
+              </svg>
             </div>
-            <div className="lft-soc">
-              <a href="https://instagram.com/plataforma_launcher" target="_blank" rel="noopener">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="20" height="20" rx="5" /><circle cx="12" cy="12" r="4" /><circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none" /></svg>
-                @plataforma_launcher
-              </a>
-              <a href="https://wa.me/5562995594055" target="_blank" rel="noopener">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z" /></svg>
-                (62) 99559-4055
-              </a>
-            </div>
-            <div className="lft-links">
-              <Link href="/privacidade">Privacidade</Link>
-              <Link href="/termos">Termos</Link>
-            </div>
+            Launcher · launcheredu.com.br
+          </div>
+
+          <div className="footer-links">
+            <Link href="/privacidade">Privacidade</Link>
+            <Link href="/termos">Termos</Link>
+          </div>
+
+          <div className="footer-social">
+            <a href="https://instagram.com/plataforma_launcher" target="_blank" rel="noopener">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="2" y="2" width="20" height="20" rx="5" />
+                <circle cx="12" cy="12" r="4" />
+              </svg>
+              @plataforma_launcher
+            </a>
+            <a href="https://wa.me/5562995594055" target="_blank" rel="noopener">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z" />
+              </svg>
+              (62) 99559-4055
+            </a>
           </div>
         </div>
       </footer>

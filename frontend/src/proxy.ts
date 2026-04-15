@@ -25,7 +25,7 @@ const RESERVED_SLUGS = new Set([
   "favicon.ico", "login", "register", "dashboard",
   "producer", "courses", "questions", "simulados", "schedule",
   "analytics", "profile", "settings", "hall-of-fame", "desempenho",
-  "sharing", "study-capsule",
+  "sharing", "study-capsule", "landing"
 ]);
 
 // Headers de segurança adicionados em todas as respostas HTTPS
@@ -175,6 +175,10 @@ export function proxy(request: NextRequest) {
 
   // Next.js internals e API routes
   if (pathname.startsWith("/_next") || pathname.startsWith("/api/")) {
+    return NextResponse.next();
+  }
+  // ── LANDING PAGE (acesso local) ───────────────────────────────────────────
+  if (pathname.startsWith("/landing")) {
     return NextResponse.next();
   }
 

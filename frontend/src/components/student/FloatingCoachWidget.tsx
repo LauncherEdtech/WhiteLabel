@@ -78,9 +78,8 @@ export function FloatingCoachWidget() {
     const { data, isLoading, refetch } = useQuery<NextAction>({
         queryKey: ["next-action"],
         queryFn: () => apiClient.get("/analytics/student/next-action").then(r => r.data),
-        staleTime: 10 * 60 * 1000,  // considera fresco por 10 min
-        refetchInterval: 15 * 60 * 1000,  // refetch automático a cada 15 min
-        refetchOnWindowFocus: true,       // atualiza quando volta à aba
+        staleTime: 15 * 60 * 1000,       // 15 min (sincronizado com backend)
+        refetchOnWindowFocus: false,     // não refaz ao ganhar foco
     });
 
     // Checa dismiss quando a ação muda

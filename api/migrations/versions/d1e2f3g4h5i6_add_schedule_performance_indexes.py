@@ -22,47 +22,42 @@ def upgrade():
     Reduz tempo de query em ~40% ao evitar full table scans:
     - schedule_items: usado por ~1000 queries/hora
     - question_attempts: usado por ~500 queries/hora
+
+    if_not_exists=True garante idempotência — não falha se o índice já existir.
     """
-    # Índice para queries de itens do cronograma por data
-    # Usado em: GET /schedule/, _add_spaced_reviews(), adapt_after_checkin()
     op.create_index(
         'ix_schedule_items_schedule_date',
         'schedule_items',
         ['schedule_id', 'scheduled_date'],
-        unique=False
+        unique=False,
+        if_not_exists=True,
     )
-
-    # Índice para queries de status do cronograma
-    # Usado em: ScheduleItem.query.filter(status="pending")
     op.create_index(
         'ix_schedule_items_status_date',
         'schedule_items',
         ['schedule_id', 'status', 'scheduled_date'],
-        unique=False
+        unique=False,
+        if_not_exists=True,
     )
-
-    # Índice para questões por disciplina
-    # Usado em: _calculate_subject_priorities(), _get_subject_accuracy()
     op.create_index(
         'ix_question_attempts_user_subject',
         'question_attempts',
         ['user_id', 'question_id'],
-        unique=False
+        unique=False,
+        if_not_exists=True,
     )
-
-    # Índice para acurácia por disciplina com user
-    # Usado em: calculate_abandonment_risk(), _add_spaced_reviews()
     op.create_index(
         'ix_question_attempts_user_tenant_created',
         'question_attempts',
         ['user_id', 'tenant_id', 'created_at'],
-        unique=False
+        unique=False,
+        if_not_exists=True,
     )
 
 
 def downgrade():
     """Remove os índices de performance"""
-    op.drop_index('ix_question_attempts_user_tenant_created', table_name='question_attempts')
-    op.drop_index('ix_question_attempts_user_subject', table_name='question_attempts')
-    op.drop_index('ix_schedule_items_status_date', table_name='schedule_items')
-    op.drop_index('ix_schedule_items_schedule_date', table_name='schedule_items')
+    op.drop_index('ix_question_attempts_user_tenant_created', table_name='question_attempts', if_exists=True)
+    op.drop_index('ix_question_attempts_user_subject', table_name='question_attempts', if_exists=True)
+    op.drop_index('ix_schedule_items_status_date', table_name='schedule_items', if_exists=True)
+    op.drop_index('ix_schedule_items_schedule_date', table_name='schedule_items', if_exists=True)

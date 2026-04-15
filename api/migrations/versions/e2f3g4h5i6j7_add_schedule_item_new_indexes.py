@@ -18,16 +18,18 @@ def upgrade():
         'ix_schedule_items_dates_deleted',
         'schedule_items',
         ['schedule_id', 'scheduled_date', 'is_deleted'],
-        unique=False
+        unique=False,
+        if_not_exists=True,
     )
     op.create_index(
         'ix_schedule_items_lessons',
         'schedule_items',
         ['item_type', 'lesson_id', 'is_deleted'],
-        unique=False
+        unique=False,
+        if_not_exists=True,
     )
 
 
 def downgrade():
-    op.drop_index('ix_schedule_items_lessons', table_name='schedule_items')
-    op.drop_index('ix_schedule_items_dates_deleted', table_name='schedule_items')
+    op.drop_index('ix_schedule_items_lessons', table_name='schedule_items', if_exists=True)
+    op.drop_index('ix_schedule_items_dates_deleted', table_name='schedule_items', if_exists=True)
