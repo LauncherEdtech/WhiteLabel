@@ -7,9 +7,8 @@ export function useCourses() {
     return useQuery({
         queryKey: QUERY_KEYS.COURSES,
         queryFn: () => coursesApi.list(),
-        staleTime: 0,
-        refetchOnMount: true,
-        refetchOnWindowFocus: true,
+        staleTime: 10 * 60 * 1000,        // 10 minutos (lista de cursos não muda frequentemente)
+        refetchOnWindowFocus: false,      // Não refaz ao ganhar foco
     });
 }
 
@@ -18,9 +17,8 @@ export function useCourse(id: string) {
         queryKey: QUERY_KEYS.COURSE(id),
         queryFn: () => coursesApi.get(id),
         enabled: !!id,
-        staleTime: 0,
-        refetchOnMount: true,
-        refetchOnWindowFocus: true,
+        staleTime: 10 * 60 * 1000,        // 10 minutos (dados de curso não mudam frequentemente)
+        refetchOnWindowFocus: false,      // Não refaz ao ganhar foco
     });
 }
 
