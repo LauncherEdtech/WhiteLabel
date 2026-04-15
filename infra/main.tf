@@ -5,7 +5,8 @@
 #   Frontend  → Vercel (gratuito)
 #   DNS/SSL   → Cloudflare (gratuito)
 #   API       → ECS Fargate + cloudflared sidecar (sem ALB)
-#   Redis     → Upstash (gratuito até 10k req/dia)
+#   Redis     → Upstash (cache, rate limit, result backend)
+#   Celery    → Broker SQS, result backend Upstash Redis
 #   Database  → RDS PostgreSQL db.t3.micro
 
 terraform {
@@ -88,12 +89,10 @@ resource "aws_route_table_association" "public" {
 }
 
 # ── Security Groups ───────────────────────────────────────────────────────────
-# ALB removido — ECS tasks só precisam de saída para internet
-# (cloudflared abre conexão de saída para Cloudflare, sem ingress necessário)
 
 resource "aws_security_group" "ecs_tasks" {
   name        = "${var.project_name}-ecs-sg"
-  description = "ECS tasks: aceita do ALB, sai para internet (ECR, RDS, Redis)"
+  description = "ECS tasks: saida para internet (ECR, RDS, Redis, SQS, Cloudflare)"
   vpc_id      = aws_vpc.main.id
 
   # Sem ingress — cloudflared usa conexão de saída para receber tráfego
@@ -229,9 +228,19 @@ resource "aws_ecs_task_definition" "api" {
       environment = [
         { name = "FLASK_ENV",             value = "production" },
         { name = "DATABASE_URL",          value = "postgresql://concurso_user:${var.db_password}@${aws_db_instance.postgres.endpoint}/concurso_platform" },
-        { name = "REDIS_URL",             value = var.redis_url },
-        { name = "CELERY_BROKER_URL",     value = "${var.redis_url}?ssl_cert_reqs=CERT_NONE" },
+
+        # FIX 1: REDIS_URL com ssl_cert_reqs=CERT_NONE — obrigatório para Upstash
+        # Sem esse parâmetro o redis-py rejeita o certificado autoassinado
+        # e o cache falha silenciosamente (try/except engolia o erro)
+        { name = "REDIS_URL",             value = "${var.redis_url}?ssl_cert_reqs=CERT_NONE" },
+
+        # FIX 2: CELERY_BROKER_URL → SQS (não Redis)
+        # Worker Celery consome de SQS; API deve despachar para SQS também
+        # Antes apontava pro Redis — tasks nunca chegavam ao worker
+        { name = "CELERY_BROKER_URL",     value = "sqs://" },
+        { name = "CELERY_DEFAULT_QUEUE",  value = "${var.project_name}-celery" },
         { name = "CELERY_RESULT_BACKEND", value = "${var.redis_url}?ssl_cert_reqs=CERT_NONE" },
+
         { name = "SECRET_KEY",            value = var.secret_key },
         { name = "JWT_SECRET_KEY",        value = var.jwt_secret_key },
         { name = "GEMINI_API_KEY",        value = var.gemini_api_key },
@@ -248,6 +257,8 @@ resource "aws_ecs_task_definition" "api" {
         }
       }
 
+      # Health check interno do ECS — chama /health a cada 30s (120x/hora)
+      # O endpoint /health tem @limiter.exempt para não estourar o rate limit
       healthCheck = {
         command     = ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
         interval    = 30
@@ -299,4 +310,27 @@ resource "aws_ecs_service" "api" {
   lifecycle {
     ignore_changes = [task_definition, desired_count]
   }
+}
+
+# ── Outputs ───────────────────────────────────────────────────────────────────
+
+output "api_url" {
+  description = "URL pública da API (via Cloudflare Tunnel)"
+  value       = "https://api.launcheredu.com.br/api/v1"
+}
+
+output "ecr_api_url" {
+  description = "URL do repositório ECR da API"
+  value       = aws_ecr_repository.api.repository_url
+}
+
+output "rds_endpoint" {
+  description = "Endpoint do RDS PostgreSQL"
+  value       = aws_db_instance.postgres.endpoint
+  sensitive   = true
+}
+
+output "ecs_cluster_name" {
+  description = "Nome do cluster ECS"
+  value       = aws_ecs_cluster.main.name
 }
