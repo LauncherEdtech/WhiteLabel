@@ -1,5 +1,8 @@
 "use client";
 // frontend/src/app/(student)/schedule/page.tsx
+//
+// v8.1: Badge de aviso para aulas que excedem o orçamento diário
+// (flag item.is_long_lesson retornada pelo backend).
 
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -18,7 +21,7 @@ import {
   HelpCircle, RefreshCw, Sparkles, ClipboardList,
   AlertTriangle, Target, ChevronRight, RotateCcw,
   Play, ArrowRight, List, LayoutGrid, CalendarDays,
-  ChevronLeft,
+  ChevronLeft, Hourglass,
 } from "lucide-react";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -139,6 +142,7 @@ function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
   const cfg = TYPE_CONFIG[item.item_type] || TYPE_CONFIG.lesson;
   const Icon = cfg.icon;
   const title = resolveTitle(item);
+  const isLongLesson = item.is_long_lesson === true; // v8.1
 
   return (
     <div className={cn(
@@ -146,6 +150,8 @@ function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
       isDone && "bg-success/5 border-success/20 opacity-70",
       isSkipped && "bg-muted/30 border-border opacity-50",
       !isDoneOrSkipped && "bg-background border-border hover:border-primary/20",
+      // v8.1: destaque sutil para aulas longas pendentes
+      !isDoneOrSkipped && isLongLesson && "border-amber-200 bg-amber-50/40",
     )}>
       <button
         onClick={() => {
@@ -186,13 +192,31 @@ function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
               {item.subject.name}
             </span>
           )}
+          {/* v8.1: badge visível para aula longa */}
+          {isLongLesson && (
+            <span className="text-[10px] font-medium text-amber-700 bg-amber-100 border border-amber-200 rounded px-1.5 py-0 h-4 flex items-center gap-0.5">
+              <Hourglass className="h-2.5 w-2.5" />
+              Aula longa
+            </span>
+          )}
         </div>
+
+        {/* v8.1: aviso expandido para aulas longas — só em pendentes */}
+        {isLongLesson && !isDoneOrSkipped && (
+          <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1 mt-1.5 flex items-start gap-1.5">
+            <Hourglass className="h-3 w-3 mt-0.5 shrink-0" />
+            <span>
+              Esta aula é mais longa que sua carga diária. Reserve um tempo extra hoje ou divida em sessões.
+            </span>
+          </p>
+        )}
+
         {item.template_item_notes && (
           <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mt-1.5">
             📌 {item.template_item_notes}
           </p>
         )}
-        {item.priority_reason && !item.template_item_notes && (
+        {item.priority_reason && !item.template_item_notes && !isLongLesson && (
           <p className="text-xs text-muted-foreground mt-1 italic">💡 {item.priority_reason}</p>
         )}
         {!isDoneOrSkipped && (
@@ -290,7 +314,6 @@ function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading }:
             "overflow-hidden transition-all",
             isToday && "border-primary/50 shadow-sm",
           )}>
-            {/* Cabeçalho do card */}
             <div className={cn(
               "px-4 py-3 flex items-center justify-between",
               isToday ? "bg-primary text-primary-foreground" : "bg-muted/40",
@@ -314,7 +337,6 @@ function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading }:
               </div>
             </div>
 
-            {/* Itens como chips compactos */}
             <CardContent className="p-3 space-y-2">
               {items.map((item: any) => {
                 const cfg = TYPE_CONFIG[item.item_type] || TYPE_CONFIG.lesson;
@@ -322,6 +344,7 @@ function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading }:
                 const isDone = item.status === "done";
                 const isSkipped = item.status === "skipped";
                 const isDoneOrSkipped = isDone || isSkipped;
+                const isLongLesson = item.is_long_lesson === true; // v8.1
 
                 return (
                   <div key={item.id}
@@ -330,9 +353,10 @@ function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading }:
                       isDone && "opacity-50 line-through border-success/20 bg-success/5",
                       isSkipped && "opacity-40 border-border bg-muted/20",
                       !isDoneOrSkipped && "border-border bg-background hover:border-primary/30",
+                      // v8.1: destaque para aula longa
+                      !isDoneOrSkipped && isLongLesson && "border-amber-200 bg-amber-50/40",
                     )}
                   >
-                    {/* Check button */}
                     <button
                       onClick={() => {
                         if (isDone) onUncheckin(item.id);
@@ -355,14 +379,21 @@ function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading }:
                       )}
                     </button>
 
-                    {/* Ícone de tipo */}
                     <div className={cn("h-6 w-6 rounded flex items-center justify-center shrink-0 border", cfg.color)}>
                       <Icon className="h-3 w-3" />
                     </div>
 
-                    {/* Título + meta */}
                     <div className="flex-1 min-w-0">
-                      <p className="truncate font-medium text-foreground">{resolveTitle(item)}</p>
+                      <p className="truncate font-medium text-foreground flex items-center gap-1">
+                        {resolveTitle(item)}
+                        {/* v8.1: ícone compacto de aula longa */}
+                        {isLongLesson && (
+                          <Hourglass
+                            className="h-3 w-3 text-amber-600 shrink-0"
+                            aria-label="Aula mais longa que sua carga diária"
+                          />
+                        )}
+                      </p>
                       <div className="flex items-center gap-1.5 mt-0.5 text-muted-foreground">
                         <Clock className="h-2.5 w-2.5" />{item.estimated_minutes}min
                         {item.subject?.name && (
@@ -371,7 +402,6 @@ function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading }:
                       </div>
                     </div>
 
-                    {/* Ação rápida */}
                     {!isDoneOrSkipped && (
                       <button
                         onClick={() => router.push(buildItemUrl(item, courseId))}
@@ -408,24 +438,19 @@ function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading 
     today.toISOString().split("T")[0]
   );
 
-  // Mapa: dateStr → items
   const itemsByDate: Record<string, any[]> = {};
   for (const { date, items } of days) {
     itemsByDate[date] = items;
   }
 
-  // Constrói a grade do mês (semanas × 7 dias)
   const firstDay = new Date(viewYear, viewMonth, 1);
-  // Brasil: semana começa no domingo (0)
   const startOffset = firstDay.getDay();
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
 
-  // Grade de células: null = dia vazio (padding), number = dia do mês
   const cells: (number | null)[] = [
     ...Array(startOffset).fill(null),
     ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
   ];
-  // Preenche até múltiplo de 7
   while (cells.length % 7 !== 0) cells.push(null);
 
   const prevMonth = () => {
@@ -445,7 +470,6 @@ function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading 
 
   return (
     <div className="space-y-4">
-      {/* Cabeçalho do mês */}
       <div className="flex items-center justify-between">
         <button onClick={prevMonth}
           className="h-8 w-8 rounded-lg border border-border flex items-center justify-center hover:bg-muted transition-colors">
@@ -460,9 +484,7 @@ function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading 
         </button>
       </div>
 
-      {/* Grade do calendário */}
       <div className="border border-border rounded-xl overflow-hidden">
-        {/* Cabeçalho dos dias da semana */}
         <div className="grid grid-cols-7 bg-muted/40 border-b border-border">
           {DAYS_PT.map(d => (
             <div key={d} className="py-2 text-center text-xs font-medium text-muted-foreground">
@@ -471,7 +493,6 @@ function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading 
           ))}
         </div>
 
-        {/* Células dos dias */}
         <div className="grid grid-cols-7">
           {cells.map((day, idx) => {
             if (!day) return (
@@ -482,11 +503,12 @@ function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading 
             const dayItems = itemsByDate[dateStr] || [];
             const isToday = dateStr === todayStr;
             const isSelected = dateStr === selectedDate;
-            const hasPending = dayItems.some(i => i.status === "pending");
-            const hasDone = dayItems.some(i => i.status === "done");
+            const hasPending = dayItems.some((i: any) => i.status === "pending");
+            const hasDone = dayItems.some((i: any) => i.status === "done");
+            // v8.1: sinaliza visualmente dias com aula longa
+            const hasLongLesson = dayItems.some((i: any) => i.is_long_lesson === true);
 
-            // Tipos únicos para mostrar dots
-            const typeDots = [...new Set(dayItems.map(i => i.item_type))].slice(0, 3);
+            const typeDots = [...new Set(dayItems.map((i: any) => i.item_type))].slice(0, 3);
 
             return (
               <button key={dateStr}
@@ -495,11 +517,11 @@ function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading 
                   "min-h-[60px] p-1.5 border-r border-b border-border last:border-r-0",
                   "flex flex-col items-start gap-1 text-left transition-colors",
                   isSelected && "bg-primary/5",
-                  !isSelected && "hover:bg-muted/40",
+                  !isSelected && hasLongLesson && "bg-amber-50/40",
+                  !isSelected && !hasLongLesson && "hover:bg-muted/40",
                   idx % 7 === 6 && "border-r-0",
                 )}
               >
-                {/* Número do dia */}
                 <span className={cn(
                   "h-6 w-6 rounded-full flex items-center justify-center text-xs font-semibold",
                   isToday && "bg-primary text-primary-foreground",
@@ -509,26 +531,28 @@ function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading 
                   {day}
                 </span>
 
-                {/* Dots por tipo */}
                 {typeDots.length > 0 && (
                   <div className="flex items-center gap-0.5 flex-wrap">
-                    {typeDots.map(type => (
+                    {typeDots.map((type: string) => (
                       <div key={type}
                         className={cn("h-1.5 w-1.5 rounded-full", TYPE_CONFIG[type]?.dot || "bg-muted")} />
                     ))}
+                    {/* v8.1: indicador de aula longa no canto do dia */}
+                    {hasLongLesson && (
+                      <Hourglass className="h-2.5 w-2.5 text-amber-600 ml-0.5" />
+                    )}
                     {dayItems.length > 3 && (
                       <span className="text-[9px] text-muted-foreground">+{dayItems.length - 3}</span>
                     )}
                   </div>
                 )}
 
-                {/* Indicador de progresso */}
                 {dayItems.length > 0 && (
                   <span className={cn(
                     "text-[9px] font-medium",
                     hasPending ? "text-primary" : hasDone ? "text-success" : "text-muted-foreground",
                   )}>
-                    {dayItems.filter(i => i.status === "done").length}/{dayItems.length}
+                    {dayItems.filter((i: any) => i.status === "done").length}/{dayItems.length}
                   </span>
                 )}
               </button>
@@ -537,7 +561,6 @@ function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading 
         </div>
       </div>
 
-      {/* Legenda */}
       <div className="flex items-center gap-4 flex-wrap">
         {Object.entries(TYPE_CONFIG).map(([key, cfg]) => (
           <div key={key} className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -545,9 +568,13 @@ function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading 
             {cfg.label}
           </div>
         ))}
+        {/* v8.1: legenda do ícone de aula longa */}
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Hourglass className="h-2.5 w-2.5 text-amber-600" />
+          Aula longa
+        </div>
       </div>
 
-      {/* Painel do dia selecionado */}
       {selectedDate && (
         <div className="space-y-3">
           <div className="flex items-center gap-2 pb-1 border-b border-border">
@@ -588,7 +615,6 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
   const toast = useToast();
   const queryClient = useQueryClient();
 
-  // Persiste a view escolhida
   const [view, setView] = useState<ViewMode>(() => {
     if (typeof window === "undefined") return "list";
     return (localStorage.getItem(VIEW_STORAGE_KEY) as ViewMode) || "list";
@@ -599,7 +625,6 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
     localStorage.setItem(VIEW_STORAGE_KEY, v);
   };
 
-  // Calendário precisa de mais dias
   const daysToFetch = view === "calendar" ? 42 : 14;
 
   const { data, isLoading } = useQuery({
@@ -674,7 +699,6 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
 
   return (
     <div data-onboarding="schedule" className="space-y-5 animate-fade-in">
-      {/* Cabeçalho */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h1 className="font-display text-2xl font-bold text-foreground">Cronograma</h1>
@@ -703,7 +727,6 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
         </div>
       </div>
 
-      {/* Aviso de template */}
       {isProducerTemplate && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/5 border border-primary/20">
           <Calendar className="h-4 w-4 text-primary shrink-0" />
@@ -713,7 +736,6 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
         </div>
       )}
 
-      {/* Cards de stats */}
       {stats && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <Card><CardContent className="p-4 text-center">
@@ -752,7 +774,6 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
         </div>
       )}
 
-      {/* Alerta abandono */}
       {!isProducerTemplate && stats?.abandonment_risk > 0.6 && (
         <div className="flex items-start gap-3 p-4 rounded-xl bg-destructive/10 border border-destructive/20">
           <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
@@ -765,7 +786,6 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
         </div>
       )}
 
-      {/* Nota da IA */}
       {!isProducerTemplate && stats?.ai_notes && (
         <div className="flex items-start gap-2 p-3 rounded-xl bg-primary/5 border border-primary/10">
           <Sparkles className="h-4 w-4 text-primary shrink-0 mt-0.5" />
@@ -773,7 +793,6 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
         </div>
       )}
 
-      {/* Conteúdo vazio */}
       {days.length === 0 && (
         <Card><CardContent className="py-12 text-center">
           <Calendar className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
@@ -786,7 +805,6 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
         </CardContent></Card>
       )}
 
-      {/* Visualizações */}
       {days.length > 0 && view === "list" && <ScheduleListView days={days} {...checkinProps} />}
       {days.length > 0 && view === "blocks" && <ScheduleBlocksView days={days} {...checkinProps} />}
       {days.length > 0 && view === "calendar" && <ScheduleCalendarView days={days} {...checkinProps} />}

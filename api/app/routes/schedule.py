@@ -5,6 +5,11 @@
 #   - get_schedule: 3 queries COUNT separadas → 1 query com CASE WHEN
 #     + pending_today calculado dos items já em memória (sem query extra)
 #   - checkin_item: invalida cache Redis do dashboard após commit
+#
+# v8.1:
+#   - Serializer detecta prefixo [LONGA] em priority_reason e expõe flag
+#     is_long_lesson para o frontend exibir badge de aviso em aulas
+#     que excedem o orçamento diário.
 
 from datetime import datetime, timezone, date, timedelta
 from flask import Blueprint, request, jsonify
@@ -17,7 +22,7 @@ from app.extensions import db, limiter
 from app.models.user import User, UserRole
 from app.models.course import CourseEnrollment, Lesson, Subject
 from app.models.schedule import StudySchedule, ScheduleItem, ScheduleCheckIn
-from app.services.schedule_engine import ScheduleEngine
+from app.services.schedule_engine import ScheduleEngine, FORCE_FIT_PREFIX
 from app.middleware.tenant import (
     resolve_tenant,
     require_tenant,
@@ -77,10 +82,7 @@ def before_request():
 @require_tenant
 @limiter.limit("30 per hour")
 def generate_schedule():
-    """
-    Gera ou reorganiza o cronograma inteligente.
-    Aceita target_date para calcular compressão por data de prova.
-    """
+    """Gera ou reorganiza o cronograma inteligente."""
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
@@ -93,7 +95,6 @@ def generate_schedule():
     course_id = data["course_id"]
     target_date = data.get("target_date")
 
-    # Garante que o aluno está matriculado
     enrollment = CourseEnrollment.query.filter_by(
         user_id=user_id,
         course_id=course_id,
@@ -139,15 +140,7 @@ def generate_schedule():
 @jwt_required()
 @require_tenant
 def get_schedule():
-    """
-    Retorna os itens do cronograma agrupados por dia.
-    Query params:
-      course_id — obrigatório
-      days      — quantos dias retornar (default: 14)
-
-    OTIMIZAÇÃO: stats calculados com 1 query CASE WHEN + pending_today
-    em memória (antes eram 3 queries COUNT separadas).
-    """
+    """Retorna os itens do cronograma agrupados por dia."""
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
@@ -172,7 +165,6 @@ def get_schedule():
     today_str = today.isoformat()
     end_str = end_date.isoformat()
 
-    # ── Itens da janela de exibição com EAGER LOADING ────────────────────────
     items = (
         ScheduleItem.query.filter(
             ScheduleItem.schedule_id == schedule.id,
@@ -181,14 +173,13 @@ def get_schedule():
             ScheduleItem.is_deleted == False,
         )
         .options(
-            joinedload(ScheduleItem.lesson),  # Carrega aulas antes (evita N+1)
-            joinedload(ScheduleItem.subject),  # Carrega disciplinas antes
+            joinedload(ScheduleItem.lesson),
+            joinedload(ScheduleItem.subject),
         )
         .order_by(ScheduleItem.scheduled_date, ScheduleItem.order)
         .all()
     )
 
-    # ── Gera presigned URLs em LOTE (não por item) ────────────────────────────
     s3_keys = set()
     for item in items:
         if item.lesson and item.lesson.video_s3_key:
@@ -202,26 +193,31 @@ def get_schedule():
             for s3_key in s3_keys:
                 presigned_urls[s3_key] = generate_video_presigned_url(s3_key)
         except Exception:
-            pass  # Se falhar geração de URLs, continua sem elas
+            pass
 
-    # ── Agrupa por data ───────────────────────────────────────────────────────
+    # v8.1: calcula orçamento diário efetivo (usando snapshot do schedule)
+    # para detectar aulas longas mesmo em cronogramas antigos (fallback).
+    avail_snap = schedule.availability_snapshot or {}
+    snap_hours = avail_snap.get("hours_per_day") or 2
+    effective_daily_minutes = int(snap_hours * 60)
+
     days_map = {}
     for item in items:
         d = item.scheduled_date
         if d not in days_map:
             days_map[d] = []
-        days_map[d].append(_serialize_item(item, presigned_urls))
+        days_map[d].append(
+            _serialize_item(item, presigned_urls, effective_daily_minutes)
+        )
 
     days_list = [
         {"date": d, "items": day_items} for d, day_items in sorted(days_map.items())
     ]
 
-    # ── pending_today: calculado dos items já em memória (sem query extra) ────
     pending_today = sum(
         1 for i in items if i.scheduled_date == today_str and i.status == "pending"
     )
 
-    # ── total e done: 1 query com CASE WHEN (era 2 queries COUNT separadas) ───
     counts_row = (
         db.session.query(
             func.count(ScheduleItem.id).label("total"),
@@ -271,11 +267,6 @@ def get_schedule():
 @jwt_required()
 @require_tenant
 def checkin_item(item_id: str):
-    """
-    Aluno faz check-in num item do cronograma.
-    Dispara adaptação assíncrona via Celery.
-    Invalida o cache do dashboard após commit.
-    """
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
@@ -303,7 +294,6 @@ def checkin_item(item_id: str):
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    # Atualiza ou cria check-in
     checkin = ScheduleCheckIn.query.filter_by(item_id=item_id).first()
     if not checkin:
         checkin = ScheduleCheckIn(
@@ -317,7 +307,6 @@ def checkin_item(item_id: str):
         )
         db.session.add(checkin)
     else:
-        # Reativa se estava soft-deleted (re-checkin após uncheckin)
         checkin.is_deleted = False
         checkin.completed = data["completed"]
         checkin.note = data.get("note", checkin.note)
@@ -328,7 +317,6 @@ def checkin_item(item_id: str):
 
     item.status = "done" if data["completed"] else "skipped"
 
-    # Se for aula, sincroniza LessonProgress
     if item.item_type == "lesson" and item.lesson_id:
         from app.models.course import LessonProgress
 
@@ -351,15 +339,14 @@ def checkin_item(item_id: str):
 
     db.session.commit()
 
-    # ── Invalida cache do dashboard após commit ───────────────────────────────
     try:
         from app.routes.analytics import _cache_delete, _dashboard_cache_key
 
         _cache_delete(_dashboard_cache_key(user_id, tenant.id))
-        _cache_delete(f"next_action:{tenant.id}:{user_id}")  # ← NOVO
+        _cache_delete(f"next_action:{tenant.id}:{user_id}")
     except Exception:
         pass
-    # Dispara adaptação assíncrona via Celery
+
     try:
         from app.tasks.schedule_tasks import adapt_after_checkin
 
@@ -370,7 +357,7 @@ def checkin_item(item_id: str):
             item_id=item_id,
         )
     except Exception:
-        pass  # Não falha o check-in se Celery não estiver disponível
+        pass
 
     return (
         jsonify(
@@ -388,7 +375,6 @@ def checkin_item(item_id: str):
 @jwt_required()
 @require_tenant
 def uncheckin_item(item_id: str):
-    """Aluno desfaz check-in de um item do cronograma — volta para pending."""
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
@@ -405,15 +391,12 @@ def uncheckin_item(item_id: str):
     if not schedule:
         return jsonify({"error": "forbidden"}), 403
 
-    # Volta item para pending
     item.status = "pending"
 
-    # Remove check-in se existir
     checkin = ScheduleCheckIn.query.filter_by(item_id=item_id, is_deleted=False).first()
     if checkin:
         checkin.is_deleted = True
 
-    # Se for aula, desmarca o progresso também
     if item.item_type == "lesson" and item.lesson_id:
         from app.models.course import LessonProgress
 
@@ -429,7 +412,6 @@ def uncheckin_item(item_id: str):
 
     db.session.commit()
 
-    # Invalida caches
     try:
         from app.routes.analytics import _cache_delete, _dashboard_cache_key
 
@@ -442,7 +424,7 @@ def uncheckin_item(item_id: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# REORGANIZAÇÃO MANUAL
+# REORGANIZAÇÃO / DELETE / AVAILABILITY
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -451,7 +433,6 @@ def uncheckin_item(item_id: str):
 @require_tenant
 @limiter.limit("5 per hour")
 def reorganize_schedule():
-    """Reorganização manual — chamada pelo botão na UI."""
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
@@ -481,7 +462,6 @@ def reorganize_schedule():
 @jwt_required()
 @require_tenant
 def delete_schedule():
-    """Remove cronograma do aluno (soft delete)."""
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
@@ -504,16 +484,10 @@ def delete_schedule():
     return jsonify({"message": "Cronograma removido."}), 200
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# DISPONIBILIDADE
-# ══════════════════════════════════════════════════════════════════════════════
-
-
 @schedule_bp.route("/availability", methods=["PUT"])
 @jwt_required()
 @require_tenant
 def update_availability():
-    """Atualiza disponibilidade e reorganiza cronogramas ativos."""
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
@@ -536,7 +510,6 @@ def update_availability():
     }
     db.session.commit()
 
-    # Reorganiza todos os cronogramas ativos do aluno
     schedules = StudySchedule.query.filter_by(
         user_id=user_id,
         tenant_id=tenant.id,
@@ -574,6 +547,7 @@ def update_availability():
 
 
 def _serialize_schedule(schedule: StudySchedule) -> dict:
+    snapshot = schedule.availability_snapshot or {}
     return {
         "id": schedule.id,
         "course_id": schedule.course_id,
@@ -583,19 +557,42 @@ def _serialize_schedule(schedule: StudySchedule) -> dict:
         "abandonment_risk": schedule.abandonment_risk_score,
         "ai_notes": schedule.ai_notes,
         "last_reorganized_at": schedule.last_reorganized_at,
+        # v8.1: expõe a disponibilidade para o frontend calcular overflow
+        "hours_per_day": snapshot.get("hours_per_day"),
     }
 
 
-def _serialize_item(item: ScheduleItem, presigned_urls: dict = None) -> dict:
+def _serialize_item(
+    item: ScheduleItem,
+    presigned_urls: dict = None,
+    effective_daily_minutes: int = None,
+) -> dict:
     """
     Serializa um item do cronograma.
 
-    Args:
-        item: ScheduleItem para serializar
-        presigned_urls: Dict pré-calculado de {s3_key: presigned_url}.
-                       Se não fornecido, gera URLs sob demanda (lento).
+    v8.1: Detecta prefixo [LONGA] em priority_reason e expõe como
+    is_long_lesson=True, removendo o prefixo da mensagem visível.
+    Fallback: também detecta por estimated_minutes > effective_daily_minutes
+    (cobre cronogramas antigos gerados antes da v8.1).
     """
     presigned_urls = presigned_urls or {}
+
+    # v8.1: detecta aula longa via prefixo OU por comparação de minutos
+    raw_reason = item.priority_reason or ""
+    is_long_lesson = False
+    priority_reason = raw_reason
+
+    if raw_reason.startswith(FORCE_FIT_PREFIX):
+        is_long_lesson = True
+        # remove o prefixo + espaço da mensagem visível
+        priority_reason = raw_reason[len(FORCE_FIT_PREFIX):].lstrip()
+    elif (
+        item.item_type == "lesson"
+        and effective_daily_minutes
+        and item.estimated_minutes > effective_daily_minutes
+    ):
+        # Fallback para cronogramas antigos (pré-v8.1): infere pela duração.
+        is_long_lesson = True
 
     data = {
         "id": item.id,
@@ -604,7 +601,8 @@ def _serialize_item(item: ScheduleItem, presigned_urls: dict = None) -> dict:
         "scheduled_date": item.scheduled_date,
         "order": item.order,
         "estimated_minutes": item.estimated_minutes,
-        "priority_reason": item.priority_reason,
+        "priority_reason": priority_reason,
+        "is_long_lesson": is_long_lesson,  # ← v8.1
         "has_checkin": item.checkin is not None,
         "question_filters": item.question_filters,
         "template_item_title": item.template_item_title,
@@ -616,9 +614,7 @@ def _serialize_item(item: ScheduleItem, presigned_urls: dict = None) -> dict:
         video_url = None
 
         if lesson.video_s3_key:
-            # Tenta usar URL presignada pré-gerada (rápido)
             video_url = presigned_urls.get(lesson.video_s3_key)
-            # Se não existir no dict, gera sob demanda (fallback)
             if not video_url:
                 try:
                     from app.routes.uploads import generate_video_presigned_url
