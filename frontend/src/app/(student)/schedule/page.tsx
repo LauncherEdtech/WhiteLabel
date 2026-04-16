@@ -549,17 +549,61 @@ function ScheduleView({ courseId }: { courseId: string }) {
   const invalidateSchedule = () =>
     queryClient.invalidateQueries({ queryKey: ["schedule", courseId] });
 
+  // Atualiza o status de um item diretamente no cache do React Query.
+  // Retorna o snapshot anterior para rollback em caso de erro.
+  const applyOptimisticStatus = (itemId: string, newStatus: "done" | "pending" | "skipped") => {
+    const queryKey = ["schedule", courseId];
+    const previous = queryClient.getQueryData(queryKey);
+
+    queryClient.setQueryData(queryKey, (old: any) => {
+      if (!old) return old;
+      return {
+        ...old,
+        days: old.days.map((day: any) => ({
+          ...day,
+          items: day.items.map((item: any) =>
+            item.id === itemId ? { ...item, status: newStatus } : item
+          ),
+        })),
+      };
+    });
+
+    return previous;
+  };
+
   const checkinMutation = useMutation({
     mutationFn: ({ itemId, completed }: { itemId: string; completed: boolean }) =>
       scheduleApi.checkin(itemId, { completed }),
-    onSuccess: invalidateSchedule,
-    onError: () => toast.error("Erro ao marcar item"),
+    onMutate: async ({ itemId, completed }) => {
+      // Cancela qualquer refetch em andamento para não sobrescrever o optimistic update
+      await queryClient.cancelQueries({ queryKey: ["schedule", courseId] });
+      const previous = applyOptimisticStatus(itemId, completed ? "done" : "skipped");
+      return { previous, itemId };
+    },
+    onError: (_err, _vars, context) => {
+      // Reverte para o estado anterior se der erro
+      if (context?.previous) {
+        queryClient.setQueryData(["schedule", courseId], context.previous);
+      }
+      toast.error("Erro ao marcar item");
+    },
+    onSettled: invalidateSchedule, // Sincroniza com o servidor após sucesso ou erro
   });
 
   const uncheckinMutation = useMutation({
     mutationFn: (itemId: string) => apiClient.delete(`/schedule/checkin/${itemId}`),
-    onSuccess: () => { invalidateSchedule(); toast.success("Check-in desfeito."); },
-    onError: () => toast.error("Erro ao desfazer check-in"),
+    onMutate: async (itemId) => {
+      await queryClient.cancelQueries({ queryKey: ["schedule", courseId] });
+      const previous = applyOptimisticStatus(itemId, "pending");
+      return { previous, itemId };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["schedule", courseId], context.previous);
+      }
+      toast.error("Erro ao desfazer check-in");
+    },
+    onSettled: () => { invalidateSchedule(); toast.success("Check-in desfeito."); },
   });
 
   const reorganizeMutation = useMutation({
