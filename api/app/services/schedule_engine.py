@@ -1,5 +1,10 @@
 # api/app/services/schedule_engine.py
-# Motor do cronograma inteligente e adaptativo — v8.1
+# Motor do cronograma inteligente e adaptativo — v8.2
+#
+# v8.2 — CORREÇÃO CRÍTICA do bug de items zumbis no delete+generate:
+#   - generate() agora IGNORA schedules com is_deleted=True
+#     (antes: "ressuscitava" o schedule deletado, mantendo os items antigos)
+#   - Agora um delete seguido de generate sempre cria um cronograma LIMPO
 #
 # v8.1 — Marca aulas force-fit com prefixo especial no priority_reason
 #        para o frontend exibir badge "Aula longa — dedique tempo extra"
@@ -87,20 +92,27 @@ class ScheduleEngine:
     # ─────────────────────────────────────────────────────────────────────────
 
     def generate(self, target_date: Optional[str] = None) -> StudySchedule:
+        """
+        Gera um novo cronograma ou reorganiza um existente.
+
+        v8.2: Só considera schedules ATIVOS (is_deleted=False).
+        Se o aluno deletou o cronograma, geramos um novo LIMPO em vez
+        de ressuscitar o antigo (que mantinha items zumbis do anterior).
+        """
         existing = StudySchedule.query.filter_by(
             user_id=self.user_id,
             course_id=self.course_id,
             tenant_id=self.tenant_id,
+            is_deleted=False,  # ← v8.2: só schedules ativos
         ).first()
 
         if existing:
-            if existing.is_deleted:
-                existing.is_deleted = False
-                existing.deleted_at = None
+            # Já tem cronograma ativo — reorganiza mantendo histórico
             if target_date:
                 existing.target_date = target_date
             return self.reorganize(existing)
 
+        # Não tem cronograma ativo (ou foi deletado) — cria NOVO limpo
         schedule = StudySchedule(
             tenant_id=self.tenant_id,
             user_id=self.user_id,
@@ -362,7 +374,6 @@ class ScheduleEngine:
         return removed
 
     def _get_subject_accuracy(self, subject_id: str) -> float:
-        """OTIMIZAÇÃO: Usa SQL COUNT/SUM em vez de carregar tudo em memória"""
         from sqlalchemy import func, case as sql_case
         from app.models.question import Question
 
@@ -483,25 +494,25 @@ class ScheduleEngine:
         return round(min(risk, 1.0), 2)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Construção do cronograma — v8.1
+    # Construção do cronograma — v8.2
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_items(self, schedule: StudySchedule, start_date: date):
         """
         Distribui aulas nos slots disponíveis.
 
-        ALGORITMO v8.1 — preenchimento dia-a-dia com respeito ao orçamento:
+        ALGORITMO v8.2 — preenchimento dia-a-dia com respeito ao orçamento:
           1. Round-robin entre disciplinas
           2. Aula + questões IMEDIATAMENTE depois (APENAS se couberem)
           3. Force-fit: APENAS quando a aula sozinha excede o orçamento
              → marca com prefixo [LONGA] para o frontend exibir badge
           4. Simulado a cada 12 aulas
 
-        Mudanças v8/v8.1:
+        Mudanças v8/v8.1/v8.2:
           - Margem de 30% REMOVIDA. Orçamento do aluno é respeitado.
           - Force-fit condicional (só aulas mais longas que o dia).
           - Break imediato quando day_used >= effective_minutes.
-          - v8.1: Force-fit marca priority_reason com prefixo [LONGA].
+          - Force-fit marca priority_reason com prefixo [LONGA].
         """
         priority_map = self._calculate_subject_priorities()
         pending_lessons = self._get_pending_lessons()
@@ -842,8 +853,6 @@ class ScheduleEngine:
         questions_cost = questions_minutes + self.BREAK_MINUTES
 
         # v8: Questões só entram se CABEREM no orçamento real (sem margem).
-        # Para aulas longas (force-fit), questões não cabem — tudo bem,
-        # o aluno ainda pode praticar avulso.
         if day_used + questions_cost <= effective_minutes and subject:
             items_to_add.append(
                 ScheduleItem(
@@ -872,14 +881,6 @@ class ScheduleEngine:
         items_to_add,
         effective_minutes: int = None,
     ):
-        """
-        Revisões ADAPTATIVAS:
-        1. Apenas para disciplinas com BAIXO DESEMPENHO (accuracy < 50%)
-        2. Tempo proporcional: 15-30 min baseado na acurácia
-        3. Máximo 2 dias depois da aula/questão relacionada
-        4. Máximo 2 revisões no mesmo dia
-        5. v8: Respeita orçamento diário SEM margem
-        """
         if effective_minutes is None:
             effective_minutes = self.minutes_per_day
 

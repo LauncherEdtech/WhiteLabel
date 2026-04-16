@@ -1,15 +1,17 @@
 # api/app/routes/schedule.py
 # Rotas do cronograma inteligente e adaptativo.
 #
+# v8.2 — CORREÇÃO CRÍTICA do bug de items zumbis:
+#   - delete_schedule agora soft-deleta TODOS os items do schedule
+#     (antes: deletava só o schedule, deixando items órfãos que
+#     eram "ressuscitados" pelo generate() em chamadas subsequentes)
+#
+# v8.1 — Serializer detecta prefixo [LONGA] em priority_reason e
+#        expõe flag is_long_lesson para o frontend exibir badge.
+#
 # OTIMIZAÇÕES (v2):
 #   - get_schedule: 3 queries COUNT separadas → 1 query com CASE WHEN
-#     + pending_today calculado dos items já em memória (sem query extra)
 #   - checkin_item: invalida cache Redis do dashboard após commit
-#
-# v8.1:
-#   - Serializer detecta prefixo [LONGA] em priority_reason e expõe flag
-#     is_long_lesson para o frontend exibir badge de aviso em aulas
-#     que excedem o orçamento diário.
 
 from datetime import datetime, timezone, date, timedelta
 from flask import Blueprint, request, jsonify
@@ -37,7 +39,7 @@ schedule_bp = Blueprint("schedule", __name__)
 
 class GenerateScheduleSchema(Schema):
     course_id = fields.Str(required=True)
-    target_date = fields.Str(allow_none=True, load_default=None)  # "YYYY-MM-DD"
+    target_date = fields.Str(allow_none=True, load_default=None)
 
     class Meta:
         unknown = EXCLUDE
@@ -462,6 +464,13 @@ def reorganize_schedule():
 @jwt_required()
 @require_tenant
 def delete_schedule():
+    """
+    Remove cronograma do aluno (soft delete).
+
+    v8.2: Também soft-deleta TODOS os items do schedule para evitar
+    que items fiquem "órfãos" e apareçam em cronogramas futuros gerados
+    pelo mesmo aluno (bug de items zumbis).
+    """
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
@@ -478,10 +487,32 @@ def delete_schedule():
     if not schedule:
         return jsonify({"error": "not_found"}), 404
 
+    # v8.2: Soft-delete TODOS os items do schedule antes de deletar o schedule
+    # Sem isso, items ficam órfãos e reaparecem se o aluno gerar novo cronograma
+    now_iso = datetime.now(timezone.utc).isoformat()
+    items_deleted = ScheduleItem.query.filter_by(
+        schedule_id=schedule.id,
+        is_deleted=False,
+    ).update(
+        {
+            "is_deleted": True,
+            "deleted_at": now_iso,
+        },
+        synchronize_session=False,
+    )
+
     schedule.soft_delete()
     db.session.commit()
 
-    return jsonify({"message": "Cronograma removido."}), 200
+    return (
+        jsonify(
+            {
+                "message": "Cronograma removido.",
+                "items_deleted": items_deleted,
+            }
+        ),
+        200,
+    )
 
 
 @schedule_bp.route("/availability", methods=["PUT"])
