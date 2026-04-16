@@ -1,15 +1,11 @@
 # api/app/routes/schedule.py
 # Rotas do cronograma inteligente e adaptativo.
 #
-# OTIMIZAÇÕES (v3):
-#   - get_schedule: cache Redis 60s por (tenant, user, course, days)
-#     → visitas repetidas retornam em <5ms sem tocar o banco
-#   - presigned URLs: cache Redis 1h por s3_key via pipeline mget
-#     → N operações HMAC → 1 pipeline + misses pontuais
-#   - Invalidação de cache em: checkin, uncheckin, reorganize,
-#     delete, generate, update_availability
+# OTIMIZAÇÕES (v2):
+#   - get_schedule: 3 queries COUNT separadas → 1 query com CASE WHEN
+#     + pending_today calculado dos items já em memória (sem query extra)
+#   - checkin_item: invalida cache Redis do dashboard após commit
 
-import json as _json
 from datetime import datetime, timezone, date, timedelta
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
@@ -29,93 +25,6 @@ from app.middleware.tenant import (
 )
 
 schedule_bp = Blueprint("schedule", __name__)
-
-# ── Janelas de dias que o frontend pode requisitar (para invalidação total) ──
-_KNOWN_DAY_WINDOWS = (7, 14, 42)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# HELPERS DE CACHE
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-def _schedule_cache_key(tenant_id: str, user_id: str, course_id: str, days: int) -> str:
-    return f"schedule_v1:{tenant_id}:{user_id}:{course_id}:{days}"
-
-
-def _invalidate_schedule_cache(tenant_id: str, user_id: str, course_id: str) -> None:
-    """Remove todas as entradas de cache do cronograma para as janelas conhecidas."""
-    try:
-        from app.extensions import redis_client
-
-        keys = [
-            _schedule_cache_key(tenant_id, user_id, course_id, d)
-            for d in _KNOWN_DAY_WINDOWS
-        ]
-        redis_client.delete(*keys)
-    except Exception:
-        pass
-
-
-def _get_presigned_urls_cached(s3_keys: set) -> dict:
-    """
-    Retorna presigned URLs para um conjunto de s3_keys.
-
-    Estratégia:
-      1. Pipeline mget no Redis (1 round-trip para N keys)
-      2. Para cache hits → usa URL armazenada
-      3. Para cache misses → gera HMAC local e armazena (TTL 1h)
-      4. Fallback sem cache se Redis indisponível
-    """
-    if not s3_keys:
-        return {}
-
-    from app.routes.uploads import generate_video_presigned_url
-
-    presigned_urls: dict = {}
-
-    try:
-        from app.extensions import redis_client
-
-        keys_list = list(s3_keys)
-        redis_keys = [f"presigned_v1:{k}" for k in keys_list]
-
-        # 1 round-trip para todas as keys
-        cached_values = redis_client.mget(*redis_keys)
-
-        miss_keys = []
-        for s3_key, cached in zip(keys_list, cached_values):
-            if cached:
-                presigned_urls[s3_key] = (
-                    cached.decode() if isinstance(cached, bytes) else cached
-                )
-            else:
-                miss_keys.append(s3_key)
-
-        if miss_keys:
-            # Gera URLs para misses e armazena em pipeline
-            pipe = redis_client.pipeline()
-            for s3_key in miss_keys:
-                try:
-                    url = generate_video_presigned_url(s3_key)
-                    if url:
-                        presigned_urls[s3_key] = url
-                        pipe.setex(f"presigned_v1:{s3_key}", 3600, url)
-                except Exception:
-                    pass
-            pipe.execute()
-
-    except Exception:
-        # Redis indisponível: gera sem cache (comportamento anterior)
-        for s3_key in s3_keys:
-            try:
-                url = generate_video_presigned_url(s3_key)
-                if url:
-                    presigned_urls[s3_key] = url
-            except Exception:
-                pass
-
-    return presigned_urls
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -184,6 +93,7 @@ def generate_schedule():
     course_id = data["course_id"]
     target_date = data.get("target_date")
 
+    # Garante que o aluno está matriculado
     enrollment = CourseEnrollment.query.filter_by(
         user_id=user_id,
         course_id=course_id,
@@ -193,12 +103,19 @@ def generate_schedule():
     ).first()
     if not enrollment:
         return (
-            jsonify({"error": "not_enrolled", "message": "Você não está matriculado neste curso."}),
+            jsonify(
+                {
+                    "error": "not_enrolled",
+                    "message": "Você não está matriculado neste curso.",
+                }
+            ),
             403,
         )
 
     try:
-        engine = ScheduleEngine(user_id=user_id, tenant_id=tenant.id, course_id=course_id)
+        engine = ScheduleEngine(
+            user_id=user_id, tenant_id=tenant.id, course_id=course_id
+        )
         schedule = engine.generate(target_date=target_date)
         risk = engine.calculate_abandonment_risk()
         schedule.abandonment_risk_score = risk
@@ -206,15 +123,14 @@ def generate_schedule():
     except ValueError as e:
         return jsonify({"error": "engine_error", "message": str(e)}), 400
 
-    # Invalida cache após geração
-    _invalidate_schedule_cache(tenant.id, user_id, course_id)
-
     return (
-        jsonify({
-            "message": "Cronograma gerado com sucesso.",
-            "schedule": _serialize_schedule(schedule),
-            "abandonment_risk": risk,
-        }),
+        jsonify(
+            {
+                "message": "Cronograma gerado com sucesso.",
+                "schedule": _serialize_schedule(schedule),
+                "abandonment_risk": risk,
+            }
+        ),
         201,
     )
 
@@ -229,10 +145,8 @@ def get_schedule():
       course_id — obrigatório
       days      — quantos dias retornar (default: 14)
 
-    OTIMIZAÇÕES (v3):
-      - Cache Redis 60s por (tenant, user, course, days)
-      - Presigned URLs via pipeline mget + cache 1h
-      - Stats: 1 query CASE WHEN + pending_today em memória
+    OTIMIZAÇÃO: stats calculados com 1 query CASE WHEN + pending_today
+    em memória (antes eram 3 queries COUNT separadas).
     """
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
@@ -243,18 +157,6 @@ def get_schedule():
 
     days_param = int(request.args.get("days", 14))
 
-    # ── Tenta retornar do cache Redis ─────────────────────────────────────────
-    cache_key = _schedule_cache_key(tenant.id, user_id, course_id, days_param)
-    try:
-        from app.extensions import redis_client
-
-        cached = redis_client.get(cache_key)
-        if cached:
-            return jsonify(_json.loads(cached)), 200
-    except Exception:
-        pass  # Redis indisponível: continua sem cache
-
-    # ── Busca schedule no banco ───────────────────────────────────────────────
     schedule = StudySchedule.query.filter_by(
         user_id=user_id,
         course_id=course_id,
@@ -270,7 +172,7 @@ def get_schedule():
     today_str = today.isoformat()
     end_str = end_date.isoformat()
 
-    # ── Itens da janela com EAGER LOADING (evita N+1) ────────────────────────
+    # ── Itens da janela de exibição com EAGER LOADING ────────────────────────
     items = (
         ScheduleItem.query.filter(
             ScheduleItem.schedule_id == schedule.id,
@@ -279,23 +181,31 @@ def get_schedule():
             ScheduleItem.is_deleted == False,
         )
         .options(
-            joinedload(ScheduleItem.lesson),
-            joinedload(ScheduleItem.subject),
+            joinedload(ScheduleItem.lesson),  # Carrega aulas antes (evita N+1)
+            joinedload(ScheduleItem.subject),  # Carrega disciplinas antes
         )
         .order_by(ScheduleItem.scheduled_date, ScheduleItem.order)
         .all()
     )
 
-    # ── Presigned URLs em lote via Redis cache ────────────────────────────────
-    s3_keys = {
-        item.lesson.video_s3_key
-        for item in items
-        if item.lesson and item.lesson.video_s3_key
-    }
-    presigned_urls = _get_presigned_urls_cached(s3_keys)
+    # ── Gera presigned URLs em LOTE (não por item) ────────────────────────────
+    s3_keys = set()
+    for item in items:
+        if item.lesson and item.lesson.video_s3_key:
+            s3_keys.add(item.lesson.video_s3_key)
+
+    presigned_urls = {}
+    if s3_keys:
+        try:
+            from app.routes.uploads import generate_video_presigned_url
+
+            for s3_key in s3_keys:
+                presigned_urls[s3_key] = generate_video_presigned_url(s3_key)
+        except Exception:
+            pass  # Se falhar geração de URLs, continua sem elas
 
     # ── Agrupa por data ───────────────────────────────────────────────────────
-    days_map: dict = {}
+    days_map = {}
     for item in items:
         d = item.scheduled_date
         if d not in days_map:
@@ -306,12 +216,12 @@ def get_schedule():
         {"date": d, "items": day_items} for d, day_items in sorted(days_map.items())
     ]
 
-    # ── pending_today em memória (sem query extra) ────────────────────────────
+    # ── pending_today: calculado dos items já em memória (sem query extra) ────
     pending_today = sum(
         1 for i in items if i.scheduled_date == today_str and i.status == "pending"
     )
 
-    # ── total e done: 1 query CASE WHEN ──────────────────────────────────────
+    # ── total e done: 1 query com CASE WHEN (era 2 queries COUNT separadas) ───
     counts_row = (
         db.session.query(
             func.count(ScheduleItem.id).label("total"),
@@ -340,21 +250,16 @@ def get_schedule():
         "last_reorganized_at": schedule.last_reorganized_at,
     }
 
-    response_data = {
-        "schedule": _serialize_schedule(schedule),
-        "days": days_list,
-        "stats": stats,
-    }
-
-    # ── Armazena no cache Redis (TTL 60s) ─────────────────────────────────────
-    try:
-        from app.extensions import redis_client
-
-        redis_client.setex(cache_key, 60, _json.dumps(response_data))
-    except Exception:
-        pass
-
-    return jsonify(response_data), 200
+    return (
+        jsonify(
+            {
+                "schedule": _serialize_schedule(schedule),
+                "days": days_list,
+                "stats": stats,
+            }
+        ),
+        200,
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -368,7 +273,8 @@ def get_schedule():
 def checkin_item(item_id: str):
     """
     Aluno faz check-in num item do cronograma.
-    Invalida cache do schedule e do dashboard após commit.
+    Dispara adaptação assíncrona via Celery.
+    Invalida o cache do dashboard após commit.
     """
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
@@ -379,7 +285,10 @@ def checkin_item(item_id: str):
     except ValidationError as e:
         return jsonify({"error": "validation_error", "details": e.messages}), 400
 
-    item = ScheduleItem.query.filter_by(id=item_id, is_deleted=False).first()
+    item = ScheduleItem.query.filter_by(
+        id=item_id,
+        is_deleted=False,
+    ).first()
     if not item:
         return jsonify({"error": "not_found"}), 404
 
@@ -394,6 +303,7 @@ def checkin_item(item_id: str):
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    # Atualiza ou cria check-in
     checkin = ScheduleCheckIn.query.filter_by(item_id=item_id).first()
     if not checkin:
         checkin = ScheduleCheckIn(
@@ -407,23 +317,31 @@ def checkin_item(item_id: str):
         )
         db.session.add(checkin)
     else:
+        # Reativa se estava soft-deleted (re-checkin após uncheckin)
         checkin.is_deleted = False
         checkin.completed = data["completed"]
         checkin.note = data.get("note", checkin.note)
-        checkin.perceived_difficulty = data.get("perceived_difficulty", checkin.perceived_difficulty)
+        checkin.perceived_difficulty = data.get(
+            "perceived_difficulty", checkin.perceived_difficulty
+        )
         checkin.checked_in_at = now_iso
 
     item.status = "done" if data["completed"] else "skipped"
 
+    # Se for aula, sincroniza LessonProgress
     if item.item_type == "lesson" and item.lesson_id:
         from app.models.course import LessonProgress
 
         progress = LessonProgress.query.filter_by(
-            lesson_id=item.lesson_id, user_id=user_id, tenant_id=tenant.id,
+            lesson_id=item.lesson_id,
+            user_id=user_id,
+            tenant_id=tenant.id,
         ).first()
         if not progress:
             progress = LessonProgress(
-                tenant_id=tenant.id, lesson_id=item.lesson_id, user_id=user_id,
+                tenant_id=tenant.id,
+                lesson_id=item.lesson_id,
+                user_id=user_id,
             )
             db.session.add(progress)
         progress.status = "watched" if data["completed"] else "not_watched"
@@ -433,16 +351,14 @@ def checkin_item(item_id: str):
 
     db.session.commit()
 
-    # ── Invalida caches ───────────────────────────────────────────────────────
-    _invalidate_schedule_cache(tenant.id, user_id, schedule.course_id)
+    # ── Invalida cache do dashboard após commit ───────────────────────────────
     try:
         from app.routes.analytics import _cache_delete, _dashboard_cache_key
 
         _cache_delete(_dashboard_cache_key(user_id, tenant.id))
-        _cache_delete(f"next_action:{tenant.id}:{user_id}")
+        _cache_delete(f"next_action:{tenant.id}:{user_id}")  # ← NOVO
     except Exception:
         pass
-
     # Dispara adaptação assíncrona via Celery
     try:
         from app.tasks.schedule_tasks import adapt_after_checkin
@@ -454,14 +370,16 @@ def checkin_item(item_id: str):
             item_id=item_id,
         )
     except Exception:
-        pass
+        pass  # Não falha o check-in se Celery não estiver disponível
 
     return (
-        jsonify({
-            "message": "Check-in registrado.",
-            "item_status": item.status,
-            "completed": data["completed"],
-        }),
+        jsonify(
+            {
+                "message": "Check-in registrado.",
+                "item_status": item.status,
+                "completed": data["completed"],
+            }
+        ),
         200,
     )
 
@@ -470,7 +388,7 @@ def checkin_item(item_id: str):
 @jwt_required()
 @require_tenant
 def uncheckin_item(item_id: str):
-    """Aluno desfaz check-in — volta para pending."""
+    """Aluno desfaz check-in de um item do cronograma — volta para pending."""
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
@@ -479,22 +397,30 @@ def uncheckin_item(item_id: str):
         return jsonify({"error": "not_found"}), 404
 
     schedule = StudySchedule.query.filter_by(
-        id=item.schedule_id, user_id=user_id, tenant_id=tenant.id, is_deleted=False,
+        id=item.schedule_id,
+        user_id=user_id,
+        tenant_id=tenant.id,
+        is_deleted=False,
     ).first()
     if not schedule:
         return jsonify({"error": "forbidden"}), 403
 
+    # Volta item para pending
     item.status = "pending"
 
+    # Remove check-in se existir
     checkin = ScheduleCheckIn.query.filter_by(item_id=item_id, is_deleted=False).first()
     if checkin:
         checkin.is_deleted = True
 
+    # Se for aula, desmarca o progresso também
     if item.item_type == "lesson" and item.lesson_id:
         from app.models.course import LessonProgress
 
         progress = LessonProgress.query.filter_by(
-            lesson_id=item.lesson_id, user_id=user_id, tenant_id=tenant.id,
+            lesson_id=item.lesson_id,
+            user_id=user_id,
+            tenant_id=tenant.id,
         ).first()
         if progress:
             progress.status = "not_watched"
@@ -503,8 +429,7 @@ def uncheckin_item(item_id: str):
 
     db.session.commit()
 
-    # ── Invalida caches ───────────────────────────────────────────────────────
-    _invalidate_schedule_cache(tenant.id, user_id, schedule.course_id)
+    # Invalida caches
     try:
         from app.routes.analytics import _cache_delete, _dashboard_cache_key
 
@@ -540,14 +465,14 @@ def reorganize_schedule():
     schedule.abandonment_risk_score = risk
     db.session.commit()
 
-    _invalidate_schedule_cache(tenant.id, user_id, course_id)
-
     return (
-        jsonify({
-            "message": "Cronograma reorganizado.",
-            "schedule": _serialize_schedule(schedule),
-            "abandonment_risk": risk,
-        }),
+        jsonify(
+            {
+                "message": "Cronograma reorganizado.",
+                "schedule": _serialize_schedule(schedule),
+                "abandonment_risk": risk,
+            }
+        ),
         200,
     )
 
@@ -565,15 +490,16 @@ def delete_schedule():
         return jsonify({"error": "course_id obrigatório"}), 400
 
     schedule = StudySchedule.query.filter_by(
-        user_id=user_id, course_id=course_id, tenant_id=tenant.id, is_deleted=False,
+        user_id=user_id,
+        course_id=course_id,
+        tenant_id=tenant.id,
+        is_deleted=False,
     ).first()
     if not schedule:
         return jsonify({"error": "not_found"}), 404
 
     schedule.soft_delete()
     db.session.commit()
-
-    _invalidate_schedule_cache(tenant.id, user_id, course_id)
 
     return jsonify({"message": "Cronograma removido."}), 200
 
@@ -597,7 +523,9 @@ def update_availability():
     except ValidationError as e:
         return jsonify({"error": "validation_error", "details": e.messages}), 400
 
-    user = User.query.filter_by(id=user_id, tenant_id=tenant.id, is_deleted=False).first()
+    user = User.query.filter_by(
+        id=user_id, tenant_id=tenant.id, is_deleted=False
+    ).first()
     if not user:
         return jsonify({"error": "not_found"}), 404
 
@@ -608,27 +536,34 @@ def update_availability():
     }
     db.session.commit()
 
+    # Reorganiza todos os cronogramas ativos do aluno
     schedules = StudySchedule.query.filter_by(
-        user_id=user_id, tenant_id=tenant.id, status="active", is_deleted=False,
+        user_id=user_id,
+        tenant_id=tenant.id,
+        status="active",
+        is_deleted=False,
     ).all()
 
     reorganized = 0
     for schedule in schedules:
         try:
             engine = ScheduleEngine(
-                user_id=user_id, tenant_id=tenant.id, course_id=schedule.course_id,
+                user_id=user_id,
+                tenant_id=tenant.id,
+                course_id=schedule.course_id,
             )
             engine.reorganize(schedule)
             reorganized += 1
-            _invalidate_schedule_cache(tenant.id, user_id, schedule.course_id)
         except Exception:
             pass
 
     return (
-        jsonify({
-            "message": f"Disponibilidade atualizada. {reorganized} cronograma(s) reorganizado(s).",
-            "availability": user.study_availability,
-        }),
+        jsonify(
+            {
+                "message": f"Disponibilidade atualizada. {reorganized} cronograma(s) reorganizado(s).",
+                "availability": user.study_availability,
+            }
+        ),
         200,
     )
 
@@ -651,13 +586,14 @@ def _serialize_schedule(schedule: StudySchedule) -> dict:
     }
 
 
-def _serialize_item(item: ScheduleItem, presigned_urls: dict | None = None) -> dict:
+def _serialize_item(item: ScheduleItem, presigned_urls: dict = None) -> dict:
     """
     Serializa um item do cronograma.
 
     Args:
-        item:           ScheduleItem para serializar
-        presigned_urls: Dict pré-calculado {s3_key: url} via _get_presigned_urls_cached
+        item: ScheduleItem para serializar
+        presigned_urls: Dict pré-calculado de {s3_key: presigned_url}.
+                       Se não fornecido, gera URLs sob demanda (lento).
     """
     presigned_urls = presigned_urls or {}
 
@@ -680,10 +616,10 @@ def _serialize_item(item: ScheduleItem, presigned_urls: dict | None = None) -> d
         video_url = None
 
         if lesson.video_s3_key:
-            # URL do cache (gerada em lote antes de serializar)
+            # Tenta usar URL presignada pré-gerada (rápido)
             video_url = presigned_urls.get(lesson.video_s3_key)
+            # Se não existir no dict, gera sob demanda (fallback)
             if not video_url:
-                # Fallback pontual se por algum motivo não estiver no dict
                 try:
                     from app.routes.uploads import generate_video_presigned_url
                     video_url = generate_video_presigned_url(lesson.video_s3_key)
