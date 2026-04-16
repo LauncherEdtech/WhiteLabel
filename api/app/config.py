@@ -1,18 +1,9 @@
 # api/app/config.py
-# Configurações centralizadas da aplicação.
-# SEGURANÇA: Todos os valores sensíveis vêm de variáveis de ambiente, nunca hardcoded.
-#
-# BROKER CELERY:
-#   Produção (ECS): CELERY_BROKER_URL=sqs:// → usa AWS SQS via IAM role
-#   Dev (docker-compose): CELERY_BROKER_URL=redis://... → usa Redis local
-#   A env var tem prioridade. Se não definida, constrói a partir de REDIS_URL.
-
 import os
 from datetime import timedelta
 
 
 class Config:
-    """Configuração base compartilhada por todos os ambientes."""
 
     # ── Banco de Dados ───────────────────────────────────────────────────────
     SQLALCHEMY_DATABASE_URI = os.environ.get("DATABASE_URL")
@@ -42,47 +33,39 @@ class Config:
     JWT_HEADER_TYPE = "Bearer"
 
     # ── Redis ────────────────────────────────────────────────────────────────
-    # Usado para: rate limiting, cache dashboard/insights, activity tracker,
-    # celery result backend. NÃO mais usado como Celery broker em produção.
-    #
-    # FIX: separa a URL limpa (sem query params) da URL com ssl_cert_reqs.
-    # O flask-limiter e alguns clientes não entendem ?ssl_cert_reqs=CERT_NONE
-    # na URL — precisam receber a opção SSL separadamente via storage options.
     REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-    _redis_url_clean = REDIS_URL.split("?")[0]  # remove ?ssl_cert_reqs=CERT_NONE
+    _redis_url_clean = REDIS_URL.split("?")[0]
     _is_rediss = _redis_url_clean.startswith("rediss://")
     _redis_ssl_suffix = "?ssl_cert_reqs=CERT_NONE" if _is_rediss else ""
 
     # ── Celery Broker ────────────────────────────────────────────────────────
-    # Produção: CELERY_BROKER_URL=sqs:// (definido na ECS task definition)
-    # Dev local: CELERY_BROKER_URL=redis://... (definido no docker-compose)
-    # Fallback: constrói a partir de REDIS_URL (compatibilidade)
     CELERY_BROKER_URL = os.environ.get(
         "CELERY_BROKER_URL",
         _redis_url_clean + _redis_ssl_suffix,
     )
 
-    # Result backend sempre no Redis (SQS não suporta result backend)
-    CELERY_RESULT_BACKEND = os.environ.get(
+    # ── Celery Result Backend ────────────────────────────────────────────────
+    # Garante ssl_cert_reqs automaticamente para rediss:// independente da env var
+    _result_backend_raw = os.environ.get(
         "CELERY_RESULT_BACKEND",
         _redis_url_clean + _redis_ssl_suffix,
     )
+    if _result_backend_raw.startswith("rediss://") and "ssl_cert_reqs" not in _result_backend_raw:
+        _result_backend_raw += "?ssl_cert_reqs=CERT_NONE"
+    CELERY_RESULT_BACKEND = _result_backend_raw
 
     CELERY_TASK_SERIALIZER = "json"
     CELERY_RESULT_SERIALIZER = "json"
     CELERY_ACCEPT_CONTENT = ["json"]
 
     # ── Rate Limiting ────────────────────────────────────────────────────────
-    # FIX: flask-limiter não aceita ?ssl_cert_reqs=CERT_NONE na URL.
-    # A URL deve ser limpa (sem query params) e as opções SSL passadas
-    # separadamente via RATELIMIT_STORAGE_OPTIONS.
     RATELIMIT_STORAGE_URI = _redis_url_clean
     RATELIMIT_STORAGE_OPTIONS = (
-        {"ssl_cert_reqs": None}  # equivale a ssl.CERT_NONE para Upstash
+        {"ssl_cert_reqs": None}
         if _is_rediss
         else {}
     )
-    RATELIMIT_DEFAULT = "200 per hour"
+    RATELIMIT_DEFAULT = "1000 per hour"
     RATELIMIT_HEADERS_ENABLED = True
 
     # ── CORS ─────────────────────────────────────────────────────────────────
@@ -105,16 +88,12 @@ class Config:
 
 
 class DevelopmentConfig(Config):
-    """Configuração para desenvolvimento local."""
-
     DEBUG = True
     SQLALCHEMY_ECHO = False
     RATELIMIT_DEFAULT = "10000 per hour"
 
 
 class ProductionConfig(Config):
-    """Configuração para produção na AWS."""
-
     DEBUG = False
     TESTING = False
     PREFERRED_URL_SCHEME = "https"
@@ -124,8 +103,6 @@ class ProductionConfig(Config):
 
 
 class TestingConfig(Config):
-    """Configuração para testes automatizados."""
-
     TESTING = True
     DEBUG = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
