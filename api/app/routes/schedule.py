@@ -1,17 +1,14 @@
 # api/app/routes/schedule.py
 # Rotas do cronograma inteligente e adaptativo.
 #
-# v8.2 — CORREÇÃO CRÍTICA do bug de items zumbis:
-#   - delete_schedule agora soft-deleta TODOS os items do schedule
-#     (antes: deletava só o schedule, deixando items órfãos que
-#     eram "ressuscitados" pelo generate() em chamadas subsequentes)
+# v8.3 — Solução completa do problema:
+#   - delete_schedule soft-deleta TODOS os items do schedule
+#   - generate no engine agora ressuscita schedules deletados em vez de
+#     tentar criar novos (evita violar UNIQUE constraint)
+#   - Migration separada troca UNIQUE por partial unique index
 #
-# v8.1 — Serializer detecta prefixo [LONGA] em priority_reason e
-#        expõe flag is_long_lesson para o frontend exibir badge.
-#
-# OTIMIZAÇÕES (v2):
-#   - get_schedule: 3 queries COUNT separadas → 1 query com CASE WHEN
-#   - checkin_item: invalida cache Redis do dashboard após commit
+# v8.1 — Serializer detecta prefixo [LONGA] em priority_reason e expõe
+#        flag is_long_lesson para o frontend exibir badge.
 
 from datetime import datetime, timezone, date, timedelta
 from flask import Blueprint, request, jsonify
@@ -197,8 +194,6 @@ def get_schedule():
         except Exception:
             pass
 
-    # v8.1: calcula orçamento diário efetivo (usando snapshot do schedule)
-    # para detectar aulas longas mesmo em cronogramas antigos (fallback).
     avail_snap = schedule.availability_snapshot or {}
     snap_hours = avail_snap.get("hours_per_day") or 2
     effective_daily_minutes = int(snap_hours * 60)
@@ -467,9 +462,10 @@ def delete_schedule():
     """
     Remove cronograma do aluno (soft delete).
 
-    v8.2: Também soft-deleta TODOS os items do schedule para evitar
-    que items fiquem "órfãos" e apareçam em cronogramas futuros gerados
-    pelo mesmo aluno (bug de items zumbis).
+    v8.2/8.3: Também soft-deleta TODOS os items do schedule.
+    O generate() subsequente vai RESSUSCITAR este schedule deletado
+    (em vez de tentar criar novo e violar o UNIQUE constraint),
+    garantindo um cronograma limpo.
     """
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
@@ -487,8 +483,6 @@ def delete_schedule():
     if not schedule:
         return jsonify({"error": "not_found"}), 404
 
-    # v8.2: Soft-delete TODOS os items do schedule antes de deletar o schedule
-    # Sem isso, items ficam órfãos e reaparecem se o aluno gerar novo cronograma
     now_iso = datetime.now(timezone.utc).isoformat()
     items_deleted = ScheduleItem.query.filter_by(
         schedule_id=schedule.id,
@@ -588,7 +582,6 @@ def _serialize_schedule(schedule: StudySchedule) -> dict:
         "abandonment_risk": schedule.abandonment_risk_score,
         "ai_notes": schedule.ai_notes,
         "last_reorganized_at": schedule.last_reorganized_at,
-        # v8.1: expõe a disponibilidade para o frontend calcular overflow
         "hours_per_day": snapshot.get("hours_per_day"),
     }
 
@@ -608,21 +601,18 @@ def _serialize_item(
     """
     presigned_urls = presigned_urls or {}
 
-    # v8.1: detecta aula longa via prefixo OU por comparação de minutos
     raw_reason = item.priority_reason or ""
     is_long_lesson = False
     priority_reason = raw_reason
 
     if raw_reason.startswith(FORCE_FIT_PREFIX):
         is_long_lesson = True
-        # remove o prefixo + espaço da mensagem visível
         priority_reason = raw_reason[len(FORCE_FIT_PREFIX):].lstrip()
     elif (
         item.item_type == "lesson"
         and effective_daily_minutes
         and item.estimated_minutes > effective_daily_minutes
     ):
-        # Fallback para cronogramas antigos (pré-v8.1): infere pela duração.
         is_long_lesson = True
 
     data = {
@@ -633,7 +623,7 @@ def _serialize_item(
         "order": item.order,
         "estimated_minutes": item.estimated_minutes,
         "priority_reason": priority_reason,
-        "is_long_lesson": is_long_lesson,  # ← v8.1
+        "is_long_lesson": is_long_lesson,
         "has_checkin": item.checkin is not None,
         "question_filters": item.question_filters,
         "template_item_title": item.template_item_title,

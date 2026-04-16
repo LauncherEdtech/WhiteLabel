@@ -1,23 +1,22 @@
 # api/app/services/schedule_engine.py
-# Motor do cronograma inteligente e adaptativo — v8.2
+# Motor do cronograma inteligente e adaptativo — v8.3
 #
-# v8.2 — CORREÇÃO CRÍTICA do bug de items zumbis no delete+generate:
-#   - generate() agora IGNORA schedules com is_deleted=True
-#     (antes: "ressuscitava" o schedule deletado, mantendo os items antigos)
-#   - Agora um delete seguido de generate sempre cria um cronograma LIMPO
+# v8.3 — Solução definitiva para o bug de UniqueViolation no delete+generate:
+#   - generate() agora tem lógica em 3 camadas:
+#     1. Busca schedule ATIVO → reorganiza
+#     2. Busca schedule DELETADO → ressuscita (reseta + limpa items antigos)
+#     3. Se não achar nada → cria novo
+#   - Isso funciona MESMO sem a migration que troca UNIQUE por partial index
+#     (a migration é a solução arquitetural, essa lógica é defesa em profundidade)
+#
+# v8.2 — CORREÇÃO do bug de items zumbis:
+#   - generate() filtra is_deleted=False (não ressuscitava schedule deletado)
+#   - delete_schedule soft-deleta os items junto com o schedule (no routes/schedule.py)
 #
 # v8.1 — Marca aulas force-fit com prefixo especial no priority_reason
-#        para o frontend exibir badge "Aula longa — dedique tempo extra"
+#        para o frontend exibir badge "Aula longa"
 #
-# v8 — Correção do overflow de itens por dia:
-#   BUG 1: margem de 30% em _add_lesson_with_questions estourava o orçamento
-#   BUG 2: force-fit ativava para QUALQUER primeira aula
-#   BUG 3: _add_spaced_reviews usava effective_minutes * 1.3
-#   BUG 4: inject_subject_reviews ignorava compressão
-#
-# v7 — preenchimento dia-a-dia com questões imediatas
-# v6 — Reescrita do algoritmo de distribuição
-# v5 — Adaptação reativa
+# v8 — Correção do overflow de itens por dia
 
 from datetime import datetime, timezone, timedelta, date
 from collections import defaultdict
@@ -42,7 +41,7 @@ class ScheduleEngine:
     MIN_FREE_FOR_QUESTIONS = 0
     REVIEW_MINUTES = 25
     SIMULADO_INTERVAL_LESSONS = 12
-    MAX_EFFECTIVE_MINUTES = 480  # teto de 8h/dia
+    MAX_EFFECTIVE_MINUTES = 480
 
     WEAK_DISCIPLINE_MULTIPLIER = 2.5
     STRONG_DISCIPLINE_FACTOR = 0.6
@@ -95,24 +94,74 @@ class ScheduleEngine:
         """
         Gera um novo cronograma ou reorganiza um existente.
 
-        v8.2: Só considera schedules ATIVOS (is_deleted=False).
-        Se o aluno deletou o cronograma, geramos um novo LIMPO em vez
-        de ressuscitar o antigo (que mantinha items zumbis do anterior).
+        v8.3 — Lógica em 3 camadas:
+          1. Busca schedule ATIVO (is_deleted=False) → reorganiza
+          2. Busca schedule DELETADO (is_deleted=True) → ressuscita e limpa
+          3. Nada encontrado → cria novo schedule
+
+        Essa lógica resolve o bug onde delete+generate causava UniqueViolation
+        porque o constraint (user_id, course_id) não considerava is_deleted.
         """
-        existing = StudySchedule.query.filter_by(
+        # Camada 1: Já existe schedule ATIVO?
+        active_schedule = StudySchedule.query.filter_by(
             user_id=self.user_id,
             course_id=self.course_id,
             tenant_id=self.tenant_id,
-            is_deleted=False,  # ← v8.2: só schedules ativos
+            is_deleted=False,
         ).first()
 
-        if existing:
-            # Já tem cronograma ativo — reorganiza mantendo histórico
+        if active_schedule:
             if target_date:
-                existing.target_date = target_date
-            return self.reorganize(existing)
+                active_schedule.target_date = target_date
+            return self.reorganize(active_schedule)
 
-        # Não tem cronograma ativo (ou foi deletado) — cria NOVO limpo
+        # Camada 2: Existe schedule DELETADO que podemos ressuscitar?
+        # Isso evita violar o UNIQUE constraint (user_id, course_id) que não
+        # considera is_deleted. Também evita acumular rows lixo no banco.
+        deleted_schedule = StudySchedule.query.filter_by(
+            user_id=self.user_id,
+            course_id=self.course_id,
+            tenant_id=self.tenant_id,
+            is_deleted=True,
+        ).first()
+
+        if deleted_schedule:
+            # RESSUSCITA: limpa os items antigos (por segurança) e reseta o schedule
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            # Limpa TODOS os items do schedule ressuscitado (evita zumbis)
+            ScheduleItem.query.filter_by(
+                schedule_id=deleted_schedule.id,
+            ).update(
+                {
+                    "is_deleted": True,
+                    "deleted_at": now_iso,
+                },
+                synchronize_session=False,
+            )
+
+            # Reseta o schedule para estado "novo"
+            deleted_schedule.is_deleted = False
+            deleted_schedule.deleted_at = None
+            deleted_schedule.status = "active"
+            deleted_schedule.source_type = "ai"
+            deleted_schedule.template_id = None
+            deleted_schedule.target_date = target_date
+            deleted_schedule.availability_snapshot = {
+                "days": self.available_days,
+                "hours_per_day": self.hours_per_day,
+            }
+            deleted_schedule.last_reorganized_at = now_iso
+            deleted_schedule.abandonment_risk_score = 0.0
+            deleted_schedule.ai_notes = None
+
+            db.session.flush()
+            # Usa reorganize que já sabe construir items a partir de hoje
+            self._build_items(deleted_schedule, start_date=date.today())
+            db.session.commit()
+            return deleted_schedule
+
+        # Camada 3: Nada encontrado → cria schedule novo do zero
         schedule = StudySchedule(
             tenant_id=self.tenant_id,
             user_id=self.user_id,
@@ -294,7 +343,6 @@ class ScheduleEngine:
         inserted = 0
         new_items = []
 
-        # v8: respeita o orçamento real do aluno (sem margem)
         budget = min(self.minutes_per_day, self.MAX_EFFECTIVE_MINUTES)
 
         for slot_date in slots:
@@ -494,26 +542,10 @@ class ScheduleEngine:
         return round(min(risk, 1.0), 2)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Construção do cronograma — v8.2
+    # Construção do cronograma — v8.1/v8.2
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_items(self, schedule: StudySchedule, start_date: date):
-        """
-        Distribui aulas nos slots disponíveis.
-
-        ALGORITMO v8.2 — preenchimento dia-a-dia com respeito ao orçamento:
-          1. Round-robin entre disciplinas
-          2. Aula + questões IMEDIATAMENTE depois (APENAS se couberem)
-          3. Force-fit: APENAS quando a aula sozinha excede o orçamento
-             → marca com prefixo [LONGA] para o frontend exibir badge
-          4. Simulado a cada 12 aulas
-
-        Mudanças v8/v8.1/v8.2:
-          - Margem de 30% REMOVIDA. Orçamento do aluno é respeitado.
-          - Force-fit condicional (só aulas mais longas que o dia).
-          - Break imediato quando day_used >= effective_minutes.
-          - Force-fit marca priority_reason com prefixo [LONGA].
-        """
         priority_map = self._calculate_subject_priorities()
         pending_lessons = self._get_pending_lessons()
 
@@ -593,7 +625,6 @@ class ScheduleEngine:
         simulado_days: set = set()
         used_minutes_tracker: Dict[date, int] = defaultdict(int)
 
-        # ── ALGORITMO PRINCIPAL: preenche dia-a-dia ───────────────────────────
         for slot_idx, slot_date in enumerate(available_slots):
             if not any(queues[sid] for sid in subject_ids_ordered):
                 break
@@ -625,14 +656,11 @@ class ScheduleEngine:
                 lesson_dur = max(lesson.duration_minutes or 30, 15)
                 lesson_cost = lesson_dur + self.BREAK_MINUTES
 
-                # v8: FORCE-FIT só quando a aula SOZINHA excede o orçamento.
                 is_force_fit_needed = (
                     day_used == 0 and lesson_cost > effective_minutes
                 )
 
                 if is_force_fit_needed:
-                    # FORCE-FIT: aula maior que o dia → ocupa o dia sozinha
-                    # v8.1: marca com prefixo [LONGA] para frontend exibir badge
                     queues[sid].pop(0)
                     subject = subject_map.get(sid)
                     priority = priority_map.get(sid, 1.0)
@@ -640,7 +668,7 @@ class ScheduleEngine:
                     day_used, day_order = self._add_lesson_with_questions(
                         items_to_add, slot_str, lesson, lesson_dur, sid, subject,
                         priority, day_used, day_order, self.tenant_id, schedule.id,
-                        effective_minutes, is_long_lesson=True  # ← v8.1
+                        effective_minutes, is_long_lesson=True
                     )
 
                     lessons_added += 1
@@ -649,7 +677,6 @@ class ScheduleEngine:
                     if sid not in day_subjects:
                         day_subjects.append(sid)
 
-                    # Dia encerrado — aula force-fit é suficiente
                     break
 
                 elif day_used + lesson_cost <= effective_minutes:
@@ -669,7 +696,6 @@ class ScheduleEngine:
                     if sid not in day_subjects:
                         day_subjects.append(sid)
 
-                    # v8: defensive break
                     if day_used >= effective_minutes:
                         break
 
@@ -684,7 +710,6 @@ class ScheduleEngine:
 
             used_minutes_tracker[slot_date] = day_used
 
-            # ── Simulado a cada N aulas ───────────────────────────────────────
             if (
                 lessons_added > 0
                 and lessons_added % self.SIMULADO_INTERVAL_LESSONS == 0
@@ -707,7 +732,6 @@ class ScheduleEngine:
                         )
                         simulado_days.add(sim_date_str)
 
-        # ── Revisões espaçadas ────────────────────────────────────────────────
         self._add_spaced_reviews(
             schedule,
             available_slots,
@@ -735,10 +759,6 @@ class ScheduleEngine:
             f"Disciplinas priorizadas: {', '.join(weak_names) or 'distribuição equilibrada'}. "
             f"Carga diária: {self.hours_per_day}h."
         )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Helpers internos
-    # ─────────────────────────────────────────────────────────────────────────
 
     def _calculate_questions_minutes(self, lesson_minutes: int) -> int:
         proportional = self.QUESTIONS_MIN_MINUTES + (lesson_minutes * 0.3)
@@ -813,17 +833,6 @@ class ScheduleEngine:
         effective_minutes: int,
         is_long_lesson: bool = False,
     ) -> tuple:
-        """
-        Adiciona uma aula + bloco de questões imediatamente após.
-
-        v8: Sem margem de 30%. Questões só entram se REALMENTE couberem
-        no orçamento.
-
-        v8.1: Se is_long_lesson=True (force-fit), marca priority_reason
-        com prefixo [LONGA] para o frontend exibir badge.
-
-        Returns: (day_used_updated, day_order_updated)
-        """
         lesson_cost = lesson_dur + self.BREAK_MINUTES
 
         base_reason = self._build_priority_reason(subject, priority)
@@ -852,7 +861,6 @@ class ScheduleEngine:
         questions_minutes = self._calculate_questions_minutes(lesson_dur)
         questions_cost = questions_minutes + self.BREAK_MINUTES
 
-        # v8: Questões só entram se CABEREM no orçamento real (sem margem).
         if day_used + questions_cost <= effective_minutes and subject:
             items_to_add.append(
                 ScheduleItem(
@@ -985,7 +993,6 @@ class ScheduleEngine:
                 if reviews_per_day[slot_str] >= 2:
                     continue
 
-                # v8: sem margem de 30%
                 if used_minutes.get(slot, 0) + needed > effective_minutes:
                     continue
 

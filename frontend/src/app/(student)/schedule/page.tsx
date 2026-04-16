@@ -1,8 +1,8 @@
 "use client";
 // frontend/src/app/(student)/schedule/page.tsx
 //
-// v8.1: Badge de aviso para aulas que excedem o orçamento diário
-// (flag item.is_long_lesson retornada pelo backend).
+// v8.2: Badge de aviso para aulas que excedem o orçamento diário
+// Cores adaptativas para dark/light mode usando theme tokens (--warning).
 
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -127,6 +127,10 @@ function ViewToggle({ view, onChange }: { view: ViewMode; onChange: (v: ViewMode
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Item individual (compartilhado entre views)
+//
+// v8.2: Cores de "aula longa" usando theme tokens (warning)
+//   - bg-warning/10 e border-warning/30: sutil no light, visível no dark
+//   - text-warning: contraste garantido em ambos os modos
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
@@ -142,16 +146,16 @@ function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
   const cfg = TYPE_CONFIG[item.item_type] || TYPE_CONFIG.lesson;
   const Icon = cfg.icon;
   const title = resolveTitle(item);
-  const isLongLesson = item.is_long_lesson === true; // v8.1
+  const isLongLesson = item.is_long_lesson === true;
 
   return (
     <div className={cn(
       "flex items-start gap-3 p-3 rounded-xl border transition-all",
       isDone && "bg-success/5 border-success/20 opacity-70",
       isSkipped && "bg-muted/30 border-border opacity-50",
-      !isDoneOrSkipped && "bg-background border-border hover:border-primary/20",
-      // v8.1: destaque sutil para aulas longas pendentes
-      !isDoneOrSkipped && isLongLesson && "border-amber-200 bg-amber-50/40",
+      !isDoneOrSkipped && !isLongLesson && "bg-background border-border hover:border-primary/20",
+      // v8.2: aula longa pendente — usa token warning (funciona light/dark)
+      !isDoneOrSkipped && isLongLesson && "bg-warning/5 border-warning/30",
     )}>
       <button
         onClick={() => {
@@ -192,18 +196,18 @@ function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
               {item.subject.name}
             </span>
           )}
-          {/* v8.1: badge visível para aula longa */}
+          {/* v8.2: badge de aula longa — cores de theme */}
           {isLongLesson && (
-            <span className="text-[10px] font-medium text-amber-700 bg-amber-100 border border-amber-200 rounded px-1.5 py-0 h-4 flex items-center gap-0.5">
+            <span className="text-[10px] font-medium text-warning bg-warning/15 border border-warning/30 rounded px-1.5 py-0 h-4 flex items-center gap-0.5">
               <Hourglass className="h-2.5 w-2.5" />
               Aula longa
             </span>
           )}
         </div>
 
-        {/* v8.1: aviso expandido para aulas longas — só em pendentes */}
+        {/* v8.2: aviso expandido — cores adaptativas */}
         {isLongLesson && !isDoneOrSkipped && (
-          <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1 mt-1.5 flex items-start gap-1.5">
+          <p className="text-xs text-warning bg-warning/10 border border-warning/30 rounded px-2 py-1 mt-1.5 flex items-start gap-1.5">
             <Hourglass className="h-3 w-3 mt-0.5 shrink-0" />
             <span>
               Esta aula é mais longa que sua carga diária. Reserve um tempo extra hoje ou divida em sessões.
@@ -212,7 +216,7 @@ function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
         )}
 
         {item.template_item_notes && (
-          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mt-1.5">
+          <p className="text-xs text-warning bg-warning/10 border border-warning/30 rounded px-2 py-1 mt-1.5">
             📌 {item.template_item_notes}
           </p>
         )}
@@ -344,7 +348,7 @@ function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading }:
                 const isDone = item.status === "done";
                 const isSkipped = item.status === "skipped";
                 const isDoneOrSkipped = isDone || isSkipped;
-                const isLongLesson = item.is_long_lesson === true; // v8.1
+                const isLongLesson = item.is_long_lesson === true;
 
                 return (
                   <div key={item.id}
@@ -352,9 +356,9 @@ function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading }:
                       "flex items-center gap-2 p-2 rounded-lg border text-xs transition-all",
                       isDone && "opacity-50 line-through border-success/20 bg-success/5",
                       isSkipped && "opacity-40 border-border bg-muted/20",
-                      !isDoneOrSkipped && "border-border bg-background hover:border-primary/30",
-                      // v8.1: destaque para aula longa
-                      !isDoneOrSkipped && isLongLesson && "border-amber-200 bg-amber-50/40",
+                      !isDoneOrSkipped && !isLongLesson && "border-border bg-background hover:border-primary/30",
+                      // v8.2: aula longa — theme tokens
+                      !isDoneOrSkipped && isLongLesson && "border-warning/30 bg-warning/5",
                     )}
                   >
                     <button
@@ -386,10 +390,10 @@ function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading }:
                     <div className="flex-1 min-w-0">
                       <p className="truncate font-medium text-foreground flex items-center gap-1">
                         {resolveTitle(item)}
-                        {/* v8.1: ícone compacto de aula longa */}
+                        {/* v8.2: ícone de aula longa — warning color */}
                         {isLongLesson && (
                           <Hourglass
-                            className="h-3 w-3 text-amber-600 shrink-0"
+                            className="h-3 w-3 text-warning shrink-0"
                             aria-label="Aula mais longa que sua carga diária"
                           />
                         )}
@@ -505,7 +509,7 @@ function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading 
             const isSelected = dateStr === selectedDate;
             const hasPending = dayItems.some((i: any) => i.status === "pending");
             const hasDone = dayItems.some((i: any) => i.status === "done");
-            // v8.1: sinaliza visualmente dias com aula longa
+            // v8.2: sinaliza visualmente dias com aula longa
             const hasLongLesson = dayItems.some((i: any) => i.is_long_lesson === true);
 
             const typeDots = [...new Set(dayItems.map((i: any) => i.item_type))].slice(0, 3);
@@ -517,7 +521,8 @@ function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading 
                   "min-h-[60px] p-1.5 border-r border-b border-border last:border-r-0",
                   "flex flex-col items-start gap-1 text-left transition-colors",
                   isSelected && "bg-primary/5",
-                  !isSelected && hasLongLesson && "bg-amber-50/40",
+                  // v8.2: destaque de aula longa com theme tokens
+                  !isSelected && hasLongLesson && "bg-warning/5",
                   !isSelected && !hasLongLesson && "hover:bg-muted/40",
                   idx % 7 === 6 && "border-r-0",
                 )}
@@ -537,9 +542,9 @@ function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading 
                       <div key={type}
                         className={cn("h-1.5 w-1.5 rounded-full", TYPE_CONFIG[type]?.dot || "bg-muted")} />
                     ))}
-                    {/* v8.1: indicador de aula longa no canto do dia */}
+                    {/* v8.2: indicador de aula longa */}
                     {hasLongLesson && (
-                      <Hourglass className="h-2.5 w-2.5 text-amber-600 ml-0.5" />
+                      <Hourglass className="h-2.5 w-2.5 text-warning ml-0.5" />
                     )}
                     {dayItems.length > 3 && (
                       <span className="text-[9px] text-muted-foreground">+{dayItems.length - 3}</span>
@@ -568,9 +573,9 @@ function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading 
             {cfg.label}
           </div>
         ))}
-        {/* v8.1: legenda do ícone de aula longa */}
+        {/* v8.2: legenda do ícone de aula longa */}
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Hourglass className="h-2.5 w-2.5 text-amber-600" />
+          <Hourglass className="h-2.5 w-2.5 text-warning" />
           Aula longa
         </div>
       </div>
