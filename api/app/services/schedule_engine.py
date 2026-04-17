@@ -94,6 +94,10 @@ class ScheduleEngine:
         self.hours_per_day = avail.get("hours_per_day", 2)
         self.minutes_per_day = int(self.hours_per_day * 60)
 
+        # v9.2: armazena o coverage_gap calculado no último _build_items()
+        # pra que o caller (route /generate) possa retornar pro frontend
+        self.last_coverage_gap: Optional[Dict] = None
+
     # ─────────────────────────────────────────────────────────────────────────
     # API pública
     # ─────────────────────────────────────────────────────────────────────────
@@ -484,17 +488,24 @@ class ScheduleEngine:
         total_lessons: int,
         available_days: int,
         effective_minutes: int,
+        avg_lesson_minutes: float = 40.0,
     ) -> int:
         """
         Calcula quantos dias serão usados APENAS para aulas (resto é revisão).
 
-        Estratégias:
+        v9.1 — comportamento atualizado pra "fill_budget":
           - concentrated: usa só os dias necessários (ritmo 2h/dia cheio)
           - stretched:    distribui por TODOS os dias disponíveis
-          - hybrid:       60% dos dias pra aulas, 40% pra revisão final
+          - hybrid:       usa os dias necessários, e o RESTO (até a prova
+                          ou MAX_SCHEDULE_DAYS) vira reta final de revisão.
+                          Antes era "60% aulas / 40% revisão"; agora é
+                          "concentra aulas e o resto é revisão".
+
+        v9.1: aceita avg_lesson_minutes como parâmetro (calculado das aulas reais)
+        em vez de estimar com 40 min fixos. Isso melhora a precisão pra concursos
+        com aulas curtas (10-15 min) ou longas (60+ min).
         """
-        # Estima custo médio por aula (aula + pausa + questões)
-        avg_lesson_minutes = 40
+        # Custo médio por aula (aula + pausa + questões + pausa)
         cost_per_lesson = avg_lesson_minutes + self.BREAK_MINUTES + 15 + self.BREAK_MINUTES
         lessons_per_day_max = max(1, effective_minutes // cost_per_lesson)
 
@@ -508,10 +519,14 @@ class ScheduleEngine:
             # Usa TODOS os dias disponíveis (ritmo mais leve)
             return available_days
 
-        # hybrid (padrão): usa 60% do tempo, mas nunca menos que o mínimo necessário
-        target_window = int(available_days * self.HYBRID_LESSONS_FRACTION)
-        # Respeita o mínimo: se precisa de mais do que 60% pra caber, usa o mínimo necessário
-        return max(days_needed_concentrated, target_window) if target_window > 0 else days_needed_concentrated
+        # hybrid (padrão): aulas concentradas, resto vira reta final de revisão
+        # Se cabem em 60% do tempo ou menos → usa só o necessário
+        # Se precisam de mais → estende, mas sempre reserva alguma reta final
+        target_window = min(days_needed_concentrated, available_days)
+
+        # Garante mínimo de 5% de reta final (ou pelo menos 7 dias)
+        max_lessons_window = available_days - max(7, int(available_days * 0.05))
+        return min(target_window, max(max_lessons_window, days_needed_concentrated))
 
     def _build_items(self, schedule: StudySchedule, start_date: date):
         priority_map = self._calculate_subject_priorities()
@@ -537,23 +552,74 @@ class ScheduleEngine:
         if not all_slots:
             return
 
-        # Compressão: só aplica se TEM target_date e a janela é muito apertada
-        compression = self._calculate_compression_factor(
-            schedule.target_date, len(pending_lessons)
-        )
-        effective_minutes = min(
-            int(self.minutes_per_day * compression),
-            self.MAX_EFFECTIVE_MINUTES,
-        )
+        # v9.2 — RESPEITAR LIMITE DO USUÁRIO:
+        # Antes: comprimia silenciosamente até 3.0x, estourando 2h→6h sem avisar.
+        # Agora: usa effective_minutes = minutes_per_day (sem compressão automática).
+        # Se as aulas não cabem na janela, calcula um "coverage_gap" e expõe pro
+        # frontend mostrar aviso com opções (aumentar carga / adiar prova / etc.).
+        effective_minutes = min(self.minutes_per_day, self.MAX_EFFECTIVE_MINUTES)
 
         # Janela de aulas: onde aulas vão entrar (resto é pra revisão)
+        # v9.1: calcula a média real das aulas (em vez de chutar 40 min)
+        # — melhora precisão pra cursos com aulas curtas (15min) ou longas (60+min)
+        lesson_durations = [max(l.duration_minutes or 30, 15) for l in pending_lessons]
+        avg_lesson_real = sum(lesson_durations) / max(1, len(lesson_durations))
+
+        # v9.2 — Calcula CAPACIDADE vs DEMANDA pra detectar gap
+        cost_per_lesson_real = avg_lesson_real + self.BREAK_MINUTES + 15 + self.BREAK_MINUTES
+        lessons_per_day_capacity = max(1, effective_minutes // cost_per_lesson_real)
+        max_lessons_in_window = int(len(all_slots) * lessons_per_day_capacity)
+
+        # Se não cabe tudo, calcula sugestões
+        coverage_gap = None
+        if max_lessons_in_window < len(pending_lessons) and schedule.target_date:
+            # Quantas horas/dia precisariam pra fazer TUDO?
+            total_minutes_needed = len(pending_lessons) * cost_per_lesson_real
+            hours_needed_per_day = total_minutes_needed / (len(all_slots) * 60)
+            # Arredonda pra cima (.5 mais próximo)
+            suggested_hours = round(hours_needed_per_day * 2) / 2  # múltiplos de 0.5
+            if suggested_hours <= self.hours_per_day:
+                suggested_hours = self.hours_per_day + 0.5
+            # Cap em 8h/dia (limite saudável)
+            suggested_hours = min(suggested_hours, 8.0)
+
+            coverage_gap = {
+                "will_cover_lessons": max_lessons_in_window,
+                "total_lessons": len(pending_lessons),
+                "coverage_percent": round((max_lessons_in_window / len(pending_lessons)) * 100, 1),
+                "suggested_hours_per_day": suggested_hours,
+                "current_hours_per_day": self.hours_per_day,
+                "days_until_exam": len(all_slots),
+            }
+
+        # Armazena pro route ler depois e expor pro frontend
+        self.last_coverage_gap = coverage_gap
+
+        # Persiste no availability_snapshot pra que GET /schedule retorne
+        # o aviso mesmo quando o aluno recarrega a página
+        snapshot = dict(schedule.availability_snapshot or {})
+        snapshot["days"] = self.available_days
+        snapshot["hours_per_day"] = self.hours_per_day
+        if coverage_gap:
+            snapshot["coverage_gap"] = coverage_gap
+        else:
+            snapshot.pop("coverage_gap", None)  # remove se não tem mais gap
+        schedule.availability_snapshot = snapshot
+
         lessons_window_days = self._calculate_lessons_window(
             total_lessons=len(pending_lessons),
             available_days=len(all_slots),
             effective_minutes=effective_minutes,
+            avg_lesson_minutes=avg_lesson_real,
         )
         lesson_slots = all_slots[:lessons_window_days]
         review_only_slots = all_slots[lessons_window_days:]  # pode ficar vazio
+
+        # v9.1: Sem target_date, limita reta final a 90 dias úteis (~4 meses).
+        # Reta final infinita não faz sentido — o aluno revisa por uns meses
+        # e depois deveria gerar um novo cronograma se quisesse continuar.
+        if not schedule.target_date and len(review_only_slots) > 90:
+            review_only_slots = review_only_slots[:90]
 
         # ── Pre-load em bulk ─────────────────────────────────────────────────
         module_ids = {l.module_id for l in pending_lessons if l.module_id}
@@ -592,11 +658,13 @@ class ScheduleEngine:
         simulado_days: set = set()
         used_minutes_tracker: Dict[date, int] = defaultdict(int)
 
-        # ── Distribuição: calcula alvo de aulas por dia pra espalhar uniforme ──
-        total_pending = len(pending_lessons)
-        target_lessons_per_day = total_pending / max(1, lessons_window_days)
+        # v9.1 — ESTRATÉGIA "fill_budget":
+        # Em vez de limitar aulas por dia (deixava dias vazios quando aulas
+        # eram curtas), agora enchemos cada dia até atingir o orçamento de
+        # tempo (ex: 2h = 120 min). Cronograma fica mais denso mas termina
+        # antes — comportamento esperado pra concurseiros intensivos.
 
-        # ── ALGORITMO: distribui uniformemente dentro da lessons_window ───────
+        # ── ALGORITMO: enche cada dia até o orçamento ──────────────────────
         for slot_idx, slot_date in enumerate(lesson_slots):
             if not any(queues[sid] for sid in subject_ids_ordered):
                 break
@@ -606,20 +674,12 @@ class ScheduleEngine:
             day_order = 0
             day_subjects: List[str] = []
 
-            # ✨ NOVO: alvo de aulas proporcional (permite "0.8 aula/dia" → alternância)
-            # Se target=1.4, uns dias tem 1 aula e outros 2 (ritmo natural)
-            expected_by_now = (slot_idx + 1) * target_lessons_per_day
-            max_today = max(1, math.ceil(expected_by_now - lessons_added))
-
             active_subjects = [sid for sid in subject_ids_ordered if queues[sid]]
             rotation_pos = 0
             consecutive_skips = 0
-            lessons_today = 0
 
             while active_subjects:
-                # Limite por dia: não passa do alvo calculado (a menos que todos já estourem)
-                if lessons_today >= max_today:
-                    break
+                # v9.1: enche até o orçamento (sem limite max_today)
 
                 if rotation_pos >= len(active_subjects):
                     rotation_pos = 0
@@ -650,7 +710,6 @@ class ScheduleEngine:
                         effective_minutes, is_long_lesson=True
                     )
                     lessons_added += 1
-                    lessons_today += 1
                     consecutive_skips = 0
                     if sid not in day_subjects:
                         day_subjects.append(sid)
@@ -667,7 +726,6 @@ class ScheduleEngine:
                         effective_minutes, is_long_lesson=False
                     )
                     lessons_added += 1
-                    lessons_today += 1
                     consecutive_skips = 0
                     if sid not in day_subjects:
                         day_subjects.append(sid)
@@ -733,14 +791,30 @@ class ScheduleEngine:
             subject_map[sid].name for sid in subject_ids_ordered[:3]
             if sid in subject_map and priority_map.get(sid, 1.0) >= 1.5
         ]
-        compression_info = f" Compressão {compression:.1f}x por data de prova." if compression > 1.0 else ""
+
+        # v9.2: aviso de cobertura insuficiente substitui a "Compressão Xx" antiga
+        coverage_warning = ""
+        if coverage_gap:
+            coverage_warning = (
+                f" ⚠️ Atenção: com {coverage_gap['current_hours_per_day']}h/dia, "
+                f"você cobrirá apenas {coverage_gap['will_cover_lessons']} de "
+                f"{coverage_gap['total_lessons']} aulas até a prova "
+                f"({coverage_gap['coverage_percent']}%). "
+                f"Para cobrir tudo, considere {coverage_gap['suggested_hours_per_day']}h/dia."
+            )
 
         # ── Janela de distribuição: sempre mostra em dias úteis + período corrido ──
-        # Calcula quantas semanas/meses a janela representa (dias corridos)
-        if lesson_slots:
+        # v9.1: calcula dias REAIS usados (não a janela teórica), pois agora
+        # enchemos os dias até o orçamento e o cronograma pode terminar antes.
+        if lesson_slots and lessons_added > 0:
+            # Conta quantos dias da janela realmente receberam aulas
+            actual_days_used = len(used_minutes_tracker)
+
             first_lesson_day = lesson_slots[0]
-            last_lesson_day = lesson_slots[min(lessons_window_days - 1, len(lesson_slots) - 1)]
-            calendar_days_window = (last_lesson_day - first_lesson_day).days + 1
+            # Último dia com aula = início + actual_days_used dias úteis
+            # (aproximação: usa o último slot do tracker)
+            last_used_date = max(used_minutes_tracker.keys()) if used_minutes_tracker else first_lesson_day
+            calendar_days_window = (last_used_date - first_lesson_day).days + 1
             months_approx = calendar_days_window / 30.0
 
             # Formata o período de forma humana
@@ -752,9 +826,11 @@ class ScheduleEngine:
                 years_approx = months_approx / 12.0
                 period_str = f"~{years_approx:.1f} anos"
 
+            actual_avg = lessons_added / max(1, actual_days_used)
+
             window_info = (
-                f" Aulas distribuídas em {lessons_window_days} dias úteis "
-                f"({period_str}, ~{target_lessons_per_day:.1f} aulas/dia em média)."
+                f" Aulas distribuídas em {actual_days_used} dias úteis "
+                f"({period_str}, ~{actual_avg:.1f} aulas/dia em média)."
             )
         else:
             window_info = ""
@@ -768,7 +844,7 @@ class ScheduleEngine:
             )
 
         schedule.ai_notes = (
-            f"Cronograma gerado com {lessons_added} aulas.{compression_info}{window_info}{review_info} "
+            f"Cronograma gerado com {lessons_added} aulas.{coverage_warning}{window_info}{review_info} "
             f"Disciplinas priorizadas: {', '.join(weak_names) or 'distribuição equilibrada'}. "
             f"Carga diária: {self.hours_per_day}h."
         )

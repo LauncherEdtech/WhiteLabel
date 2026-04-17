@@ -613,6 +613,133 @@ function ScheduleCalendarView({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// v9.2: Banner de aviso quando carga horária não cobre todas as aulas
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface CoverageGap {
+  will_cover_lessons: number;
+  total_lessons: number;
+  coverage_percent: number;
+  suggested_hours_per_day: number;
+  current_hours_per_day: number;
+  days_until_exam: number;
+}
+
+function CoverageWarningBanner({
+  coverageGap,
+  courseId,
+  currentDays,
+  onAdjusted,
+}: {
+  coverageGap: CoverageGap;
+  courseId: string;
+  currentDays: number[];
+  onAdjusted: () => void;
+}) {
+  const toast = useToast();
+  const [dismissed, setDismissed] = useState(false);
+
+  const adjustHoursMutation = useMutation({
+    mutationFn: async (newHours: number) => {
+      // 1. Atualiza availability preservando os dias atuais
+      await scheduleApi.updateAvailability({
+        days: currentDays,
+        hours_per_day: newHours,
+      });
+      // 2. Reorganiza pra recalcular tudo com a nova carga
+      await apiClient.post("/schedule/reorganize", { course_id: courseId });
+    },
+    onSuccess: (_, newHours) => {
+      toast.success(
+        "Carga horária ajustada!",
+        `Cronograma reorganizado para ${newHours}h/dia.`,
+      );
+      onAdjusted();
+    },
+    onError: () => toast.error("Erro ao ajustar carga horária"),
+  });
+
+  if (dismissed) return null;
+
+  const {
+    will_cover_lessons,
+    total_lessons,
+    coverage_percent,
+    suggested_hours_per_day,
+    current_hours_per_day,
+  } = coverageGap;
+
+  const lessonsNotCovered = total_lessons - will_cover_lessons;
+
+  return (
+    <div className="rounded-xl border border-warning/30 bg-warning/5 overflow-hidden">
+      <div className="p-4 space-y-3">
+        <div className="flex items-start gap-3">
+          <div className="h-9 w-9 rounded-lg bg-warning/15 flex items-center justify-center shrink-0">
+            <AlertTriangle className="h-5 w-5 text-warning" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-foreground">
+              Sua carga horária não cobre todo o conteúdo até a prova
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Com <strong>{current_hours_per_day}h/dia</strong>, você fará{" "}
+              <strong className="text-warning">{will_cover_lessons} de {total_lessons} aulas</strong>{" "}
+              ({coverage_percent}%). Faltarão{" "}
+              <strong>{lessonsNotCovered} aulas</strong> para concluir o edital antes da prova.
+            </p>
+          </div>
+          <button
+            onClick={() => setDismissed(true)}
+            className="text-muted-foreground hover:text-foreground transition-colors text-xs shrink-0"
+            title="Dispensar aviso"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap pt-1">
+          <Button
+            size="sm"
+            onClick={() => adjustHoursMutation.mutate(suggested_hours_per_day)}
+            disabled={adjustHoursMutation.isPending}
+            className="bg-warning text-warning-foreground hover:bg-warning/90"
+          >
+            <Clock className="h-3.5 w-3.5" />
+            {adjustHoursMutation.isPending
+              ? "Ajustando..."
+              : `Aumentar para ${suggested_hours_per_day}h/dia`}
+          </Button>
+
+          {/* Sugestão alternativa: dobrar carga atual se não chegar à recomendada */}
+          {current_hours_per_day * 2 < suggested_hours_per_day && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => adjustHoursMutation.mutate(current_hours_per_day * 2)}
+              disabled={adjustHoursMutation.isPending}
+            >
+              <Clock className="h-3.5 w-3.5" />
+              Tentar {current_hours_per_day * 2}h/dia
+            </Button>
+          )}
+
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setDismissed(true)}
+            disabled={adjustHoursMutation.isPending}
+            className="text-muted-foreground"
+          >
+            Manter {current_hours_per_day}h/dia
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Componente principal: ScheduleView
 //
 // v9 FIX: levanta state do mês do calendário pra cá, permitindo
@@ -763,6 +890,18 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
             As <strong className="text-foreground">datas</strong> foram ajustadas para os seus dias de estudo.
           </p>
         </div>
+      )}
+
+      {/* v9.2: Aviso quando 2h/dia não cobrem todas as aulas até a prova */}
+      {data?.coverage_gap && !isProducerTemplate && (
+        <CoverageWarningBanner
+          coverageGap={data.coverage_gap}
+          courseId={courseId}
+          currentDays={data.schedule?.days || [0, 1, 2, 3, 4]}
+          onAdjusted={() => {
+            queryClient.invalidateQueries({ queryKey: ["schedule", courseId] });
+          }}
+        />
       )}
 
       {stats && (

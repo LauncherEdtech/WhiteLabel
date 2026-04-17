@@ -123,16 +123,17 @@ def generate_schedule():
     except ValueError as e:
         return jsonify({"error": "engine_error", "message": str(e)}), 400
 
-    return (
-        jsonify(
-            {
-                "message": "Cronograma gerado com sucesso.",
-                "schedule": _serialize_schedule(schedule),
-                "abandonment_risk": risk,
-            }
-        ),
-        201,
-    )
+    response_data = {
+        "message": "Cronograma gerado com sucesso.",
+        "schedule": _serialize_schedule(schedule),
+        "abandonment_risk": risk,
+    }
+
+    # v9.2: expõe coverage_gap se as aulas não couberem na janela até a prova
+    if engine.last_coverage_gap:
+        response_data["coverage_gap"] = engine.last_coverage_gap
+
+    return jsonify(response_data), 201
 
 
 @schedule_bp.route("/", methods=["GET"])
@@ -243,16 +244,19 @@ def get_schedule():
         "last_reorganized_at": schedule.last_reorganized_at,
     }
 
-    return (
-        jsonify(
-            {
-                "schedule": _serialize_schedule(schedule),
-                "days": days_list,
-                "stats": stats,
-            }
-        ),
-        200,
-    )
+    # v9.2: lê coverage_gap do availability_snapshot (persistido pelo engine)
+    snapshot = schedule.availability_snapshot or {}
+    coverage_gap = snapshot.get("coverage_gap")
+
+    response_data = {
+        "schedule": _serialize_schedule(schedule),
+        "days": days_list,
+        "stats": stats,
+    }
+    if coverage_gap:
+        response_data["coverage_gap"] = coverage_gap
+
+    return jsonify(response_data), 200
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -583,6 +587,7 @@ def _serialize_schedule(schedule: StudySchedule) -> dict:
         "ai_notes": schedule.ai_notes,
         "last_reorganized_at": schedule.last_reorganized_at,
         "hours_per_day": snapshot.get("hours_per_day"),
+        "days": snapshot.get("days"),
     }
 
 
