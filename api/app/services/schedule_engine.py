@@ -1,13 +1,20 @@
 # api/app/services/schedule_engine.py
-# Motor do cronograma inteligente e adaptativo — v11
+# Motor do cronograma inteligente e adaptativo — v12
 #
-# v11 — PAUSA CONFIGURÁVEL PELO ALUNO:
-#   ANTES: BREAK_MINUTES = 10 fixo, sem opção de escolha — causava confusão
-#          pois o aluno via 87 min de atividades em um dia de 120 min.
-#   AGORA: break_minutes lido de study_availability["break_minutes"] (0–15 min).
-#          Padrão = 0 (sem pausa). O aluno define no wizard de criação.
-#          O valor é salvo em availability_snapshot e retornado pela API.
+# v12 — FIX DE JANELA DE AULAS (aulas não agendadas):
+#   PROBLEMA: com break_minutes=0, a fórmula anterior estimava lessons/dia
+#     usando apenas `budget / avg_lesson`, ignorando que a primeira aula do
+#     dia também consome questões (~19 min). Resultado: estimava 4 aulas/dia
+#     mas o engine real fazia 2–3 → janela de 155 dias para 617 aulas, mas
+#     só 472 eram agendadas (os demais ficavam fora da lesson_window).
+#   FIX: fórmula realista:
+#     primeira_aula = avg + break + avg_questions + break
+#     extras = floor(restante / (avg + break))
+#     lessons_per_day = 1 + extras
+#   Também adiciona padding para aulas oversized (force-fit ocupa dia inteiro).
+#   O mesmo fix foi aplicado ao cálculo de coverage_gap para consistência.
 #
+# v11 — Pausa configurável pelo aluno (0–15 min) (preservado)
 # v10 — Distribuição híbrida + _schedule_single_day extraído (preservado)
 # v9  — Distribuição híbrida 60/40 (preservado)
 # v8.3 — Solução UniqueViolation delete+generate (preservado)
@@ -474,12 +481,49 @@ class ScheduleEngine:
         available_days: int,
         effective_minutes: int,
         avg_lesson_minutes: float = 40.0,
+        lesson_durations: Optional[List[int]] = None,
     ) -> int:
-        # v11: custo por aula inclui break_minutes do aluno (pode ser 0)
-        cost_per_lesson = avg_lesson_minutes + self.break_minutes
-        lessons_per_day_max = max(1, int(effective_minutes / cost_per_lesson))
+        """
+        Calcula quantos dias serão usados para aulas.
+
+        v12 FIX — fórmula realista de aulas/dia:
+          A versão anterior usava apenas `avg_lesson / budget`, ignorando que
+          a primeira aula do dia também consome um bloco de questões. Isso
+          causava janelas 2x menores que o necessário (ex: estimava 4 aulas/dia
+          mas a realidade era 2–3 aulas/dia), deixando 100+ aulas sem slot.
+
+          Fórmula correta:
+            primeira aula = avg_lesson + break + avg_questions + break
+            aulas extras   = floor(restante / (avg_lesson + break))
+            lessons_per_day = 1 + aulas_extras
+
+          Também adiciona padding para aulas oversized (force-fit): cada aula
+          maior que o budget ocupa um dia inteiro mas rende apenas 1 aula,
+          "desperdiçando" (lessons_per_day - 1) slots extras.
+        """
+        avg_questions = self._calculate_questions_minutes(int(avg_lesson_minutes))
+
+        # Custo da primeira aula do dia (aula + questões + pausas)
+        first_cost = (avg_lesson_minutes + self.break_minutes
+                      + avg_questions + self.break_minutes)
+
+        if first_cost >= effective_minutes:
+            # Só cabe 1 aula por dia
+            lessons_per_day_max = 1
+        else:
+            remaining_after_first = effective_minutes - first_cost
+            cost_extra = avg_lesson_minutes + self.break_minutes
+            extra = int(remaining_after_first / cost_extra) if cost_extra > 0 else 0
+            lessons_per_day_max = max(1, 1 + extra)
 
         days_needed_concentrated = math.ceil(total_lessons / lessons_per_day_max)
+
+        # Padding para aulas oversized: force-fit ocupa o dia inteiro (1 aula),
+        # mas o estimador contaria lessons_per_day_max aulas naquele dia.
+        if lesson_durations and lessons_per_day_max > 1:
+            oversized = sum(1 for d in lesson_durations if d > effective_minutes)
+            if oversized > 0:
+                days_needed_concentrated += oversized * (lessons_per_day_max - 1)
 
         if self.DISTRIBUTION_STRATEGY == "concentrated":
             return min(days_needed_concentrated, available_days)
@@ -522,9 +566,17 @@ class ScheduleEngine:
         lesson_durations = [max(l.duration_minutes or 30, 15) for l in pending_lessons]
         avg_lesson_real = sum(lesson_durations) / max(1, len(lesson_durations))
 
-        # v11: coverage gap usa break_minutes do aluno
-        cost_per_lesson_real = avg_lesson_real + self.break_minutes
-        lessons_per_day_capacity = max(1, int(effective_minutes / cost_per_lesson_real)) if cost_per_lesson_real > 0 else len(pending_lessons)
+        # v12: coverage gap usa a mesma fórmula realista de _calculate_lessons_window
+        avg_questions_real = self._calculate_questions_minutes(int(avg_lesson_real))
+        first_cost_real = (avg_lesson_real + self.break_minutes
+                           + avg_questions_real + self.break_minutes)
+        if first_cost_real >= effective_minutes:
+            lessons_per_day_capacity = 1
+        else:
+            remaining_after_first = effective_minutes - first_cost_real
+            cost_extra = avg_lesson_real + self.break_minutes
+            extra = int(remaining_after_first / cost_extra) if cost_extra > 0 else 0
+            lessons_per_day_capacity = max(1, 1 + extra)
         max_lessons_in_window = len(all_slots) * lessons_per_day_capacity
 
         coverage_gap = None
@@ -562,6 +614,7 @@ class ScheduleEngine:
             available_days=len(all_slots),
             effective_minutes=effective_minutes,
             avg_lesson_minutes=avg_lesson_real,
+            lesson_durations=lesson_durations,  # v12: para padding de force-fits
         )
         lesson_slots = all_slots[:lessons_window_days]
         review_only_slots = all_slots[lessons_window_days:]

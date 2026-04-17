@@ -38,6 +38,11 @@ class CreateTenantSchema(Schema):
 
 class UpdateTenantSchema(Schema):
     name = fields.Str(validate=validate.Length(min=2, max=255))
+    # slug agora é editável — mesmo padrão do CreateTenantSchema
+    slug = fields.Str(validate=[
+        validate.Length(min=2, max=100),
+        validate.Regexp(r"^[a-z0-9\-]+$", error="Apenas letras minúsculas, números e hífens.")
+    ])
     plan = fields.Str(validate=validate.OneOf(["basic", "pro", "enterprise"]))
     is_active = fields.Bool()
     custom_domain = fields.Str(allow_none=True)
@@ -77,6 +82,32 @@ def _invalidate_tenant_dashboard_cache(tenant):
         keys = [f"analytics:dashboard:{tenant.id}:{s.id}" for s in students]
         if keys:
             redis_client.delete(*keys)
+    except Exception:
+        pass
+
+
+def _invalidate_tenant_all_cache(tenant):
+    """
+    Remove TODOS os caches associados ao tenant após um rename de slug.
+    Usa SCAN para encontrar keys com padrão tenant_id — seguro para produção.
+    """
+    try:
+        from app.extensions import redis_client
+        # Chaves que usam tenant_id (UUID) — não dependem do slug, mas limpamos por segurança
+        patterns = [
+            f"analytics:*:{tenant.id}:*",
+            f"insights:{tenant.id}:*",
+            f"capsule:{tenant.id}:*",
+            f"rate_limit:*:{tenant.id}:*",
+        ]
+        for pattern in patterns:
+            cursor = 0
+            while True:
+                cursor, keys = redis_client.scan(cursor, match=pattern, count=100)
+                if keys:
+                    redis_client.delete(*keys)
+                if cursor == 0:
+                    break
     except Exception:
         pass
 
@@ -141,6 +172,30 @@ def update_tenant(tenant_id: str):
         data = schema.load(request.get_json(force=True) or {})
     except ValidationError as e:
         return jsonify({"error": "validation_error", "details": e.messages}), 400
+
+    slug_changed = False
+
+    # ── Slug rename ────────────────────────────────────────────────────────────
+    if "slug" in data:
+        new_slug = data["slug"].strip().lower()
+        if new_slug != tenant.slug:
+            # Verifica unicidade — exclui o próprio tenant da comparação
+            conflict = Tenant.query.filter(
+                Tenant.slug == new_slug,
+                Tenant.is_deleted == False,
+                Tenant.id != tenant_id,
+            ).first()
+            if conflict:
+                return jsonify({"error": "slug_taken", "message": "Este slug já está em uso por outro tenant."}), 409
+
+            # Impede rename do tenant da plataforma (platform) — quebraria o admin
+            claims = get_jwt()
+            if tenant.slug == "platform":
+                return jsonify({"error": "forbidden", "message": "O slug do tenant da plataforma não pode ser alterado."}), 403
+
+            tenant.slug = new_slug
+            slug_changed = True
+
     if "name" in data: tenant.name = data["name"].strip()
     if "plan" in data: tenant.plan = data["plan"]
     if "is_active" in data: tenant.is_active = data["is_active"]
@@ -150,8 +205,19 @@ def update_tenant(tenant_id: str):
         current.update(data["features"])
         tenant.features = current
         flag_modified(tenant, "features")
+
     db.session.commit()
-    return jsonify({"message": "Tenant atualizado.", "tenant": _serialize_tenant(tenant, include_admin=True)}), 200
+
+    # Pós-commit: invalida caches se o slug mudou
+    if slug_changed:
+        _invalidate_tenant_all_cache(tenant)
+
+    response_data = {
+        "message": "Tenant atualizado.",
+        "tenant": _serialize_tenant(tenant, include_admin=True),
+        "slug_changed": slug_changed,
+    }
+    return jsonify(response_data), 200
 
 
 @tenants_bp.route("/<string:tenant_id>", methods=["DELETE"])
@@ -301,41 +367,4 @@ def update_settings(tenant_id):
     tenant.settings = current_settings
     flag_modified(tenant, "settings")
     db.session.commit()
-
-    # Invalida cache de dashboard (3 min TTL)
-    _invalidate_tenant_dashboard_cache(tenant)
-
-    # Se mudou o insight_theme, regenera insights de todos os alunos imediatamente
-    if "insight_theme" in data:
-        try:
-            from app.tasks import regenerate_tenant_insights
-            regenerate_tenant_insights.delay(tenant.id)
-        except Exception as e:
-            current_app.logger.warning(f"Não foi possível enfileirar regeneração de insights: {e}")
-
-    return jsonify({"message": "Configurações salvas.", "settings": tenant.settings}), 200
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# NOTIFICAÇÕES
-# ══════════════════════════════════════════════════════════════════════════════
-
-@tenants_bp.route("/<tenant_id>/notify", methods=["POST"])
-@jwt_required()
-@require_tenant
-def notify_students(tenant_id):
-    claims = get_jwt()
-    if claims.get("role") not in ("producer_admin", "producer_staff", "super_admin"):
-        return jsonify({"error": "forbidden"}), 403
-    data = request.get_json() or {}
-    title = data.get("title", "").strip()
-    message = data.get("message", "").strip()
-    if not title or not message:
-        return jsonify({"error": "bad_request", "message": "title e message são obrigatórios."}), 400
-    tenant = g.tenant
-    students = User.query.filter_by(tenant_id=tenant.id, role="student", is_deleted=False).all()
-    from app.tasks import send_broadcast_email
-    for student in students:
-        send_broadcast_email.delay(to_email=student.email, to_name=student.name,
-                                   subject=title, body=message, tenant_name=tenant.name)
-    return jsonify({"message": f"Notificação enviada para {len(students)} aluno(s).", "recipients": len(students)}), 200
+    return jsonify({"message": "Configurações atualizadas.", "settings": tenant.settings}), 200

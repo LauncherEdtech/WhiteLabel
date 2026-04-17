@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils/cn";
 import {
     Building2, Plus, Globe, CheckCircle2, XCircle,
     Pencil, Trash2, User, Settings, ChevronDown, ChevronUp,
-    Shield, Power,
+    Shield, Power, AlertTriangle, ExternalLink,
 } from "lucide-react";
 import { QUERY_KEYS } from "@/lib/constants/queryKeys";
 
@@ -39,6 +39,8 @@ const ALL_FEATURES: { key: string; label: string }[] = [
     { key: "question_bank_concursos", label: "Banco de questões concursos" },
     { key: "video_hosting", label: "Hospedagem de vídeos" },
 ];
+
+const PLATFORM_DOMAIN = "launcheredu.com.br";
 
 // ── Página principal ──────────────────────────────────────────────────────────
 
@@ -311,12 +313,20 @@ function EditTenantModal({ tenant, onClose }: { tenant: Tenant; onClose: () => v
     const [tab, setTab] = useState<"info" | "features" | "admin">("info");
     const [features, setFeatures] = useState<Record<string, boolean>>(tenant.features || {});
 
-    const { register: regInfo, handleSubmit: submitInfo } = useForm({
+    const { register: regInfo, handleSubmit: submitInfo, watch: watchInfo } = useForm({
         defaultValues: {
-            name: tenant.name, plan: tenant.plan,
-            custom_domain: tenant.custom_domain || "", is_active: tenant.is_active,
+            name: tenant.name,
+            slug: tenant.slug,  // slug agora incluso no form
+            plan: tenant.plan,
+            custom_domain: tenant.custom_domain || "",
+            is_active: tenant.is_active,
         },
     });
+
+    // Observa o slug em tempo real para mostrar warning/preview
+    const currentSlug = watchInfo("slug") ?? tenant.slug;
+    const slugChanged = currentSlug.trim() !== tenant.slug;
+    const newUrl = `https://${currentSlug.trim()}.${PLATFORM_DOMAIN}/`;
 
     const { register: regAdmin, handleSubmit: submitAdmin } = useForm({
         defaultValues: {
@@ -326,12 +336,23 @@ function EditTenantModal({ tenant, onClose }: { tenant: Tenant; onClose: () => v
 
     const updateMutation = useMutation({
         mutationFn: (d: any) => apiClient.put(`/tenants/${tenant.id}`, d).then(r => r.data),
-        onSuccess: () => {
+        onSuccess: (data) => {
             queryClient.invalidateQueries({ queryKey: QUERY_KEYS.TENANTS });
-            toast.success("Tenant atualizado!");
+            if (data.slug_changed) {
+                toast.success(`Slug alterado! Nova URL: ${newUrl}`);
+            } else {
+                toast.success("Tenant atualizado!");
+            }
             onClose();
         },
-        onError: () => toast.error("Erro ao atualizar"),
+        onError: (err: any) => {
+            const msg = err?.response?.data?.message;
+            if (msg?.includes("slug")) {
+                toast.error("Slug já em uso por outro tenant.");
+            } else {
+                toast.error("Erro ao atualizar tenant.");
+            }
+        },
     });
 
     const updateAdminMutation = useMutation({
@@ -384,11 +405,82 @@ function EditTenantModal({ tenant, onClose }: { tenant: Tenant; onClose: () => v
 
                 {/* Tab: Dados */}
                 {tab === "info" && (
-                    <form onSubmit={submitInfo(d => updateMutation.mutate(d))} className="space-y-3">
+                    <form onSubmit={submitInfo(d => {
+                        const payload: any = {
+                            name: d.name,
+                            plan: d.plan,
+                            is_active: d.is_active,
+                            custom_domain: d.custom_domain || null,
+                        };
+                        // Só envia slug se ele foi alterado (evita validação desnecessária)
+                        const trimmedSlug = (d.slug ?? "").trim().toLowerCase();
+                        if (trimmedSlug && trimmedSlug !== tenant.slug) {
+                            payload.slug = trimmedSlug;
+                        }
+                        updateMutation.mutate(payload);
+                    })} className="space-y-3">
+
                         <div className="space-y-1">
                             <label className="text-sm font-medium">Nome da empresa</label>
                             <Input {...regInfo("name")} />
                         </div>
+
+                        {/* ── Slug com warning ─────────────────────────────── */}
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium flex items-center gap-1.5">
+                                Slug (URL de acesso)
+                                {tenant.slug === "platform" && (
+                                    <span className="text-xs text-muted-foreground font-normal">(protegido)</span>
+                                )}
+                            </label>
+                            <Input
+                                {...regInfo("slug", {
+                                    pattern: {
+                                        value: /^[a-z0-9\-]+$/,
+                                        message: "Apenas letras minúsculas, números e hífens."
+                                    },
+                                    minLength: { value: 2, message: "Mínimo 2 caracteres." }
+                                })}
+                                placeholder={tenant.slug}
+                                disabled={tenant.slug === "platform"}
+                                className="font-mono text-sm"
+                            />
+
+                            {/* Preview da URL atual */}
+                            {!slugChanged && (
+                                <p className="text-xs text-muted-foreground font-mono flex items-center gap-1 mt-1">
+                                    <Globe className="h-3 w-3" />
+                                    https://{tenant.slug}.{PLATFORM_DOMAIN}/
+                                </p>
+                            )}
+
+                            {/* Warning + preview da nova URL */}
+                            {slugChanged && currentSlug.trim().length >= 2 && (
+                                <div className="mt-2 p-3 rounded-lg bg-amber-50 border border-amber-200 space-y-2">
+                                    <div className="flex items-start gap-2">
+                                        <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                                        <div className="space-y-1">
+                                            <p className="text-xs font-semibold text-amber-800">
+                                                Atenção: mudança de slug
+                                            </p>
+                                            <p className="text-xs text-amber-700">
+                                                A URL de acesso dos alunos e produtores vai mudar. Sessões ativas com o slug antigo serão desconectadas no próximo request.
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div className="space-y-1 pl-6">
+                                        <p className="text-xs text-amber-600 line-through font-mono">
+                                            https://{tenant.slug}.{PLATFORM_DOMAIN}/
+                                        </p>
+                                        <p className="text-xs text-amber-800 font-mono font-semibold flex items-center gap-1">
+                                            <ExternalLink className="h-3 w-3" />
+                                            {newUrl}
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
                         <div className="grid grid-cols-2 gap-3">
                             <div className="space-y-1">
                                 <label className="text-sm font-medium">Plano</label>
@@ -413,7 +505,13 @@ function EditTenantModal({ tenant, onClose }: { tenant: Tenant; onClose: () => v
                         </div>
                         <DialogFooter>
                             <Button type="button" variant="ghost" onClick={onClose}>Cancelar</Button>
-                            <Button type="submit" loading={updateMutation.isPending}>Salvar</Button>
+                            <Button
+                                type="submit"
+                                loading={updateMutation.isPending}
+                                variant={slugChanged ? "destructive" : "default"}
+                            >
+                                {slugChanged ? "Confirmar mudança de URL" : "Salvar"}
+                            </Button>
                         </DialogFooter>
                     </form>
                 )}
