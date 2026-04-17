@@ -9,6 +9,7 @@ from .producer_schedule import ProducerScheduleTemplate, ProducerScheduleTemplat
 from .schedule import StudySchedule, ScheduleItem, ScheduleCheckIn
 from .simulado import Simulado, SimuladoQuestion, SimuladoAttempt, SimuladoAnswer
 from .gamification import LessonRating, StudentBadge
+from .notification import Notification
 
 __all__ = [
     "Tenant",
@@ -32,4 +33,5 @@ __all__ = [
     "SimuladoAnswer",
     "ProducerScheduleTemplate",
     "ProducerScheduleTemplateItem",
+    "Notification",
 ]
