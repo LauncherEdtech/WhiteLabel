@@ -330,6 +330,96 @@ def get_tenant_by_slug(slug: str):
     }}), 200
 
 
+@tenants_bp.route("/<tenant_id>/notify", methods=["POST"])
+@jwt_required()
+@require_tenant
+def notify_students(tenant_id):
+    """
+    Envia uma notificação in-platform para todos os alunos ativos do tenant.
+    Cria um registro Notification por aluno (leitura individual rastreável).
+ 
+    SEGURANÇA:
+    - producer_admin só pode notificar seu próprio tenant (check jwt_tenant_id)
+    - producer_staff herda a restrição do tenant via g.tenant (X-Tenant-Slug)
+    - Usa g.tenant para queries — não confia em tenant_id da URL
+    - Valida tamanho de título e mensagem para evitar payloads absurdos
+    """
+    from app.models.notification import Notification
+ 
+    claims = get_jwt()
+    role = claims.get("role")
+    jwt_tenant_id = claims.get("tenant_id")
+ 
+    # Verifica papel — apenas produtor ou super_admin pode enviar notificações
+    if role not in ("producer_admin", "producer_staff", "super_admin"):
+        return jsonify({"error": "forbidden"}), 403
+ 
+    # SEGURANÇA: producer_admin não pode enviar para um tenant diferente do seu
+    # (igual ao padrão usado em update_branding, update_settings, etc.)
+    if role == "producer_admin" and jwt_tenant_id != tenant_id:
+        return jsonify({"error": "forbidden"}), 403
+ 
+    data = request.get_json() or {}
+    title = data.get("title", "").strip()
+    message = data.get("message", "").strip()
+ 
+    if not title or not message:
+        return jsonify({
+            "error": "bad_request",
+            "message": "title e message são obrigatórios.",
+        }), 400
+ 
+    if len(title) > 255:
+        return jsonify({
+            "error": "bad_request",
+            "message": "Título deve ter no máximo 255 caracteres.",
+        }), 400
+ 
+    if len(message) > 2000:
+        return jsonify({
+            "error": "bad_request",
+            "message": "Mensagem deve ter no máximo 2000 caracteres.",
+        }), 400
+ 
+    # Usa g.tenant resolvido pelo middleware — nunca o tenant_id da URL diretamente
+    tenant = g.tenant
+    sender_id = get_jwt_identity()
+ 
+    students = User.query.filter_by(
+        tenant_id=tenant.id,
+        role="student",
+        is_active=True,
+        is_deleted=False,
+    ).all()
+ 
+    if not students:
+        return jsonify({
+            "message": "Nenhum aluno ativo encontrado.",
+            "recipients": 0,
+        }), 200
+ 
+    # bulk_save_objects: uma única transaction para N alunos — muito mais eficiente
+    # que N inserts individuais com add/commit em loop
+    notifications = [
+        Notification(
+            tenant_id=tenant.id,
+            title=title,
+            message=message,
+            notification_type="broadcast",
+            sender_id=sender_id,
+            recipient_id=student.id,
+        )
+        for student in students
+    ]
+ 
+    db.session.bulk_save_objects(notifications)
+    db.session.commit()
+ 
+    return jsonify({
+        "message": f"Notificação enviada para {len(students)} aluno(s).",
+        "recipients": len(students),
+    }), 200
+    
 # ══════════════════════════════════════════════════════════════════════════════
 # SETTINGS DO TENANT
 # ══════════════════════════════════════════════════════════════════════════════

@@ -25,7 +25,7 @@ const RESERVED_SLUGS = new Set([
   "favicon.ico", "login", "register", "dashboard",
   "producer", "courses", "questions", "simulados", "schedule",
   "analytics", "profile", "settings", "hall-of-fame", "desempenho",
-  "sharing", "study-capsule", "landing"
+  "sharing", "study-capsule", "landing", "notifications",
 ]);
 
 // Headers de segurança adicionados em todas as respostas HTTPS

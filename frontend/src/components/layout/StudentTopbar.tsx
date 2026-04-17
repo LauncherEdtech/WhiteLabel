@@ -1,7 +1,4 @@
 // frontend/src/components/layout/StudentTopbar.tsx
-// Layout de navegação superior para o portal do aluno.
-// Alternativa à sidebar — mais compacto, visual "app moderno".
-
 "use client";
 
 import Link from "next/link";
@@ -9,15 +6,15 @@ import { usePathname } from "next/navigation";
 import {
     LayoutDashboard, BookOpen, HelpCircle,
     ClipboardList, Calendar, BarChart3,
-    GraduationCap, Trophy, LogOut, Menu, X,
+    GraduationCap, Trophy, LogOut, Menu, X, Bell,
 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils/cn";
 import { useTenantStore } from "@/lib/stores/tenantStore";
 import { useLogout } from "@/lib/hooks/useAuth";
 import { useAuthStore } from "@/lib/stores/authStore";
+import { useUnreadCount } from "@/lib/hooks/useNotifications";
 import Image from "next/image";
-
 
 const navItems = [
     { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -37,10 +34,15 @@ export function StudentTopbar() {
     const branding = getBranding();
     const [mobileOpen, setMobileOpen] = useState(false);
 
+    // useUnreadCount já tem enabled: isAuthenticated() — não dispara sem token
+    const { data: unreadData } = useUnreadCount();
+    const unreadCount = unreadData?.unread_count ?? 0;
+
     return (
         <>
             {/* ── Topbar ── */}
             <header className="fixed top-0 left-0 right-0 z-40 h-14 border-b border-border bg-card/95 backdrop-blur-sm flex items-center px-4 gap-4">
+
                 {/* Logo */}
                 <Link href="/dashboard" className="flex items-center gap-2 shrink-0 mr-2">
                     {branding.logo_url ? (
@@ -85,11 +87,32 @@ export function StudentTopbar() {
                     })}
                 </nav>
 
-                {/* Right: user + logout */}
+                {/* Right: sino + nome + logout */}
                 <div className="ml-auto flex items-center gap-2">
+
+                    {/* Sino de notificações */}
+                    <Link
+                        href="/notifications"
+                        className={cn(
+                            "relative flex items-center justify-center h-8 w-8 rounded-md transition-colors",
+                            pathname === "/notifications"
+                                ? "bg-primary/10 text-primary"
+                                : "text-muted-foreground hover:text-foreground hover:bg-accent"
+                        )}
+                        title="Notificações"
+                    >
+                        <Bell className="h-4 w-4" />
+                        {unreadCount > 0 && (
+                            <span className="absolute -top-0.5 -right-0.5 h-4 min-w-[16px] px-0.5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
+                                {unreadCount > 99 ? "99+" : unreadCount}
+                            </span>
+                        )}
+                    </Link>
+
                     <span className="hidden sm:block text-xs text-muted-foreground truncate max-w-[120px]">
                         {user?.name?.split(" ")[0]}
                     </span>
+
                     <button
                         onClick={logout}
                         className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1.5 rounded-md hover:bg-accent"
@@ -97,10 +120,12 @@ export function StudentTopbar() {
                         <LogOut className="h-3.5 w-3.5" />
                         <span className="hidden sm:block">Sair</span>
                     </button>
+
                     {/* Mobile menu toggle */}
                     <button
                         className="md:hidden p-1.5 rounded-md hover:bg-accent"
                         onClick={() => setMobileOpen(v => !v)}
+                        aria-label="Abrir menu"
                     >
                         {mobileOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
                     </button>
@@ -130,11 +155,31 @@ export function StudentTopbar() {
                                 </Link>
                             );
                         })}
+
+                        {/* Notificações no mobile */}
+                        <Link
+                            href="/notifications"
+                            onClick={() => setMobileOpen(false)}
+                            className={cn(
+                                "flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
+                                pathname === "/notifications"
+                                    ? "bg-primary text-primary-foreground"
+                                    : "text-foreground hover:bg-accent"
+                            )}
+                        >
+                            <Bell className="h-4 w-4" />
+                            Notificações
+                            {unreadCount > 0 && (
+                                <span className="ml-auto h-5 min-w-[20px] px-1.5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
+                                    {unreadCount > 99 ? "99+" : unreadCount}
+                                </span>
+                            )}
+                        </Link>
                     </nav>
                 </div>
             )}
 
-            {/* Spacer para o conteúdo não ficar atrás da topbar */}
+            {/* Spacer */}
             <div className="h-14" />
         </>
     );
