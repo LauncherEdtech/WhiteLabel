@@ -6,7 +6,7 @@ import secrets
 import hashlib
 from datetime import datetime, timezone, timedelta
 
-from flask import Blueprint, request, jsonify, g
+from flask import Blueprint, request, jsonify, g, current_app
 from flask_jwt_extended import (
     create_access_token,
     create_refresh_token,
@@ -74,10 +74,8 @@ def _create_tokens(user: User) -> tuple[str, str]:
     - Dados extras (tenant_id, role) ficam em additional_claims
     - Esses claims são assinados junto com o token — não podem ser alterados
     """
-    # Identity: apenas o user_id como string
     identity = user.id
 
-    # Claims adicionais: assinados no token, verificados server-side
     additional_claims = {
         "tenant_id": user.tenant_id,
         "role": user.role.value,
@@ -249,7 +247,6 @@ def refresh():
     user_id = get_jwt_identity()
     claims = get_jwt()
 
-    # Busca usuário para garantir que ainda está ativo
     user = User.query.filter_by(id=user_id, is_deleted=False).first()
     if not user or not user.is_active:
         return jsonify({"error": "user_inactive"}), 401
@@ -302,7 +299,16 @@ def forgot_password():
     user.reset_token_expires_at = expires_at
     db.session.commit()
 
-    # TODO: send_password_reset_email.delay(user.id, raw_token)
+    # Constrói URL apontando para o subdomínio correto do tenant.
+    # ?tenant= serve de fallback para dev/staging onde não há subdomínio.
+    platform_domain = current_app.config.get("PLATFORM_DOMAIN", "launcheredu.com.br")
+    reset_url = (
+        f"https://{tenant.slug}.{platform_domain}"
+        f"/reset-password?token={raw_token}&tenant={tenant.slug}"
+    )
+
+    from app.tasks import send_password_reset_email
+    send_password_reset_email.delay(user.email, user.name, reset_url, tenant.name)
 
     return jsonify(GENERIC_OK), 200
 
@@ -342,6 +348,43 @@ def reset_password():
     db.session.commit()
 
     return jsonify({"message": "Senha redefinida com sucesso."}), 200
+
+
+@auth_bp.route("/change-password", methods=["POST"])
+@jwt_required()
+@require_tenant
+@limiter.limit("5 per minute")
+def change_password():
+    """
+    Altera senha do usuário autenticado.
+    Exige confirmação da senha atual — protege contra sessão roubada.
+    """
+    user_id = get_jwt_identity()
+    user = User.query.filter_by(
+        id=user_id, tenant_id=g.tenant.id, is_deleted=False
+    ).first_or_404()
+
+    data = request.get_json() or {}
+    current_password = data.get("current_password", "")
+    new_password = data.get("new_password", "")
+
+    if not current_password or not new_password:
+        return jsonify({"error": "bad_request", "message": "Campos obrigatórios ausentes."}), 400
+
+    # SEGURANÇA: valida senha atual antes de qualquer alteração
+    if not user.check_password(current_password):
+        return jsonify({"error": "invalid_password", "message": "Senha atual incorreta."}), 400
+
+    if len(new_password) < 8:
+        return jsonify({"error": "bad_request", "message": "A nova senha deve ter pelo menos 8 caracteres."}), 400
+
+    if current_password == new_password:
+        return jsonify({"error": "bad_request", "message": "A nova senha deve ser diferente da atual."}), 400
+
+    user.set_password(new_password)
+    db.session.commit()
+
+    return jsonify({"message": "Senha alterada com sucesso."}), 200
 
 
 @auth_bp.route("/me", methods=["GET"])

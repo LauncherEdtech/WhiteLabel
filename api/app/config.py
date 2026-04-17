@@ -45,7 +45,6 @@ class Config:
     )
 
     # ── Celery Result Backend ────────────────────────────────────────────────
-    # Garante ssl_cert_reqs automaticamente para rediss:// independente da env var
     _result_backend_raw = os.environ.get(
         "CELERY_RESULT_BACKEND",
         _redis_url_clean + _redis_ssl_suffix,
@@ -84,7 +83,12 @@ class Config:
     MAIL_USE_TLS = True
     MAIL_USERNAME = os.environ.get("MAIL_USERNAME", "")
     MAIL_PASSWORD = os.environ.get("MAIL_PASSWORD", "")
-    MAIL_DEFAULT_SENDER = os.environ.get("MAIL_DEFAULT_SENDER", "noreply@platform.com")
+    MAIL_DEFAULT_SENDER = os.environ.get("MAIL_DEFAULT_SENDER", "noreply@launcheredu.com.br")
+
+    # ── Domínio da Plataforma ─────────────────────────────────────────────────
+    # Usado para construir o link de reset de senha enviado por e-mail.
+    # Link: https://{tenant.slug}.{PLATFORM_DOMAIN}/reset-password?token=...&tenant={slug}
+    PLATFORM_DOMAIN = os.environ.get("PLATFORM_DOMAIN", "launcheredu.com.br")
 
 
 class DevelopmentConfig(Config):

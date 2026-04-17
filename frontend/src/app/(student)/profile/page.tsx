@@ -6,6 +6,7 @@ import { useForm } from "react-hook-form";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuthStore } from "@/lib/stores/authStore";
 import { apiClient } from "@/lib/api/client";
+import { authApi } from "@/lib/api/auth";
 import { scheduleApi } from "@/lib/api/schedule";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -14,7 +15,7 @@ import { useToast } from "@/components/ui/toaster";
 import { cn } from "@/lib/utils/cn";
 import {
   User, Clock, Calendar, Bell,
-  Save, Shield,
+  Save, Shield, Lock, Eye, EyeOff,
 } from "lucide-react";
 import { QUERY_KEYS } from "@/lib/constants/queryKeys";
 
@@ -30,6 +31,12 @@ const DAYS = [
 
 const HOURS_OPTIONS = [0.5, 1, 1.5, 2, 3, 4, 5, 6];
 
+type PasswordForm = {
+  current_password: string;
+  new_password: string;
+  confirm_password: string;
+};
+
 export default function ProfilePage() {
   const { user } = useAuthStore();
   const toast = useToast();
@@ -43,11 +50,26 @@ export default function ProfilePage() {
   const [startTime, setStartTime] = useState(avail?.preferred_start_time || "19:00");
   const [savingAvail, setSavingAvail] = useState(false);
 
+  // Visibilidade dos campos de senha
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+
   const { register, handleSubmit, formState: { errors, isDirty } } = useForm({
     defaultValues: {
       name: user?.name || "",
       email: user?.email || "",
     },
+  });
+
+  const {
+    register: registerPwd,
+    handleSubmit: handleSubmitPwd,
+    formState: { errors: errorsPwd },
+    reset: resetPwd,
+    watch: watchPwd,
+  } = useForm<PasswordForm>({
+    defaultValues: { current_password: "", new_password: "", confirm_password: "" },
   });
 
   // Atualiza perfil
@@ -60,6 +82,32 @@ export default function ProfilePage() {
     },
     onError: () => toast.error("Erro ao atualizar perfil"),
   });
+
+  // Troca de senha
+  const changePassword = useMutation({
+    mutationFn: (data: PasswordForm) =>
+      authApi.changePassword(data.current_password, data.new_password),
+    onSuccess: () => {
+      toast.success("Senha alterada!", "Use a nova senha no próximo acesso.");
+      resetPwd();
+    },
+    onError: (err: any) => {
+      const code = err?.response?.data?.error;
+      if (code === "invalid_password") {
+        toast.error("Senha atual incorreta");
+      } else {
+        toast.error("Erro ao alterar senha", err?.response?.data?.message || "Tente novamente.");
+      }
+    },
+  });
+
+  const onSubmitPassword = (data: PasswordForm) => {
+    if (data.new_password !== data.confirm_password) {
+      toast.error("As senhas não coincidem");
+      return;
+    }
+    changePassword.mutate(data);
+  };
 
   const toggleDay = (day: number) => {
     setSelectedDays((prev) =>
@@ -288,12 +336,107 @@ export default function ProfilePage() {
                 <p className="text-xs text-muted-foreground">{sub}</p>
               </div>
               <button
+                type="button"
                 className="h-6 w-11 rounded-full bg-primary transition-colors relative"
               >
                 <div className="h-4 w-4 rounded-full bg-white absolute right-1 top-1 shadow-sm transition-transform" />
               </button>
             </div>
           ))}
+        </CardContent>
+      </Card>
+
+      {/* Segurança — Alterar senha */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Lock className="h-4 w-4 text-primary" />
+            Segurança
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleSubmitPwd(onSubmitPassword)} className="space-y-4">
+            {/* Senha atual */}
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-foreground">Senha atual</label>
+              <div className="relative">
+                <Input
+                  {...registerPwd("current_password", { required: "Informe a senha atual" })}
+                  type={showCurrent ? "text" : "password"}
+                  placeholder="••••••••"
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowCurrent((v) => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {showCurrent ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+              {errorsPwd.current_password && (
+                <p className="text-xs text-destructive">{errorsPwd.current_password.message}</p>
+              )}
+            </div>
+
+            {/* Nova senha */}
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-foreground">Nova senha</label>
+              <div className="relative">
+                <Input
+                  {...registerPwd("new_password", {
+                    required: "Informe a nova senha",
+                    minLength: { value: 8, message: "Mínimo de 8 caracteres" },
+                  })}
+                  type={showNew ? "text" : "password"}
+                  placeholder="Mínimo 8 caracteres"
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowNew((v) => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {showNew ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+              {errorsPwd.new_password && (
+                <p className="text-xs text-destructive">{errorsPwd.new_password.message}</p>
+              )}
+            </div>
+
+            {/* Confirmar nova senha */}
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-foreground">Confirmar nova senha</label>
+              <div className="relative">
+                <Input
+                  {...registerPwd("confirm_password", {
+                    required: "Confirme a nova senha",
+                    validate: (val) =>
+                      val === watchPwd("new_password") || "As senhas não coincidem",
+                  })}
+                  type={showConfirm ? "text" : "password"}
+                  placeholder="Repita a nova senha"
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowConfirm((v) => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {showConfirm ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+              {errorsPwd.confirm_password && (
+                <p className="text-xs text-destructive">{errorsPwd.confirm_password.message}</p>
+              )}
+            </div>
+
+            <Button type="submit" size="sm" loading={changePassword.isPending}>
+              <Lock className="h-4 w-4" />
+              Alterar senha
+            </Button>
+          </form>
         </CardContent>
       </Card>
     </div>

@@ -55,4 +55,16 @@ export const authApi = {
         const res = await apiClient.post("/auth/reset-password", { token, new_password });
         return res.data;
     },
+
+    /**
+     * Troca a senha do usuário autenticado.
+     * Exige a senha atual para confirmar identidade.
+     */
+    changePassword: async (current_password: string, new_password: string) => {
+        const res = await apiClient.post("/auth/change-password", {
+            current_password,
+            new_password,
+        });
+        return res.data;
+    },
 };

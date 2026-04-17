@@ -659,11 +659,13 @@ class ScheduleEngine:
         simulado_days: set = set()
         used_minutes_tracker: Dict[date, int] = defaultdict(int)
 
+        rotation_offset = 0  # v12: persiste entre dias para distribuicao uniforme
+
         for slot_idx, slot_date in enumerate(lesson_slots):
             if not any(queues.get(sid) for sid in subject_ids_ordered):
                 break
 
-            day_items, day_minutes, day_lessons_count = self._schedule_single_day(
+            day_items, day_minutes, day_lessons_count, rotation_offset = self._schedule_single_day(
                 slot_str=slot_date.isoformat(),
                 queues=queues,
                 subject_ids_ordered=subject_ids_ordered,
@@ -672,6 +674,7 @@ class ScheduleEngine:
                 effective_minutes=effective_minutes,
                 tenant_id=self.tenant_id,
                 schedule_id=schedule.id,
+                rotation_offset=rotation_offset,
             )
 
             items_to_add.extend(day_items)
@@ -767,7 +770,7 @@ class ScheduleEngine:
         )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Agendamento de um único dia — v11
+    # Agendamento de um único dia — v12 (rotation_offset global)
     # ─────────────────────────────────────────────────────────────────────────
 
     def _schedule_single_day(
@@ -780,7 +783,8 @@ class ScheduleEngine:
         effective_minutes: int,
         tenant_id: str,
         schedule_id: str,
-    ) -> Tuple[List[ScheduleItem], int, int]:
+        rotation_offset: int = 0,
+    ) -> Tuple[List[ScheduleItem], int, int, int]:
         items: List[ScheduleItem] = []
         day_used = 0
         order = 0
@@ -789,10 +793,10 @@ class ScheduleEngine:
 
         active_subjects = [sid for sid in subject_ids_ordered if queues.get(sid)]
         if not active_subjects:
-            return items, day_used, lessons_count
+            return items, day_used, lessons_count, rotation_offset
 
         # Force-fit: aula maior que o budget inteiro
-        first_sid = active_subjects[0]
+        first_sid = active_subjects[rotation_offset % len(active_subjects)]
         if queues[first_sid]:
             first_lesson = queues[first_sid][0]
             first_dur = max(first_lesson.duration_minutes or 30, 15)
@@ -806,10 +810,11 @@ class ScheduleEngine:
                     effective_minutes, is_long_lesson=True,
                 )
                 lessons_count += 1
-                return items, day_used, lessons_count
+                next_offset = (rotation_offset + 1) % max(1, len(subject_ids_ordered))
+                return items, day_used, lessons_count, next_offset
 
-        # Round-robin normal
-        rotation = 0
+        # Round-robin comecando no offset do dia anterior
+        rotation = rotation_offset % len(active_subjects)
         skips_in_round = 0
 
         while True:
@@ -882,7 +887,8 @@ class ScheduleEngine:
             tenant_id=tenant_id, schedule_id=schedule_id,
         )
 
-        return items, day_used, lessons_count
+        next_offset = (rotation_offset + lessons_count) % max(1, len(subject_ids_ordered))
+        return items, day_used, lessons_count, next_offset
 
     def _find_short_lesson(
         self,
