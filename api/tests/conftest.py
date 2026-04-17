@@ -1,4 +1,6 @@
 # api/tests/conftest.py
+from unittest.mock import patch
+
 import pytest
 from app import create_app
 from app.extensions import db as _db
@@ -27,6 +29,24 @@ def client(app):
 @pytest.fixture(scope="session")
 def db(app):
     return _db
+
+
+@pytest.fixture(autouse=True)
+def mock_celery_email_tasks():
+    """
+    Mocka o dispatch de todas as tasks de e-mail em todos os testes.
+    Evita conexão real ao broker (Redis/SQS) durante o CI.
+    MAIL_SUPPRESS_SEND=True já suprime o Flask-Mail, mas o .delay()
+    ainda tentaria conectar ao broker sem este mock.
+    """
+    with patch("app.tasks.send_password_reset_email.delay") as mock_reset, \
+         patch("app.tasks.send_welcome_email.delay") as mock_welcome, \
+         patch("app.tasks.send_broadcast_email.delay") as mock_broadcast:
+        yield {
+            "reset": mock_reset,
+            "welcome": mock_welcome,
+            "broadcast": mock_broadcast,
+        }
 
 
 def _seed_test_data():
@@ -76,7 +96,7 @@ def _seed_test_data():
     _db.session.add(module)
     _db.session.flush()
 
-    lesson = Lesson(tenant_id=tenant.id, 
+    lesson = Lesson(tenant_id=tenant.id,
         module_id=module.id, title="Introdução ao Direito Penal",
         duration_minutes=45, order=1, is_published=True,
     )
