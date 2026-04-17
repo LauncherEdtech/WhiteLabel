@@ -119,6 +119,11 @@ class TestingConfig(Config):
     RATELIMIT_ENABLED = False
     WTF_CSRF_ENABLED = False
     CELERY_TASK_ALWAYS_EAGER = True
+    CELERY_TASK_EAGER_PROPAGATES = True
+    # Evita conexão real ao Redis durante testes — tasks rodam inline (ALWAYS_EAGER)
+    # e resultados ficam em memória, sem precisar de broker ou result backend externos.
+    CELERY_RESULT_BACKEND = "cache+memory://"
+    CELERY_CACHE_BACKEND = "memory"
     MAIL_SUPPRESS_SEND = True
 
 
