@@ -735,15 +735,40 @@ class ScheduleEngine:
         ]
         compression_info = f" Compressão {compression:.1f}x por data de prova." if compression > 1.0 else ""
 
-        strategy_info = ""
+        # ── Janela de distribuição: sempre mostra em dias úteis + período corrido ──
+        # Calcula quantas semanas/meses a janela representa (dias corridos)
+        if lesson_slots:
+            first_lesson_day = lesson_slots[0]
+            last_lesson_day = lesson_slots[min(lessons_window_days - 1, len(lesson_slots) - 1)]
+            calendar_days_window = (last_lesson_day - first_lesson_day).days + 1
+            months_approx = calendar_days_window / 30.0
+
+            # Formata o período de forma humana
+            if months_approx < 1.5:
+                period_str = f"{calendar_days_window} dias"
+            elif months_approx < 24:
+                period_str = f"~{round(months_approx)} meses"
+            else:
+                years_approx = months_approx / 12.0
+                period_str = f"~{years_approx:.1f} anos"
+
+            window_info = (
+                f" Aulas distribuídas em {lessons_window_days} dias úteis "
+                f"({period_str}, ~{target_lessons_per_day:.1f} aulas/dia em média)."
+            )
+        else:
+            window_info = ""
+
+        # Informação da reta final (só aparece em hybrid com review_only_slots)
+        review_info = ""
         if self.DISTRIBUTION_STRATEGY == "hybrid" and review_only_slots:
-            strategy_info = (
-                f" Aulas distribuídas em ~{lessons_window_days} dias; "
-                f"últimos {len(review_only_slots)} dias reservados para revisão e simulados."
+            review_info = (
+                f" Últimos {len(review_only_slots)} dias úteis reservados "
+                f"para revisão e simulados (reta final)."
             )
 
         schedule.ai_notes = (
-            f"Cronograma gerado com {lessons_added} aulas.{compression_info}{strategy_info} "
+            f"Cronograma gerado com {lessons_added} aulas.{compression_info}{window_info}{review_info} "
             f"Disciplinas priorizadas: {', '.join(weak_names) or 'distribuição equilibrada'}. "
             f"Carga diária: {self.hours_per_day}h."
         )
