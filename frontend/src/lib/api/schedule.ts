@@ -41,6 +41,7 @@ export const scheduleApi = {
         days: number[];
         hours_per_day: number;
         preferred_start_time?: string;
+        break_minutes?: number;
     }) => {
         const res = await apiClient.put("/schedule/availability", payload);
         return res.data;

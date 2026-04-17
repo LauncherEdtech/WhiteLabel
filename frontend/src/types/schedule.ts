@@ -18,6 +18,9 @@ export interface StudySchedule {
     abandonment_risk: number;
     ai_notes: string | null;
     last_reorganized_at: string | null;
+    hours_per_day: number | null;
+    days: number[] | null;
+    break_minutes: number;
 }
 
 // A API retorna days como array de { date, items } — sem is_today nem day_label
@@ -69,6 +72,7 @@ export interface ScheduleStats {
     target_date: string | null;
     ai_notes: string | null;
     last_reorganized_at: string | null;
+    break_minutes: number;
 }
 
 export interface ScheduleResponse {

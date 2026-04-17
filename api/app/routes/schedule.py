@@ -235,7 +235,6 @@ def get_schedule():
 
     total_items = counts_row.total or 0
     done_items = counts_row.done or 0
-
     stats = {
         "completion_rate": (
             round((done_items / total_items * 100), 1) if total_items else 0
@@ -247,10 +246,8 @@ def get_schedule():
         "target_date": schedule.target_date,
         "ai_notes": schedule.ai_notes,
         "last_reorganized_at": schedule.last_reorganized_at,
-        "break_minutes": snapshot.get("break_minutes", 0),  # v11
+        "break_minutes": avail_snap.get("break_minutes", 0),
     }
-
-    # v9.2: lê coverage_gap do availability_snapshot (persistido pelo engine)
     snapshot = schedule.availability_snapshot or {}
     coverage_gap = snapshot.get("coverage_gap")
 
