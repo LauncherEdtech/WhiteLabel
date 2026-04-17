@@ -503,18 +503,15 @@ class ScheduleEngine:
         """
         avg_questions = self._calculate_questions_minutes(int(avg_lesson_minutes))
 
-        # Custo da primeira aula do dia (aula + questões + pausas)
-        first_cost = (avg_lesson_minutes + self.break_minutes
-                      + avg_questions + self.break_minutes)
-
-        if first_cost >= effective_minutes:
-            # Só cabe 1 aula por dia
-            lessons_per_day_max = 1
-        else:
-            remaining_after_first = effective_minutes - first_cost
-            cost_extra = avg_lesson_minutes + self.break_minutes
-            extra = int(remaining_after_first / cost_extra) if cost_extra > 0 else 0
-            lessons_per_day_max = max(1, 1 + extra)
+        # Custo real por aula: duração + pausa + questões + pausa
+        # Tanto a primeira quanto as extras têm questões — usar custo uniforme.
+        # v12 FIX: versão anterior usava cost_extra = avg_lesson + break apenas,
+        # ignorando questões nas aulas extras → superestimava lessons/dia (3 em
+        # vez de 2), gerando janela muito curta e deixando 100+ aulas sem slot.
+        cost_per_lesson_full = (avg_lesson_minutes + self.break_minutes
+                                + avg_questions + self.break_minutes)
+        cost_per_lesson_full = max(cost_per_lesson_full, 1)
+        lessons_per_day_max = max(1, int(effective_minutes / cost_per_lesson_full))
 
         days_needed_concentrated = math.ceil(total_lessons / lessons_per_day_max)
 
@@ -566,17 +563,12 @@ class ScheduleEngine:
         lesson_durations = [max(l.duration_minutes or 30, 15) for l in pending_lessons]
         avg_lesson_real = sum(lesson_durations) / max(1, len(lesson_durations))
 
-        # v12: coverage gap usa a mesma fórmula realista de _calculate_lessons_window
+        # coverage_gap: usa mesma fórmula de _calculate_lessons_window (custo uniforme)
         avg_questions_real = self._calculate_questions_minutes(int(avg_lesson_real))
-        first_cost_real = (avg_lesson_real + self.break_minutes
-                           + avg_questions_real + self.break_minutes)
-        if first_cost_real >= effective_minutes:
-            lessons_per_day_capacity = 1
-        else:
-            remaining_after_first = effective_minutes - first_cost_real
-            cost_extra = avg_lesson_real + self.break_minutes
-            extra = int(remaining_after_first / cost_extra) if cost_extra > 0 else 0
-            lessons_per_day_capacity = max(1, 1 + extra)
+        cost_per_lesson_full_real = (avg_lesson_real + self.break_minutes
+                                     + avg_questions_real + self.break_minutes)
+        cost_per_lesson_full_real = max(cost_per_lesson_full_real, 1)
+        lessons_per_day_capacity = max(1, int(effective_minutes / cost_per_lesson_full_real))
         max_lessons_in_window = len(all_slots) * lessons_per_day_capacity
 
         coverage_gap = None
