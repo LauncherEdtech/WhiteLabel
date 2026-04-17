@@ -1,8 +1,13 @@
 "use client";
 // frontend/src/app/(student)/schedule/page.tsx
 //
-// v8.2: Badge de aviso para aulas que excedem o orçamento diário
-// Cores adaptativas para dark/light mode usando theme tokens (--warning).
+// v9 FIX — CALENDÁRIO DINÂMICO:
+//   Problema: calendário só buscava 42 dias, então meses futuros ficavam vazios
+//   Fix: state do mês visualizado levantado pro ScheduleView; daysToFetch
+//        calculado com base em quão longe no futuro o usuário navegou
+//
+// v8.2 (preservado): Badge de aviso para aulas longas com theme tokens (warning)
+// v9 (preservado): Wizard usa mapa Python weekday() correto (Seg=0)
 
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -30,7 +35,8 @@ import {
 
 type ViewMode = "list" | "blocks" | "calendar";
 const VIEW_STORAGE_KEY = "concurso-schedule-view";
-const DAYS_PT = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+const DAYS_PT = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];  // JS getDay() order
+const DAYS_BACKEND_PT = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];  // Python weekday() order
 const MONTHS_PT = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 
 const TYPE_CONFIG: Record<string, { color: string; dot: string; label: string; icon: any }> = {
@@ -127,10 +133,6 @@ function ViewToggle({ view, onChange }: { view: ViewMode; onChange: (v: ViewMode
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Item individual (compartilhado entre views)
-//
-// v8.2: Cores de "aula longa" usando theme tokens (warning)
-//   - bg-warning/10 e border-warning/30: sutil no light, visível no dark
-//   - text-warning: contraste garantido em ambos os modos
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
@@ -154,7 +156,6 @@ function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
       isDone && "bg-success/5 border-success/20 opacity-70",
       isSkipped && "bg-muted/30 border-border opacity-50",
       !isDoneOrSkipped && !isLongLesson && "bg-background border-border hover:border-primary/20",
-      // v8.2: aula longa pendente — usa token warning (funciona light/dark)
       !isDoneOrSkipped && isLongLesson && "bg-warning/5 border-warning/30",
     )}>
       <button
@@ -196,7 +197,6 @@ function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
               {item.subject.name}
             </span>
           )}
-          {/* v8.2: badge de aula longa — cores de theme */}
           {isLongLesson && (
             <span className="text-[10px] font-medium text-warning bg-warning/15 border border-warning/30 rounded px-1.5 py-0 h-4 flex items-center gap-0.5">
               <Hourglass className="h-2.5 w-2.5" />
@@ -205,7 +205,6 @@ function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
           )}
         </div>
 
-        {/* v8.2: aviso expandido — cores adaptativas */}
         {isLongLesson && !isDoneOrSkipped && (
           <p className="text-xs text-warning bg-warning/10 border border-warning/30 rounded px-2 py-1 mt-1.5 flex items-start gap-1.5">
             <Hourglass className="h-3 w-3 mt-0.5 shrink-0" />
@@ -247,7 +246,7 @@ function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// View: Lista (padrão)
+// View: Lista
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ScheduleListView({ days, courseId, onCheckin, onUncheckin, loading }: {
@@ -357,7 +356,6 @@ function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading }:
                       isDone && "opacity-50 line-through border-success/20 bg-success/5",
                       isSkipped && "opacity-40 border-border bg-muted/20",
                       !isDoneOrSkipped && !isLongLesson && "border-border bg-background hover:border-primary/30",
-                      // v8.2: aula longa — theme tokens
                       !isDoneOrSkipped && isLongLesson && "border-warning/30 bg-warning/5",
                     )}
                   >
@@ -390,7 +388,6 @@ function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading }:
                     <div className="flex-1 min-w-0">
                       <p className="truncate font-medium text-foreground flex items-center gap-1">
                         {resolveTitle(item)}
-                        {/* v8.2: ícone de aula longa — warning color */}
                         {isLongLesson && (
                           <Hourglass
                             className="h-3 w-3 text-warning shrink-0"
@@ -428,16 +425,23 @@ function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading }:
 
 // ─────────────────────────────────────────────────────────────────────────────
 // View: Calendário
+//
+// v9 FIX: agora recebe viewYear/viewMonth/onMonthChange do pai
+// (necessário pra fetch dinâmico de dados conforme navega nos meses)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading }: {
+function ScheduleCalendarView({
+  days, courseId, onCheckin, onUncheckin, loading,
+  viewYear, viewMonth, onMonthChange,
+}: {
   days: any[]; courseId: string;
   onUncheckin: (id: string) => void;
   onCheckin: (id: string, completed: boolean) => void; loading: boolean;
+  viewYear: number;
+  viewMonth: number;
+  onMonthChange: (year: number, month: number) => void;
 }) {
   const today = new Date();
-  const [viewYear, setViewYear] = useState(today.getFullYear());
-  const [viewMonth, setViewMonth] = useState(today.getMonth());
   const [selectedDate, setSelectedDate] = useState<string | null>(
     today.toISOString().split("T")[0]
   );
@@ -458,12 +462,12 @@ function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading 
   while (cells.length % 7 !== 0) cells.push(null);
 
   const prevMonth = () => {
-    if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1); }
-    else setViewMonth(m => m - 1);
+    if (viewMonth === 0) onMonthChange(viewYear - 1, 11);
+    else onMonthChange(viewYear, viewMonth - 1);
   };
   const nextMonth = () => {
-    if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1); }
-    else setViewMonth(m => m + 1);
+    if (viewMonth === 11) onMonthChange(viewYear + 1, 0);
+    else onMonthChange(viewYear, viewMonth + 1);
   };
 
   const todayStr = today.toISOString().split("T")[0];
@@ -509,7 +513,6 @@ function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading 
             const isSelected = dateStr === selectedDate;
             const hasPending = dayItems.some((i: any) => i.status === "pending");
             const hasDone = dayItems.some((i: any) => i.status === "done");
-            // v8.2: sinaliza visualmente dias com aula longa
             const hasLongLesson = dayItems.some((i: any) => i.is_long_lesson === true);
 
             const typeDots = [...new Set(dayItems.map((i: any) => i.item_type))].slice(0, 3);
@@ -521,7 +524,6 @@ function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading 
                   "min-h-[60px] p-1.5 border-r border-b border-border last:border-r-0",
                   "flex flex-col items-start gap-1 text-left transition-colors",
                   isSelected && "bg-primary/5",
-                  // v8.2: destaque de aula longa com theme tokens
                   !isSelected && hasLongLesson && "bg-warning/5",
                   !isSelected && !hasLongLesson && "hover:bg-muted/40",
                   idx % 7 === 6 && "border-r-0",
@@ -542,7 +544,6 @@ function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading 
                       <div key={type}
                         className={cn("h-1.5 w-1.5 rounded-full", TYPE_CONFIG[type]?.dot || "bg-muted")} />
                     ))}
-                    {/* v8.2: indicador de aula longa */}
                     {hasLongLesson && (
                       <Hourglass className="h-2.5 w-2.5 text-warning ml-0.5" />
                     )}
@@ -573,7 +574,6 @@ function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading 
             {cfg.label}
           </div>
         ))}
-        {/* v8.2: legenda do ícone de aula longa */}
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Hourglass className="h-2.5 w-2.5 text-warning" />
           Aula longa
@@ -614,6 +614,9 @@ function ScheduleCalendarView({ days, courseId, onCheckin, onUncheckin, loading 
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Componente principal: ScheduleView
+//
+// v9 FIX: levanta state do mês do calendário pra cá, permitindo
+// calcular daysToFetch dinamicamente conforme usuário navega
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () => void }) {
@@ -630,7 +633,28 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
     localStorage.setItem(VIEW_STORAGE_KEY, v);
   };
 
-  const daysToFetch = view === "calendar" ? 42 : 14;
+  // v9 FIX: state do mês visualizado no calendário (levantado pro pai)
+  const today = new Date();
+  const [calendarMonth, setCalendarMonth] = useState({
+    year: today.getFullYear(),
+    month: today.getMonth(),
+  });
+
+  // v9 FIX: daysToFetch dinâmico
+  // - Lista/Blocos: 14 dias (comportamento original)
+  // - Calendário: do hoje até o FIM do mês visualizado + 1 mês de folga
+  //   Isso garante que qualquer mês navegado tenha dados carregados.
+  const daysToFetch = (() => {
+    if (view !== "calendar") return 14;
+    // Fim do mês SEGUINTE ao visualizado (1 mês de folga)
+    const endOfViewedMonthPlus1 = new Date(calendarMonth.year, calendarMonth.month + 2, 0);
+    const diffDays = Math.ceil(
+      (endOfViewedMonthPlus1.getTime() - today.getTime()) / 86_400_000
+    );
+    // Mínimo 42 (evita fetch muito pequeno se navegar pro passado)
+    // Máximo 800 (~2 anos + margem, bate com MAX_SCHEDULE_DAYS=730 do engine)
+    return Math.min(800, Math.max(42, diffDays));
+  })();
 
   const { data, isLoading } = useQuery({
     queryKey: ["schedule", courseId, daysToFetch],
@@ -812,7 +836,15 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
 
       {days.length > 0 && view === "list" && <ScheduleListView days={days} {...checkinProps} />}
       {days.length > 0 && view === "blocks" && <ScheduleBlocksView days={days} {...checkinProps} />}
-      {days.length > 0 && view === "calendar" && <ScheduleCalendarView days={days} {...checkinProps} />}
+      {days.length > 0 && view === "calendar" && (
+        <ScheduleCalendarView
+          days={days}
+          viewYear={calendarMonth.year}
+          viewMonth={calendarMonth.month}
+          onMonthChange={(year, month) => setCalendarMonth({ year, month })}
+          {...checkinProps}
+        />
+      )}
     </div>
   );
 }
@@ -964,7 +996,8 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
             className="w-full h-10 rounded-lg border border-border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary" />
           <div className="p-3 rounded-lg bg-muted/40 space-y-1">
             <p className="text-xs font-medium text-foreground">📋 Resumo do seu plano:</p>
-            <p className="text-xs text-muted-foreground">• {days.map(d => DAYS_PT[d]).join(", ")}</p>
+            {/* v9 FIX: usa DAYS_BACKEND_PT pra traduzir valores Python weekday() corretamente */}
+            <p className="text-xs text-muted-foreground">• {days.map(d => DAYS_BACKEND_PT[d]).join(", ")}</p>
             <p className="text-xs text-muted-foreground">• {hours}h/dia · {days.length * hours}h/semana</p>
             <p className="text-xs text-muted-foreground">• Início às {startTime}</p>
             {targetDate && (
