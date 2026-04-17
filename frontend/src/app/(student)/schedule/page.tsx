@@ -870,10 +870,19 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
             <p className="text-sm text-muted-foreground mt-0.5">Selecione pelo menos 1 dia</p>
           </div>
           <div className="grid grid-cols-7 gap-1.5">
-            {DAYS_PT.map((label, d) => (
-              <button key={d} onClick={() => toggleDay(d)}
+            {/* Backend usa Python weekday(): 0=Seg, 1=Ter, ..., 6=Dom */}
+            {[
+              { value: 0, label: "Seg" },
+              { value: 1, label: "Ter" },
+              { value: 2, label: "Qua" },
+              { value: 3, label: "Qui" },
+              { value: 4, label: "Sex" },
+              { value: 5, label: "Sáb" },
+              { value: 6, label: "Dom" },
+            ].map(({ value, label }) => (
+              <button key={value} onClick={() => toggleDay(value)}
                 className={cn("h-12 rounded-xl text-xs font-semibold transition-all border-2",
-                  days.includes(d) ? "bg-primary text-primary-foreground border-primary" : "bg-background border-border hover:border-primary/50")}>
+                  days.includes(value) ? "bg-primary text-primary-foreground border-primary" : "bg-background border-border hover:border-primary/50")}>
                 {label}
               </button>
             ))}
