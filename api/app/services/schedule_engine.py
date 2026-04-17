@@ -738,7 +738,68 @@ class ScheduleEngine:
                     rotation_pos += 1
                     consecutive_skips += 1
                     if consecutive_skips >= len(active_subjects):
-                        break
+                        # v9.3 — Antes de desistir do dia, testa duas estratégias:
+                        #
+                        # (A) Se existe alguma disciplina cuja aula[0] caiba,
+                        #     agenda ela (bug antigo: saía sem tentar de novo
+                        #     após uma volta completa em que nenhuma coube).
+                        #
+                        # (B) Se nenhuma aula[0] cabe, mas tem 1 disciplina só
+                        #     ativa, procura mais fundo na fila dela (aulas curtas
+                        #     mais atrás na ordem). A aula[0] longa fica pra ser
+                        #     agendada em outro dia via force-fit. Isso evita
+                        #     desperdiçar dias com 29 min quando há aulas curtas
+                        #     disponíveis logo atrás.
+                        time_remaining = effective_minutes - day_used
+                        best_sid = None
+                        best_idx = 0
+
+                        # Estratégia A: aula[0] de qualquer disciplina
+                        for s in active_subjects:
+                            if not queues[s]:
+                                continue
+                            top = queues[s][0]
+                            top_dur = max(top.duration_minutes or 30, 15)
+                            top_cost = top_dur + self.BREAK_MINUTES
+                            if top_cost <= time_remaining:
+                                best_sid = s
+                                best_idx = 0
+                                break
+
+                        # Estratégia B: se não achou e tem só 1 disciplina ativa,
+                        # procura aula menor adiante na fila
+                        if best_sid is None and len(active_subjects) == 1:
+                            s = active_subjects[0]
+                            # Limita a busca a 10 aulas à frente (evita pular demais)
+                            for idx, candidate in enumerate(queues[s][:10]):
+                                cand_dur = max(candidate.duration_minutes or 30, 15)
+                                cand_cost = cand_dur + self.BREAK_MINUTES
+                                if cand_cost <= time_remaining:
+                                    best_sid = s
+                                    best_idx = idx
+                                    break
+
+                        if best_sid is not None:
+                            lesson = queues[best_sid].pop(best_idx)
+                            lesson_dur = max(lesson.duration_minutes or 30, 15)
+                            subject = subject_map.get(best_sid)
+                            priority = priority_map.get(best_sid, 1.0)
+
+                            day_used, day_order = self._add_lesson_with_questions(
+                                items_to_add, slot_str, lesson, lesson_dur, best_sid, subject,
+                                priority, day_used, day_order, self.tenant_id, schedule.id,
+                                effective_minutes, is_long_lesson=False
+                            )
+                            lessons_added += 1
+                            consecutive_skips = 0
+                            if best_sid not in day_subjects:
+                                day_subjects.append(best_sid)
+                            if day_used >= effective_minutes:
+                                break
+                            # Continua o while — pode caber mais aulas
+                        else:
+                            # Nada cabe mesmo, desiste do dia
+                            break
 
             used_minutes_tracker[slot_date] = day_used
 
