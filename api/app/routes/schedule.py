@@ -48,7 +48,12 @@ class UpdateAvailabilitySchema(Schema):
         required=True, validate=validate.Range(min=0.5, max=12.0)
     )
     preferred_start_time = fields.Str(load_default="08:00")
-
+    # v11: pausa entre atividades (0 = sem pausa, máx 15 min)
+    break_minutes = fields.Int(
+        load_default=0,
+        validate=validate.Range(min=0, max=15),
+    )
+ 
     class Meta:
         unknown = EXCLUDE
 
@@ -242,6 +247,7 @@ def get_schedule():
         "target_date": schedule.target_date,
         "ai_notes": schedule.ai_notes,
         "last_reorganized_at": schedule.last_reorganized_at,
+        "break_minutes": snapshot.get("break_minutes", 0),  # v11
     }
 
     # v9.2: lê coverage_gap do availability_snapshot (persistido pelo engine)
@@ -513,39 +519,41 @@ def delete_schedule():
     )
 
 
+
 @schedule_bp.route("/availability", methods=["PUT"])
 @jwt_required()
 @require_tenant
 def update_availability():
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
-
+ 
     schema = UpdateAvailabilitySchema()
     try:
         data = schema.load(request.get_json(force=True) or {})
     except ValidationError as e:
         return jsonify({"error": "validation_error", "details": e.messages}), 400
-
+ 
     user = User.query.filter_by(
         id=user_id, tenant_id=tenant.id, is_deleted=False
     ).first()
     if not user:
         return jsonify({"error": "not_found"}), 404
-
+ 
     user.study_availability = {
         "days": data["days"],
         "hours_per_day": data["hours_per_day"],
         "preferred_start_time": data.get("preferred_start_time", "08:00"),
+        "break_minutes": data.get("break_minutes", 0),  # v11
     }
     db.session.commit()
-
+ 
     schedules = StudySchedule.query.filter_by(
         user_id=user_id,
         tenant_id=tenant.id,
         status="active",
         is_deleted=False,
     ).all()
-
+ 
     reorganized = 0
     for schedule in schedules:
         try:
@@ -558,7 +566,7 @@ def update_availability():
             reorganized += 1
         except Exception:
             pass
-
+ 
     return (
         jsonify(
             {
@@ -568,6 +576,7 @@ def update_availability():
         ),
         200,
     )
+ 
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -575,6 +584,7 @@ def update_availability():
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+ 
 def _serialize_schedule(schedule: StudySchedule) -> dict:
     snapshot = schedule.availability_snapshot or {}
     return {
@@ -588,8 +598,8 @@ def _serialize_schedule(schedule: StudySchedule) -> dict:
         "last_reorganized_at": schedule.last_reorganized_at,
         "hours_per_day": snapshot.get("hours_per_day"),
         "days": snapshot.get("days"),
+        "break_minutes": snapshot.get("break_minutes", 0),  # v11
     }
-
 
 def _serialize_item(
     item: ScheduleItem,

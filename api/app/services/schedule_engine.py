@@ -1,32 +1,15 @@
 # api/app/services/schedule_engine.py
-# Motor do cronograma inteligente e adaptativo — v10
+# Motor do cronograma inteligente e adaptativo — v11
 #
-# v10 — REESCRITA DA DISTRIBUIÇÃO DIÁRIA (fixes de consistência):
+# v11 — PAUSA CONFIGURÁVEL PELO ALUNO:
+#   ANTES: BREAK_MINUTES = 10 fixo, sem opção de escolha — causava confusão
+#          pois o aluno via 87 min de atividades em um dia de 120 min.
+#   AGORA: break_minutes lido de study_availability["break_minutes"] (0–15 min).
+#          Padrão = 0 (sem pausa). O aluno define no wizard de criação.
+#          O valor é salvo em availability_snapshot e retornado pela API.
 #
-#   BUG 1 (principal): critério de encaixe de aula usava `lesson_cost`
-#     (lesson_dur + BREAK_MINUTES), bloqueando aulas de 35 min quando
-#     sobravam 38 min no dia. Fix: usa `lesson_dur` para o check — a pausa
-#     ao fim do último item é "overflow" aceitável.
-#
-#   BUG 2: tempo livre não era preenchido. Com 82 min usados em dia de 120,
-#     os 38 min restantes ficavam vazios. Fix: `_fill_day_remainder()` adiciona
-#     revisão de fixação ou bloco de questões extras no tempo que sobra.
-#
-#   BUG 3: `_calculate_lessons_window` subestimava aulas/dia. Usava
-#     `avg + BREAK + 15 + BREAK` (75 min) → 1 aula/dia. Real: 2 aulas/dia
-#     para aulas médias de 40 min. Fix: usa `avg + BREAK` apenas.
-#
-#   BUG 4: `_add_spaced_reviews` tinha janela de 1–2 dias, impossível
-#     de preencher se slots estivessem cheios. Fix: janela de 7 dias úteis.
-#
-#   BUG 5: lógica de `consecutive_skips` saía do dia cedo após Strategy A/B;
-#     substituída por loop mais simples e previsível em `_schedule_single_day`.
-#
-#   ARQUITETURA: `_build_items` agora delega o agendamento de cada dia para
-#   `_schedule_single_day()` (extraído), separando responsabilidades e
-#   tornando o algoritmo testável unitariamente.
-#
-# v9 — Distribuição híbrida (preservado): 60% aulas + 40% revisão/simulados
+# v10 — Distribuição híbrida + _schedule_single_day extraído (preservado)
+# v9  — Distribuição híbrida 60/40 (preservado)
 # v8.3 — Solução UniqueViolation delete+generate (preservado)
 # v8.1 — Badge "Aula longa" via FORCE_FIT_PREFIX (preservado)
 
@@ -44,23 +27,22 @@ from app.models.schedule import StudySchedule, ScheduleItem, ScheduleCheckIn
 
 FORCE_FIT_PREFIX = "[LONGA]"
 
-# Tempo mínimo livre para valer a pena adicionar um bloco de revisão/questões
 _MIN_FILLER_MINUTES = 15
 
 
 class ScheduleEngine:
-    BREAK_MINUTES = 10
-    MAX_SCHEDULE_DAYS = 730          # 2 anos
+    # break_minutes NÃO é mais constante de classe — é atributo de instância
+    # lido de study_availability["break_minutes"]. Mantemos apenas como fallback
+    # para código externo que ainda referencie ScheduleEngine.BREAK_MINUTES.
+    BREAK_MINUTES = 0  # fallback legado — não usar em cálculos internos
+
+    MAX_SCHEDULE_DAYS = 730
     QUESTIONS_BLOCK_MINUTES = 20
     MIN_FREE_FOR_QUESTIONS = 0
     REVIEW_MINUTES = 25
     SIMULADO_INTERVAL_LESSONS = 12
     MAX_EFFECTIVE_MINUTES = 480
 
-    # ─── Estratégia de distribuição ──────────────────────────────────────────
-    # "hybrid"       → aulas concentradas + reta final de revisão (padrão)
-    # "stretched"    → 100% do tempo com aulas (ritmo mais leve)
-    # "concentrated" → enche 2h/dia até acabar as aulas (comportamento antigo)
     DISTRIBUTION_STRATEGY = "hybrid"
     HYBRID_LESSONS_FRACTION = 0.6
 
@@ -107,7 +89,9 @@ class ScheduleEngine:
         self.hours_per_day = avail.get("hours_per_day", 2)
         self.minutes_per_day = int(self.hours_per_day * 60)
 
-        # Armazena o coverage_gap calculado no último _build_items()
+        # v11: pausa entre atividades definida pelo aluno (0–15 min, padrão 0)
+        self.break_minutes = int(avail.get("break_minutes", 0))
+
         self.last_coverage_gap: Optional[Dict] = None
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -115,12 +99,6 @@ class ScheduleEngine:
     # ─────────────────────────────────────────────────────────────────────────
 
     def generate(self, target_date: Optional[str] = None) -> StudySchedule:
-        """
-        Lógica em 3 camadas (v8.3):
-          1. Schedule ATIVO → reorganiza
-          2. Schedule DELETADO → ressuscita (evita UniqueViolation)
-          3. Nada → cria novo
-        """
         active_schedule = StudySchedule.query.filter_by(
             user_id=self.user_id,
             course_id=self.course_id,
@@ -142,14 +120,10 @@ class ScheduleEngine:
 
         if deleted_schedule:
             now_iso = datetime.now(timezone.utc).isoformat()
-
-            ScheduleItem.query.filter_by(
-                schedule_id=deleted_schedule.id,
-            ).update(
+            ScheduleItem.query.filter_by(schedule_id=deleted_schedule.id).update(
                 {"is_deleted": True, "deleted_at": now_iso},
                 synchronize_session=False,
             )
-
             deleted_schedule.is_deleted = False
             deleted_schedule.deleted_at = None
             deleted_schedule.status = "active"
@@ -159,11 +133,11 @@ class ScheduleEngine:
             deleted_schedule.availability_snapshot = {
                 "days": self.available_days,
                 "hours_per_day": self.hours_per_day,
+                "break_minutes": self.break_minutes,
             }
             deleted_schedule.last_reorganized_at = now_iso
             deleted_schedule.abandonment_risk_score = 0.0
             deleted_schedule.ai_notes = None
-
             db.session.flush()
             self._build_items(deleted_schedule, start_date=date.today())
             db.session.commit()
@@ -179,6 +153,7 @@ class ScheduleEngine:
             availability_snapshot={
                 "days": self.available_days,
                 "hours_per_day": self.hours_per_day,
+                "break_minutes": self.break_minutes,
             },
             last_reorganized_at=datetime.now(timezone.utc).isoformat(),
         )
@@ -200,11 +175,9 @@ class ScheduleEngine:
                 return self.generate()
 
         tomorrow = date.today() + timedelta(days=1)
-        tomorrow_str = tomorrow.isoformat()
-
         ScheduleItem.query.filter(
             ScheduleItem.schedule_id == schedule.id,
-            ScheduleItem.scheduled_date >= tomorrow_str,
+            ScheduleItem.scheduled_date >= tomorrow.isoformat(),
             ScheduleItem.status == "pending",
             ScheduleItem.is_deleted == False,
         ).update(
@@ -217,6 +190,7 @@ class ScheduleEngine:
         schedule.availability_snapshot = {
             "days": self.available_days,
             "hours_per_day": self.hours_per_day,
+            "break_minutes": self.break_minutes,
         }
         db.session.flush()
         self._build_items(schedule, start_date=tomorrow)
@@ -309,7 +283,7 @@ class ScheduleEngine:
                 continue
             try:
                 item_date = date.fromisoformat(item.scheduled_date)
-                used_minutes[item_date] += item.estimated_minutes + self.BREAK_MINUTES
+                used_minutes[item_date] += item.estimated_minutes + self.break_minutes
             except ValueError:
                 pass
 
@@ -331,7 +305,7 @@ class ScheduleEngine:
             if slot_str in review_dates_with_subject:
                 continue
             free = budget - used_minutes[slot_date]
-            if free < self.REVIEW_MINUTES + self.BREAK_MINUTES:
+            if free < self.REVIEW_MINUTES + self.break_minutes:
                 continue
 
             new_items.append(ScheduleItem(
@@ -343,7 +317,7 @@ class ScheduleEngine:
                 status="pending",
                 question_filters={"_adaptive": True},
             ))
-            used_minutes[slot_date] += self.REVIEW_MINUTES + self.BREAK_MINUTES
+            used_minutes[slot_date] += self.REVIEW_MINUTES + self.break_minutes
             review_dates_with_subject.add(slot_str)
             inserted += 1
 
@@ -444,7 +418,6 @@ class ScheduleEngine:
         from sqlalchemy import func, case as sql_case
 
         risk = 0.0
-
         qa_row = (
             db.session.query(
                 func.max(QuestionAttempt.created_at).label("last_attempt"),
@@ -492,7 +465,7 @@ class ScheduleEngine:
         return round(min(risk, 1.0), 2)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Cálculo da janela de aulas — v10
+    # Janela de aulas — v11
     # ─────────────────────────────────────────────────────────────────────────
 
     def _calculate_lessons_window(
@@ -502,48 +475,27 @@ class ScheduleEngine:
         effective_minutes: int,
         avg_lesson_minutes: float = 40.0,
     ) -> int:
-        """
-        Calcula quantos dias serão usados para aulas (resto = revisão).
-
-        v10 FIX: fórmula anterior usava avg + BREAK + 15 + BREAK (≈75 min para
-        40 min de aula), resultando em 1 aula/dia. Fórmula correta: avg + BREAK
-        apenas — questões são adicionadas como subproduto das aulas, não como
-        um slot independente no cálculo da capacidade.
-
-        Resultado: para aulas de 40 min com 120 min/dia → 2 aulas/dia (correto).
-        """
-        # Custo de uma aula: duração + pausa obrigatória após
-        # (questões não contam aqui — são preenchidas no espaço restante)
-        cost_per_lesson = avg_lesson_minutes + self.BREAK_MINUTES
+        # v11: custo por aula inclui break_minutes do aluno (pode ser 0)
+        cost_per_lesson = avg_lesson_minutes + self.break_minutes
         lessons_per_day_max = max(1, int(effective_minutes / cost_per_lesson))
 
         days_needed_concentrated = math.ceil(total_lessons / lessons_per_day_max)
 
         if self.DISTRIBUTION_STRATEGY == "concentrated":
             return min(days_needed_concentrated, available_days)
-
         if self.DISTRIBUTION_STRATEGY == "stretched":
             return available_days
 
-        # hybrid: concentra aulas, reserva final para revisão
+        # hybrid
         target_window = min(days_needed_concentrated, available_days)
-        # Garante mínimo de 5% ou 7 dias de reta final
         max_lessons_window = available_days - max(7, int(available_days * 0.05))
         return min(target_window, max(max_lessons_window, days_needed_concentrated))
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Construção do cronograma — v10
+    # Construção do cronograma — v11
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_items(self, schedule: StudySchedule, start_date: date):
-        """
-        Orquestra a construção do cronograma:
-          1. Calcula janela de aulas vs revisão final
-          2. Para cada dia da janela de aulas, chama _schedule_single_day()
-          3. Adiciona simulados a cada N aulas
-          4. Adiciona revisões espaçadas (spaced repetition)
-          5. Persiste tudo em bulk
-        """
         priority_map = self._calculate_subject_priorities()
         pending_lessons = self._get_pending_lessons()
 
@@ -552,7 +504,6 @@ class ScheduleEngine:
             self._add_review_only_plan(schedule, priority_map, start_date)
             return
 
-        # ── Define slots disponíveis ─────────────────────────────────────────
         if schedule.target_date:
             try:
                 target = date.fromisoformat(schedule.target_date)
@@ -568,14 +519,12 @@ class ScheduleEngine:
 
         effective_minutes = min(self.minutes_per_day, self.MAX_EFFECTIVE_MINUTES)
 
-        # ── Calcula duração média real das aulas ─────────────────────────────
         lesson_durations = [max(l.duration_minutes or 30, 15) for l in pending_lessons]
         avg_lesson_real = sum(lesson_durations) / max(1, len(lesson_durations))
 
-        # ── Detecta gap de cobertura ─────────────────────────────────────────
-        # v10: usa a mesma fórmula de _calculate_lessons_window (avg + BREAK)
-        cost_per_lesson_real = avg_lesson_real + self.BREAK_MINUTES
-        lessons_per_day_capacity = max(1, int(effective_minutes / cost_per_lesson_real))
+        # v11: coverage gap usa break_minutes do aluno
+        cost_per_lesson_real = avg_lesson_real + self.break_minutes
+        lessons_per_day_capacity = max(1, int(effective_minutes / cost_per_lesson_real)) if cost_per_lesson_real > 0 else len(pending_lessons)
         max_lessons_in_window = len(all_slots) * lessons_per_day_capacity
 
         coverage_gap = None
@@ -601,13 +550,13 @@ class ScheduleEngine:
         snapshot = dict(schedule.availability_snapshot or {})
         snapshot["days"] = self.available_days
         snapshot["hours_per_day"] = self.hours_per_day
+        snapshot["break_minutes"] = self.break_minutes
         if coverage_gap:
             snapshot["coverage_gap"] = coverage_gap
         else:
             snapshot.pop("coverage_gap", None)
         schedule.availability_snapshot = snapshot
 
-        # ── Define janela de aulas vs reta final ─────────────────────────────
         lessons_window_days = self._calculate_lessons_window(
             total_lessons=len(pending_lessons),
             available_days=len(all_slots),
@@ -620,7 +569,7 @@ class ScheduleEngine:
         if not schedule.target_date and len(review_only_slots) > 90:
             review_only_slots = review_only_slots[:90]
 
-        # ── Pre-load de módulos e disciplinas ────────────────────────────────
+        # Pre-load
         module_ids = {l.module_id for l in pending_lessons if l.module_id}
         modules_by_id: Dict[str, Module] = (
             {m.id: m for m in Module.query.filter(Module.id.in_(module_ids)).all()}
@@ -657,7 +606,6 @@ class ScheduleEngine:
         simulado_days: set = set()
         used_minutes_tracker: Dict[date, int] = defaultdict(int)
 
-        # ── Fase 1: Agendamento de aulas (usa _schedule_single_day) ──────────
         for slot_idx, slot_date in enumerate(lesson_slots):
             if not any(queues.get(sid) for sid in subject_ids_ordered):
                 break
@@ -677,7 +625,6 @@ class ScheduleEngine:
             used_minutes_tracker[slot_date] = day_minutes
             lessons_added += day_lessons_count
 
-            # Simulado a cada N aulas, no dia seguinte
             if day_lessons_count > 0 and lessons_added % self.SIMULADO_INTERVAL_LESSONS == 0:
                 next_idx = slot_idx + 1
                 if next_idx < len(lesson_slots):
@@ -692,7 +639,6 @@ class ScheduleEngine:
                         ))
                         simulado_days.add(sim_date_str)
 
-        # ── Fase 2: Simulados na reta final ──────────────────────────────────
         if review_only_slots and len(review_only_slots) >= 5:
             for i, slot_date in enumerate(review_only_slots):
                 if i % 7 == 0:
@@ -707,7 +653,6 @@ class ScheduleEngine:
                         ))
                         simulado_days.add(slot_str)
 
-        # ── Fase 3: Revisões espaçadas (spaced repetition) ───────────────────
         self._add_spaced_reviews(
             schedule, all_slots, used_minutes_tracker,
             priority_map, items_to_add, effective_minutes,
@@ -716,7 +661,6 @@ class ScheduleEngine:
         if items_to_add:
             db.session.bulk_save_objects(items_to_add)
 
-        # ── Nota da IA ────────────────────────────────────────────────────────
         weak_names = [
             subject_map[sid].name for sid in subject_ids_ordered[:3]
             if sid in subject_map and priority_map.get(sid, 1.0) >= 1.5
@@ -761,14 +705,16 @@ class ScheduleEngine:
                 f"para revisão e simulados (reta final)."
             )
 
+        break_info = f" Pausa entre atividades: {self.break_minutes} min." if self.break_minutes > 0 else ""
+
         schedule.ai_notes = (
-            f"Cronograma gerado com {lessons_added} aulas.{coverage_warning}{window_info}{review_info} "
+            f"Cronograma gerado com {lessons_added} aulas.{coverage_warning}{window_info}{review_info}{break_info} "
             f"Disciplinas priorizadas: {', '.join(weak_names) or 'distribuição equilibrada'}. "
             f"Carga diária: {self.hours_per_day}h."
         )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Agendamento de um único dia — v10 (novo método extraído)
+    # Agendamento de um único dia — v11
     # ─────────────────────────────────────────────────────────────────────────
 
     def _schedule_single_day(
@@ -782,37 +728,17 @@ class ScheduleEngine:
         tenant_id: str,
         schedule_id: str,
     ) -> Tuple[List[ScheduleItem], int, int]:
-        """
-        Agenda aulas, questões e revisão de fixação para um único dia de estudo.
-
-        Retorna:
-            (items, minutes_used, lessons_count)
-
-        Algoritmo v10:
-          1. Verifica force-fit: se a primeira aula da fila prioritária excede
-             o budget, agenda ela sozinha (marcada como aula longa) e encerra.
-          2. Round-robin entre disciplinas ativas: agenda a próxima aula de cada
-             disciplina enquanto `lesson_dur <= remaining`.
-          3. Após cada aula, tenta adicionar questões se houver espaço.
-          4. Encerra quando nenhuma aula de nenhuma disciplina cabe no tempo
-             restante, ou quando o budget é atingido.
-          5. Chama _fill_day_remainder() para aproveitar tempo livre residual.
-
-        FIX v10 (Bug 1): usa `lesson_dur <= remaining` (não `lesson_cost`)
-        para o check de encaixe. Isso evita descartar aulas de 35 min quando
-        sobram 38 min no dia (caso comum que desperdiçava ~30% do tempo).
-        """
         items: List[ScheduleItem] = []
         day_used = 0
         order = 0
-        day_subjects_used: List[str] = []  # disciplinas que tiveram aula hoje
+        day_subjects_used: List[str] = []
         lessons_count = 0
 
         active_subjects = [sid for sid in subject_ids_ordered if queues.get(sid)]
         if not active_subjects:
             return items, day_used, lessons_count
 
-        # ── Force-fit: aula maior que o budget inteiro ────────────────────────
+        # Force-fit: aula maior que o budget inteiro
         first_sid = active_subjects[0]
         if queues[first_sid]:
             first_lesson = queues[first_sid][0]
@@ -827,36 +753,28 @@ class ScheduleEngine:
                     effective_minutes, is_long_lesson=True,
                 )
                 lessons_count += 1
-                # Não preenchemos o resto — dia já estourou o budget
                 return items, day_used, lessons_count
 
-        # ── Agendamento normal: round-robin ───────────────────────────────────
+        # Round-robin normal
         rotation = 0
-        skips_in_round = 0  # quantas disciplinas consecutivas não couberam
+        skips_in_round = 0
 
         while True:
-            # Limpa disciplinas sem mais aulas
             active_subjects = [sid for sid in active_subjects if queues.get(sid)]
             if not active_subjects:
                 break
 
             remaining = effective_minutes - day_used
-
-            # Se não há tempo nem para o menor bloco útil, encerra
             if remaining < _MIN_FILLER_MINUTES:
                 break
 
             if rotation >= len(active_subjects):
                 rotation = 0
 
-            # Se percorremos TODAS as disciplinas ativas e nenhuma coube,
-            # tenta encontrar alguma aula mais curta antes de desistir
             if skips_in_round >= len(active_subjects):
-                found = self._find_short_lesson(
-                    active_subjects, queues, remaining,
-                )
+                found = self._find_short_lesson(active_subjects, queues, remaining)
                 if found is None:
-                    break  # nada mais cabe no tempo restante
+                    break
                 sid, lesson_idx = found
                 lesson = queues[sid].pop(lesson_idx)
                 dur = max(lesson.duration_minutes or 30, 15)
@@ -883,9 +801,6 @@ class ScheduleEngine:
             lesson = queues[sid][0]
             dur = max(lesson.duration_minutes or 30, 15)
 
-            # FIX BUG 1: checa `dur <= remaining` (não `dur + BREAK <= remaining`)
-            # Isso permite encaixar aulas que "tocam" o fim do orçamento, com a
-            # pausa transbordando apenas alguns minutos — aceitável na prática.
             if dur <= remaining:
                 queues[sid].pop(0)
                 subject = subject_map.get(sid)
@@ -904,18 +819,14 @@ class ScheduleEngine:
                 skips_in_round += 1
                 rotation += 1
 
-        # ── Preenche tempo livre residual (FIX BUG 2) ─────────────────────────
+        # Preenche tempo livre residual
         day_used, order = self._fill_day_remainder(
-            items=items,
-            slot_str=slot_str,
+            items=items, slot_str=slot_str,
             day_subjects_used=day_subjects_used,
-            subject_map=subject_map,
-            priority_map=priority_map,
-            day_used=day_used,
-            order=order,
+            subject_map=subject_map, priority_map=priority_map,
+            day_used=day_used, order=order,
             effective_minutes=effective_minutes,
-            tenant_id=tenant_id,
-            schedule_id=schedule_id,
+            tenant_id=tenant_id, schedule_id=schedule_id,
         )
 
         return items, day_used, lessons_count
@@ -927,13 +838,6 @@ class ScheduleEngine:
         remaining: int,
         look_ahead: int = 10,
     ) -> Optional[Tuple[str, int]]:
-        """
-        Busca, nas primeiras `look_ahead` posições de cada fila, uma aula que
-        caiba no tempo restante do dia. Retorna (subject_id, queue_index) ou None.
-
-        Isso evita desperdiçar tempo quando a fila[0] é longa mas há aulas
-        mais curtas logo atrás (e.g., módulo de revisão de 15 min após aula de 60 min).
-        """
         for sid in active_subjects:
             queue = queues.get(sid, [])
             for idx, candidate in enumerate(queue[:look_ahead]):
@@ -955,17 +859,6 @@ class ScheduleEngine:
         tenant_id: str,
         schedule_id: str,
     ) -> Tuple[int, int]:
-        """
-        Após o loop de aulas, se há tempo livre >= _MIN_FILLER_MINUTES,
-        adiciona uma revisão de fixação para a disciplina mais fraca do dia.
-
-        FIX BUG 2: evita dias com 30-40 min de tempo vazio após as aulas.
-
-        Exemplos com budget de 120 min:
-          - 1 aula de 40 min → used=82 → 38 min livres → revisão de 25 min
-          - 1 aula de 60 min → used=105 → 15 min livres → revisão de 15 min
-          - 2 aulas de 30 min → used=110 → 10 min livres → sem filler (< 15)
-        """
         remaining = effective_minutes - day_used
 
         if remaining < _MIN_FILLER_MINUTES:
@@ -974,33 +867,28 @@ class ScheduleEngine:
         if not day_subjects_used:
             return day_used, order
 
-        # Escolhe a disciplina mais fraca estudada hoje (maior priority = mais fraca)
         weakest_sid = max(day_subjects_used, key=lambda sid: priority_map.get(sid, 1.0))
         subject = subject_map.get(weakest_sid)
         if not subject:
             return day_used, order
 
-        # Ajusta duração ao tempo disponível, sem exceder REVIEW_MAX_MINUTES
         filler_min = min(remaining, self.REVIEW_MAX_MINUTES)
 
         items.append(ScheduleItem(
-            tenant_id=tenant_id,
-            schedule_id=schedule_id,
-            item_type="review",
-            subject_id=weakest_sid,
-            scheduled_date=slot_str,
-            order=order,
+            tenant_id=tenant_id, schedule_id=schedule_id,
+            item_type="review", subject_id=weakest_sid,
+            scheduled_date=slot_str, order=order,
             estimated_minutes=filler_min,
             priority_reason=f"Revisão de fixação: {subject.name}",
             status="pending",
         ))
-        day_used += filler_min + self.BREAK_MINUTES
+        day_used += filler_min + self.break_minutes
         order += 1
 
         return day_used, order
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Helpers de cálculo de tempo
+    # Helpers
     # ─────────────────────────────────────────────────────────────────────────
 
     def _calculate_questions_minutes(self, lesson_minutes: int) -> int:
@@ -1010,10 +898,6 @@ class ScheduleEngine:
     def _calculate_review_minutes(self, accuracy: float) -> int:
         proportional = self.REVIEW_MIN_MINUTES + ((1.0 - accuracy) * 15)
         return int(min(self.REVIEW_MAX_MINUTES, max(self.REVIEW_MIN_MINUTES, proportional)))
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Plano de revisão (quando todas as aulas já foram assistidas)
-    # ─────────────────────────────────────────────────────────────────────────
 
     def _add_review_only_plan(self, schedule, priority_map, start_date):
         slots = self._generate_day_slots(start_date)
@@ -1048,10 +932,6 @@ class ScheduleEngine:
         if items:
             db.session.bulk_save_objects(items)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Adiciona aula + questões de fixação imediata
-    # ─────────────────────────────────────────────────────────────────────────
-
     def _add_lesson_with_questions(
         self,
         items_to_add: List[ScheduleItem],
@@ -1068,47 +948,32 @@ class ScheduleEngine:
         effective_minutes: int,
         is_long_lesson: bool = False,
     ) -> Tuple[int, int]:
-        """
-        Adiciona um item de aula e, se couber no budget, o bloco de questões
-        imediatamente após.
-
-        O custo da aula = lesson_dur + BREAK_MINUTES (pausa pós-aula).
-        O custo das questões = questions_min + BREAK_MINUTES (pausa pós-questões).
-
-        As questões só são adicionadas se `day_used + questions_cost <= effective_minutes`,
-        garantindo que não excedam o budget de forma descontrolada.
-        """
         base_reason = self._build_priority_reason(subject, priority)
         priority_reason = f"{FORCE_FIT_PREFIX} {base_reason}" if is_long_lesson else base_reason
 
         items_to_add.append(ScheduleItem(
-            tenant_id=tenant_id,
-            schedule_id=schedule_id,
-            item_type="lesson",
-            lesson_id=lesson.id,
+            tenant_id=tenant_id, schedule_id=schedule_id,
+            item_type="lesson", lesson_id=lesson.id,
             subject_id=subject_id if subject_id != "__no_subject__" else None,
-            scheduled_date=slot_str,
-            order=day_order,
+            scheduled_date=slot_str, order=day_order,
             estimated_minutes=lesson_dur,
             priority_reason=priority_reason,
             status="pending",
         ))
-        day_used += lesson_dur + self.BREAK_MINUTES
+        # v11: pausa após aula = break_minutes do aluno (pode ser 0)
+        day_used += lesson_dur + self.break_minutes
         day_order += 1
 
-        # Questões: apenas se o sujeito existir e houver espaço no budget
         if subject and subject_id != "__no_subject__":
             questions_minutes = self._calculate_questions_minutes(lesson_dur)
-            questions_cost = questions_minutes + self.BREAK_MINUTES
+            # v11: questões + pausa só se couber no budget
+            questions_cost = questions_minutes + self.break_minutes
 
             if day_used + questions_cost <= effective_minutes:
                 items_to_add.append(ScheduleItem(
-                    tenant_id=tenant_id,
-                    schedule_id=schedule_id,
-                    item_type="questions",
-                    subject_id=subject_id,
-                    scheduled_date=slot_str,
-                    order=day_order,
+                    tenant_id=tenant_id, schedule_id=schedule_id,
+                    item_type="questions", subject_id=subject_id,
+                    scheduled_date=slot_str, order=day_order,
                     estimated_minutes=questions_minutes,
                     priority_reason=f"Fixação: {subject.name}",
                     status="pending",
@@ -1117,10 +982,6 @@ class ScheduleEngine:
                 day_order += 1
 
         return day_used, day_order
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Revisões espaçadas (spaced repetition) — v10
-    # ─────────────────────────────────────────────────────────────────────────
 
     def _add_spaced_reviews(
         self,
@@ -1131,14 +992,6 @@ class ScheduleEngine:
         items_to_add: List[ScheduleItem],
         effective_minutes: int = None,
     ):
-        """
-        Insere revisões espaçadas para disciplinas com acurácia abaixo de 50%.
-
-        v10 FIX (Bug 4): janela ampliada de 1–2 dias para 1–7 dias úteis.
-        A janela anterior tornava impossível agendar revisões quando D+1 e D+2
-        já estavam lotados — o que ocorre com frequência pois o scheduler
-        enche os dias mais densamente a partir da v10.
-        """
         if effective_minutes is None:
             effective_minutes = self.minutes_per_day
 
@@ -1209,15 +1062,13 @@ class ScheduleEngine:
                 continue
 
             review_minutes = self._calculate_review_minutes(accuracy)
-            needed = review_minutes + self.BREAK_MINUTES
+            needed = review_minutes + self.break_minutes
 
             last_date_str = last_dates.get(subject.id)
             if last_date_str:
                 try:
                     last_date = date.fromisoformat(last_date_str)
                     earliest = last_date + timedelta(days=1)
-                    # FIX BUG 4: janela ampliada de 2 → 7 dias para acomodar
-                    # dias já cheios no início da janela
                     latest = last_date + timedelta(days=7)
                 except ValueError:
                     continue
@@ -1228,7 +1079,6 @@ class ScheduleEngine:
             for slot in slots:
                 if slot < earliest or slot > latest:
                     continue
-
                 slot_str = slot.isoformat()
                 if (subject.id, slot_str) in items_to_add_set:
                     continue
@@ -1252,10 +1102,6 @@ class ScheduleEngine:
                 reviews_per_day[slot_str] += 1
                 items_to_add_set.add((subject.id, slot_str))
                 break
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Prioridades de disciplinas
-    # ─────────────────────────────────────────────────────────────────────────
 
     def _calculate_subject_priorities(self) -> Dict[str, float]:
         from sqlalchemy import func, case as sql_case
@@ -1293,7 +1139,6 @@ class ScheduleEngine:
         for subject in subjects:
             base = float(subject.edital_weight or 1.0)
             stats = stats_map.get(subject.id)
-
             if not stats or stats["total"] == 0:
                 priority = base * self.NEVER_STUDIED_MULTIPLIER
             else:
@@ -1309,37 +1154,27 @@ class ScheduleEngine:
         return priorities
 
     def _calculate_compression_factor(self, target_date, lessons_remaining):
-        """Mantido por compatibilidade com referências externas."""
         if not target_date or lessons_remaining == 0:
             return 1.0
         try:
             target = date.fromisoformat(target_date)
         except ValueError:
             return 1.0
-
         today = date.today()
         days_left = (target - today).days
         if days_left <= 0:
             return 1.0
-
         slots = self._generate_day_slots(today, max_days=days_left)
         if not slots:
             return 1.0
-
         avg_lesson_minutes = 40
-        lessons_per_slot = max(1, self.minutes_per_day // (avg_lesson_minutes + self.BREAK_MINUTES))
+        lessons_per_slot = max(1, self.minutes_per_day // (avg_lesson_minutes + self.break_minutes))
         capacity = len(slots) * lessons_per_slot
         if capacity >= lessons_remaining:
             return 1.0
         return round(min(lessons_remaining / max(capacity, 1), 3.0), 2)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Aulas pendentes
-    # ─────────────────────────────────────────────────────────────────────────
-
     def _get_pending_lessons(self) -> List[Lesson]:
-        from sqlalchemy import and_
-
         watched_subquery = (
             db.session.query(LessonProgress.lesson_id)
             .filter(
@@ -1349,7 +1184,6 @@ class ScheduleEngine:
                 LessonProgress.is_deleted == False,
             )
         )
-
         scheduled_subquery = (
             db.session.query(ScheduleItem.lesson_id)
             .join(StudySchedule, ScheduleItem.schedule_id == StudySchedule.id)
@@ -1364,9 +1198,7 @@ class ScheduleEngine:
                 ScheduleItem.lesson_id.isnot(None),
             )
         )
-
         exclude_subquery = watched_subquery.union(scheduled_subquery)
-
         return (
             Lesson.query.join(Module, Lesson.module_id == Module.id)
             .join(Subject, Module.subject_id == Subject.id)
@@ -1383,31 +1215,16 @@ class ScheduleEngine:
             .all()
         )
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Geração de slots de dias disponíveis
-    # ─────────────────────────────────────────────────────────────────────────
-
-    def _generate_day_slots(
-        self,
-        start_date: date,
-        compression: float = 1.0,
-        max_days: int = None,
-    ) -> List[date]:
+    def _generate_day_slots(self, start_date: date, compression: float = 1.0, max_days: int = None) -> List[date]:
         slots = []
         current = start_date
         limit = max_days or self.MAX_SCHEDULE_DAYS
         end = start_date + timedelta(days=limit)
-
         while current <= end and len(slots) < limit:
             if current.weekday() in self.available_days:
                 slots.append(current)
             current += timedelta(days=1)
-
         return slots
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Utilitários
-    # ─────────────────────────────────────────────────────────────────────────
 
     def _build_priority_reason(self, subject: Optional[Subject], priority: float) -> str:
         if not subject:

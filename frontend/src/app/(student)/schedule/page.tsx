@@ -1,13 +1,15 @@
 "use client";
-// frontend/src/app/(student)/schedule/page.tsx
+// frontend/src/app/(student)/schedule/page.tsx — v11
 //
-// v9 FIX — CALENDÁRIO DINÂMICO:
-//   Problema: calendário só buscava 42 dias, então meses futuros ficavam vazios
-//   Fix: state do mês visualizado levantado pro ScheduleView; daysToFetch
-//        calculado com base em quão longe no futuro o usuário navegou
+// v11 — PAUSA CONFIGURÁVEL PELO ALUNO:
+//   - Novo passo no wizard (passo 3) para escolher pausa entre atividades
+//   - Pausa enviada em scheduleApi.updateAvailability({ break_minutes })
+//   - Divisor visual "Pausa X min" exibido entre itens do mesmo dia
+//     nas views Lista e Blocos (somente se break_minutes > 0)
+//   - Resumo do passo 5 mostra a pausa selecionada
 //
-// v8.2 (preservado): Badge de aviso para aulas longas com theme tokens (warning)
-// v9 (preservado): Wizard usa mapa Python weekday() correto (Seg=0)
+// v9 FIX (preservado): calendário dinâmico com daysToFetch por mês
+// v8.2 (preservado): badge "Aula longa"
 
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -26,7 +28,7 @@ import {
   HelpCircle, RefreshCw, Sparkles, ClipboardList,
   AlertTriangle, Target, ChevronRight, RotateCcw,
   Play, ArrowRight, List, LayoutGrid, CalendarDays,
-  ChevronLeft, Hourglass,
+  ChevronLeft, Hourglass, Coffee,
 } from "lucide-react";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -35,9 +37,10 @@ import {
 
 type ViewMode = "list" | "blocks" | "calendar";
 const VIEW_STORAGE_KEY = "concurso-schedule-view";
-const DAYS_PT = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];  // JS getDay() order
-const DAYS_BACKEND_PT = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];  // Python weekday() order
-const MONTHS_PT = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+const DAYS_PT = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+const DAYS_BACKEND_PT = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
+const MONTHS_PT = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+  "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 
 const TYPE_CONFIG: Record<string, { color: string; dot: string; label: string; icon: any }> = {
   lesson: { color: "bg-primary/10 text-primary border-primary/20", dot: "bg-primary", label: "Aula", icon: BookOpen },
@@ -100,6 +103,24 @@ function parseDayMeta(dateStr: string) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Divisor de pausa entre itens
+// ─────────────────────────────────────────────────────────────────────────────
+
+function BreakDivider({ minutes }: { minutes: number }) {
+  if (minutes <= 0) return null;
+  return (
+    <div className="flex items-center gap-2 px-1 py-0.5">
+      <div className="h-px flex-1 bg-border" />
+      <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+        <Coffee className="h-3 w-3" />
+        {minutes} min de pausa
+      </span>
+      <div className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Toggle de visualização
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -132,7 +153,7 @@ function ViewToggle({ view, onChange }: { view: ViewMode; onChange: (v: ViewMode
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Item individual (compartilhado entre views)
+// Item individual
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
@@ -208,9 +229,7 @@ function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
         {isLongLesson && !isDoneOrSkipped && (
           <p className="text-xs text-warning bg-warning/10 border border-warning/30 rounded px-2 py-1 mt-1.5 flex items-start gap-1.5">
             <Hourglass className="h-3 w-3 mt-0.5 shrink-0" />
-            <span>
-              Esta aula é mais longa que sua carga diária. Reserve um tempo extra hoje ou divida em sessões.
-            </span>
+            <span>Esta aula é mais longa que sua carga diária. Reserve um tempo extra hoje ou divida em sessões.</span>
           </p>
         )}
 
@@ -246,13 +265,15 @@ function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// View: Lista
+// View: Lista (com divisores de pausa entre itens)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function ScheduleListView({ days, courseId, onCheckin, onUncheckin, loading }: {
+function ScheduleListView({ days, courseId, onCheckin, onUncheckin, loading, breakMinutes }: {
   days: any[]; courseId: string;
   onUncheckin: (id: string) => void;
-  onCheckin: (id: string, completed: boolean) => void; loading: boolean;
+  onCheckin: (id: string, completed: boolean) => void;
+  loading: boolean;
+  breakMinutes: number;
 }) {
   if (days.length === 0) return null;
   return (
@@ -281,10 +302,20 @@ function ScheduleListView({ days, courseId, onCheckin, onUncheckin, loading }: {
                 </Badge>
               )}
             </div>
-            <div className="space-y-2 ml-2 pl-10 border-l-2 border-border">
-              {items.map((item: any) => (
-                <ScheduleItemRow key={item.id} item={item} courseId={courseId}
-                  onCheckin={onCheckin} onUncheckin={onUncheckin} loading={loading} />
+            <div className="space-y-0 ml-2 pl-10 border-l-2 border-border">
+              {items.map((item: any, idx: number) => (
+                <div key={item.id}>
+                  <div className="py-1">
+                    <ScheduleItemRow
+                      item={item} courseId={courseId}
+                      onCheckin={onCheckin} onUncheckin={onUncheckin} loading={loading}
+                    />
+                  </div>
+                  {/* Pausa entre itens (exceto após o último) */}
+                  {idx < items.length - 1 && (
+                    <BreakDivider minutes={breakMinutes} />
+                  )}
+                </div>
               ))}
             </div>
           </div>
@@ -295,13 +326,15 @@ function ScheduleListView({ days, courseId, onCheckin, onUncheckin, loading }: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// View: Blocos
+// View: Blocos (com divisores de pausa entre itens)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading }: {
+function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading, breakMinutes }: {
   days: any[]; courseId: string;
   onUncheckin: (id: string) => void;
-  onCheckin: (id: string, completed: boolean) => void; loading: boolean;
+  onCheckin: (id: string, completed: boolean) => void;
+  loading: boolean;
+  breakMinutes: number;
 }) {
   const router = useRouter();
   if (days.length === 0) return null;
@@ -311,26 +344,17 @@ function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading }:
         const { label, sub, isToday } = parseDayMeta(dateStr);
         const doneCount = items.filter((i: any) => i.status === "done").length;
         const pendingCount = items.filter((i: any) => i.status === "pending").length;
-
         return (
-          <Card key={dateStr} className={cn(
-            "overflow-hidden transition-all",
-            isToday && "border-primary/50 shadow-sm",
-          )}>
-            <div className={cn(
-              "px-4 py-3 flex items-center justify-between",
-              isToday ? "bg-primary text-primary-foreground" : "bg-muted/40",
-            )}>
+          <Card key={dateStr} className={cn("overflow-hidden transition-all", isToday && "border-primary/50 shadow-sm")}>
+            <div className={cn("px-4 py-3 flex items-center justify-between", isToday ? "bg-primary text-primary-foreground" : "bg-muted/40")}>
               <div>
                 <p className="text-sm font-bold">{label}</p>
                 <p className={cn("text-xs", isToday ? "opacity-80" : "text-muted-foreground")}>{sub}</p>
               </div>
               <div className="flex items-center gap-1.5">
                 {pendingCount > 0 && (
-                  <span className={cn(
-                    "text-xs px-2 py-0.5 rounded-full font-medium",
-                    isToday ? "bg-white/20 text-white" : "bg-background text-muted-foreground border",
-                  )}>
+                  <span className={cn("text-xs px-2 py-0.5 rounded-full font-medium",
+                    isToday ? "bg-white/20 text-white" : "bg-background text-muted-foreground border")}>
                     {pendingCount} pendente{pendingCount > 1 ? "s" : ""}
                   </span>
                 )}
@@ -339,78 +363,65 @@ function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading }:
                 </span>
               </div>
             </div>
-
-            <CardContent className="p-3 space-y-2">
-              {items.map((item: any) => {
+            <CardContent className="p-3 space-y-0">
+              {items.map((item: any, idx: number) => {
                 const cfg = TYPE_CONFIG[item.item_type] || TYPE_CONFIG.lesson;
                 const Icon = cfg.icon;
                 const isDone = item.status === "done";
                 const isSkipped = item.status === "skipped";
                 const isDoneOrSkipped = isDone || isSkipped;
                 const isLongLesson = item.is_long_lesson === true;
-
                 return (
-                  <div key={item.id}
-                    className={cn(
+                  <div key={item.id}>
+                    <div className={cn(
                       "flex items-center gap-2 p-2 rounded-lg border text-xs transition-all",
                       isDone && "opacity-50 line-through border-success/20 bg-success/5",
                       isSkipped && "opacity-40 border-border bg-muted/20",
                       !isDoneOrSkipped && !isLongLesson && "border-border bg-background hover:border-primary/30",
                       !isDoneOrSkipped && isLongLesson && "border-warning/30 bg-warning/5",
-                    )}
-                  >
-                    <button
-                      onClick={() => {
-                        if (isDone) onUncheckin(item.id);
-                        else if (!isSkipped) onCheckin(item.id, true);
-                      }}
-                      disabled={loading || isSkipped}
-                      title={isDone ? "Desfazer check-in" : "Marcar como concluído"}
-                      className={cn(
-                        "h-5 w-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all group",
-                        isDone && "bg-success border-success hover:bg-destructive hover:border-destructive",
-                        isSkipped && "bg-muted border-muted cursor-not-allowed",
-                        !isDoneOrSkipped && "border-border hover:border-success",
-                      )}
-                    >
-                      {isDone && (
-                        <>
-                          <CheckCircle2 className="h-3 w-3 text-white group-hover:hidden" />
-                          <RotateCcw className="h-3 w-3 text-white hidden group-hover:block" />
-                        </>
-                      )}
-                    </button>
-
-                    <div className={cn("h-6 w-6 rounded flex items-center justify-center shrink-0 border", cfg.color)}>
-                      <Icon className="h-3 w-3" />
-                    </div>
-
-                    <div className="flex-1 min-w-0">
-                      <p className="truncate font-medium text-foreground flex items-center gap-1">
-                        {resolveTitle(item)}
-                        {isLongLesson && (
-                          <Hourglass
-                            className="h-3 w-3 text-warning shrink-0"
-                            aria-label="Aula mais longa que sua carga diária"
-                          />
-                        )}
-                      </p>
-                      <div className="flex items-center gap-1.5 mt-0.5 text-muted-foreground">
-                        <Clock className="h-2.5 w-2.5" />{item.estimated_minutes}min
-                        {item.subject?.name && (
-                          <><span>·</span><span className="truncate">{item.subject.name}</span></>
-                        )}
-                      </div>
-                    </div>
-
-                    {!isDoneOrSkipped && (
+                    )}>
                       <button
-                        onClick={() => router.push(buildItemUrl(item, courseId))}
-                        className="shrink-0 text-primary hover:text-primary/80"
-                        title={itemActionLabel(item)}
+                        onClick={() => {
+                          if (isDone) onUncheckin(item.id);
+                          else if (!isSkipped) onCheckin(item.id, true);
+                        }}
+                        disabled={loading || isSkipped}
+                        className={cn(
+                          "h-5 w-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all group",
+                          isDone && "bg-success border-success hover:bg-destructive hover:border-destructive",
+                          isSkipped && "bg-muted border-muted cursor-not-allowed",
+                          !isDoneOrSkipped && "border-border hover:border-success",
+                        )}
                       >
-                        <ArrowRight className="h-3.5 w-3.5" />
+                        {isDone && (
+                          <>
+                            <CheckCircle2 className="h-3 w-3 text-white group-hover:hidden" />
+                            <RotateCcw className="h-3 w-3 text-white hidden group-hover:block" />
+                          </>
+                        )}
                       </button>
+                      <div className={cn("h-6 w-6 rounded flex items-center justify-center shrink-0 border", cfg.color)}>
+                        <Icon className="h-3 w-3" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="truncate font-medium text-foreground flex items-center gap-1">
+                          {resolveTitle(item)}
+                          {isLongLesson && <Hourglass className="h-3 w-3 text-warning shrink-0" />}
+                        </p>
+                        <div className="flex items-center gap-1.5 mt-0.5 text-muted-foreground">
+                          <Clock className="h-2.5 w-2.5" />{item.estimated_minutes}min
+                          {item.subject?.name && <><span>·</span><span className="truncate">{item.subject.name}</span></>}
+                        </div>
+                      </div>
+                      {!isDoneOrSkipped && (
+                        <button onClick={() => router.push(buildItemUrl(item, courseId))} className="shrink-0 text-primary hover:text-primary/80">
+                          <ArrowRight className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                    {/* Pausa entre itens */}
+                    {idx < items.length - 1 && (
+                      <BreakDivider minutes={breakMinutes} />
                     )}
                   </div>
                 );
@@ -424,27 +435,22 @@ function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading }:
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// View: Calendário
-//
-// v9 FIX: agora recebe viewYear/viewMonth/onMonthChange do pai
-// (necessário pra fetch dinâmico de dados conforme navega nos meses)
+// View: Calendário (sem alterações relevantes — breakMinutes não exibido aqui)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ScheduleCalendarView({
   days, courseId, onCheckin, onUncheckin, loading,
-  viewYear, viewMonth, onMonthChange,
+  viewYear, viewMonth, onMonthChange, breakMinutes,
 }: {
   days: any[]; courseId: string;
   onUncheckin: (id: string) => void;
   onCheckin: (id: string, completed: boolean) => void; loading: boolean;
-  viewYear: number;
-  viewMonth: number;
+  viewYear: number; viewMonth: number;
   onMonthChange: (year: number, month: number) => void;
+  breakMinutes: number;
 }) {
   const today = new Date();
-  const [selectedDate, setSelectedDate] = useState<string | null>(
-    today.toISOString().split("T")[0]
-  );
+  const [selectedDate, setSelectedDate] = useState<string | null>(today.toISOString().split("T")[0]);
 
   const itemsByDate: Record<string, any[]> = {};
   for (const { date, items } of days) {
@@ -454,7 +460,6 @@ function ScheduleCalendarView({
   const firstDay = new Date(viewYear, viewMonth, 1);
   const startOffset = firstDay.getDay();
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
-
   const cells: (number | null)[] = [
     ...Array(startOffset).fill(null),
     ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
@@ -473,21 +478,16 @@ function ScheduleCalendarView({
   const todayStr = today.toISOString().split("T")[0];
   const selectedItems = selectedDate ? (itemsByDate[selectedDate] || []) : [];
   const { label: selectedLabel, sub: selectedSub } = selectedDate
-    ? parseDayMeta(selectedDate)
-    : { label: "", sub: "" };
+    ? parseDayMeta(selectedDate) : { label: "", sub: "" };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <button onClick={prevMonth}
-          className="h-8 w-8 rounded-lg border border-border flex items-center justify-center hover:bg-muted transition-colors">
+        <button onClick={prevMonth} className="h-8 w-8 rounded-lg border border-border flex items-center justify-center hover:bg-muted transition-colors">
           <ChevronLeft className="h-4 w-4" />
         </button>
-        <p className="text-sm font-semibold text-foreground">
-          {MONTHS_PT[viewMonth]} {viewYear}
-        </p>
-        <button onClick={nextMonth}
-          className="h-8 w-8 rounded-lg border border-border flex items-center justify-center hover:bg-muted transition-colors">
+        <p className="text-sm font-semibold text-foreground">{MONTHS_PT[viewMonth]} {viewYear}</p>
+        <button onClick={nextMonth} className="h-8 w-8 rounded-lg border border-border flex items-center justify-center hover:bg-muted transition-colors">
           <ChevronRight className="h-4 w-4" />
         </button>
       </div>
@@ -495,18 +495,12 @@ function ScheduleCalendarView({
       <div className="border border-border rounded-xl overflow-hidden">
         <div className="grid grid-cols-7 bg-muted/40 border-b border-border">
           {DAYS_PT.map(d => (
-            <div key={d} className="py-2 text-center text-xs font-medium text-muted-foreground">
-              {d}
-            </div>
+            <div key={d} className="py-2 text-center text-xs font-medium text-muted-foreground">{d}</div>
           ))}
         </div>
-
         <div className="grid grid-cols-7">
           {cells.map((day, idx) => {
-            if (!day) return (
-              <div key={`empty-${idx}`} className="min-h-[60px] bg-muted/10 border-r border-b border-border last:border-r-0" />
-            );
-
+            if (!day) return <div key={`empty-${idx}`} className="min-h-[60px] bg-muted/10 border-r border-b border-border last:border-r-0" />;
             const dateStr = `${viewYear}-${String(viewMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
             const dayItems = itemsByDate[dateStr] || [];
             const isToday = dateStr === todayStr;
@@ -514,12 +508,9 @@ function ScheduleCalendarView({
             const hasPending = dayItems.some((i: any) => i.status === "pending");
             const hasDone = dayItems.some((i: any) => i.status === "done");
             const hasLongLesson = dayItems.some((i: any) => i.is_long_lesson === true);
-
             const typeDots = [...new Set(dayItems.map((i: any) => i.item_type))].slice(0, 3);
-
             return (
-              <button key={dateStr}
-                onClick={() => setSelectedDate(dateStr)}
+              <button key={dateStr} onClick={() => setSelectedDate(dateStr)}
                 className={cn(
                   "min-h-[60px] p-1.5 border-r border-b border-border last:border-r-0",
                   "flex flex-col items-start gap-1 text-left transition-colors",
@@ -527,37 +518,25 @@ function ScheduleCalendarView({
                   !isSelected && hasLongLesson && "bg-warning/5",
                   !isSelected && !hasLongLesson && "hover:bg-muted/40",
                   idx % 7 === 6 && "border-r-0",
-                )}
-              >
+                )}>
                 <span className={cn(
                   "h-6 w-6 rounded-full flex items-center justify-center text-xs font-semibold",
                   isToday && "bg-primary text-primary-foreground",
                   isSelected && !isToday && "bg-muted text-foreground",
                   !isToday && !isSelected && "text-foreground",
-                )}>
-                  {day}
-                </span>
-
+                )}>{day}</span>
                 {typeDots.length > 0 && (
                   <div className="flex items-center gap-0.5 flex-wrap">
                     {typeDots.map((type: string) => (
-                      <div key={type}
-                        className={cn("h-1.5 w-1.5 rounded-full", TYPE_CONFIG[type]?.dot || "bg-muted")} />
+                      <div key={type} className={cn("h-1.5 w-1.5 rounded-full", TYPE_CONFIG[type]?.dot || "bg-muted")} />
                     ))}
-                    {hasLongLesson && (
-                      <Hourglass className="h-2.5 w-2.5 text-warning ml-0.5" />
-                    )}
-                    {dayItems.length > 3 && (
-                      <span className="text-[9px] text-muted-foreground">+{dayItems.length - 3}</span>
-                    )}
+                    {hasLongLesson && <Hourglass className="h-2.5 w-2.5 text-warning ml-0.5" />}
+                    {dayItems.length > 3 && <span className="text-[9px] text-muted-foreground">+{dayItems.length - 3}</span>}
                   </div>
                 )}
-
                 {dayItems.length > 0 && (
-                  <span className={cn(
-                    "text-[9px] font-medium",
-                    hasPending ? "text-primary" : hasDone ? "text-success" : "text-muted-foreground",
-                  )}>
+                  <span className={cn("text-[9px] font-medium",
+                    hasPending ? "text-primary" : hasDone ? "text-success" : "text-muted-foreground")}>
                     {dayItems.filter((i: any) => i.status === "done").length}/{dayItems.length}
                   </span>
                 )}
@@ -570,23 +549,24 @@ function ScheduleCalendarView({
       <div className="flex items-center gap-4 flex-wrap">
         {Object.entries(TYPE_CONFIG).map(([key, cfg]) => (
           <div key={key} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <div className={cn("h-2 w-2 rounded-full", cfg.dot)} />
-            {cfg.label}
+            <div className={cn("h-2 w-2 rounded-full", cfg.dot)} />{cfg.label}
           </div>
         ))}
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Hourglass className="h-2.5 w-2.5 text-warning" />
-          Aula longa
+          <Hourglass className="h-2.5 w-2.5 text-warning" />Aula longa
         </div>
+        {breakMinutes > 0 && (
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Coffee className="h-2.5 w-2.5" />{breakMinutes} min pausa
+          </div>
+        )}
       </div>
 
       {selectedDate && (
         <div className="space-y-3">
           <div className="flex items-center gap-2 pb-1 border-b border-border">
-            <div className={cn(
-              "h-8 w-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0",
-              selectedDate === todayStr ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground",
-            )}>
+            <div className={cn("h-8 w-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0",
+              selectedDate === todayStr ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground")}>
               {selectedLabel.slice(0, 3)}
             </div>
             <div>
@@ -597,12 +577,16 @@ function ScheduleCalendarView({
               <p className="ml-auto text-xs text-muted-foreground italic">Sem atividades agendadas</p>
             )}
           </div>
-
           {selectedItems.length > 0 && (
-            <div className="space-y-2">
-              {selectedItems.map((item: any) => (
-                <ScheduleItemRow key={item.id} item={item} courseId={courseId}
-                  onCheckin={onCheckin} onUncheckin={onUncheckin} loading={loading} />
+            <div className="space-y-0">
+              {selectedItems.map((item: any, idx: number) => (
+                <div key={item.id}>
+                  <div className="py-1">
+                    <ScheduleItemRow item={item} courseId={courseId}
+                      onCheckin={onCheckin} onUncheckin={onUncheckin} loading={loading} />
+                  </div>
+                  {idx < selectedItems.length - 1 && <BreakDivider minutes={breakMinutes} />}
+                </div>
               ))}
             </div>
           )}
@@ -613,62 +597,34 @@ function ScheduleCalendarView({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// v9.2: Banner de aviso quando carga horária não cobre todas as aulas
+// Banner de cobertura insuficiente
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface CoverageGap {
-  will_cover_lessons: number;
-  total_lessons: number;
-  coverage_percent: number;
-  suggested_hours_per_day: number;
-  current_hours_per_day: number;
-  days_until_exam: number;
+  will_cover_lessons: number; total_lessons: number; coverage_percent: number;
+  suggested_hours_per_day: number; current_hours_per_day: number; days_until_exam: number;
 }
 
-function CoverageWarningBanner({
-  coverageGap,
-  courseId,
-  currentDays,
-  onAdjusted,
-}: {
-  coverageGap: CoverageGap;
-  courseId: string;
-  currentDays: number[];
-  onAdjusted: () => void;
+function CoverageWarningBanner({ coverageGap, courseId, currentDays, onAdjusted }: {
+  coverageGap: CoverageGap; courseId: string; currentDays: number[]; onAdjusted: () => void;
 }) {
   const toast = useToast();
   const [dismissed, setDismissed] = useState(false);
 
   const adjustHoursMutation = useMutation({
     mutationFn: async (newHours: number) => {
-      // 1. Atualiza availability preservando os dias atuais
-      await scheduleApi.updateAvailability({
-        days: currentDays,
-        hours_per_day: newHours,
-      });
-      // 2. Reorganiza pra recalcular tudo com a nova carga
+      await scheduleApi.updateAvailability({ days: currentDays, hours_per_day: newHours });
       await apiClient.post("/schedule/reorganize", { course_id: courseId });
     },
     onSuccess: (_, newHours) => {
-      toast.success(
-        "Carga horária ajustada!",
-        `Cronograma reorganizado para ${newHours}h/dia.`,
-      );
+      toast.success("Carga horária ajustada!", `Cronograma reorganizado para ${newHours}h/dia.`);
       onAdjusted();
     },
     onError: () => toast.error("Erro ao ajustar carga horária"),
   });
 
   if (dismissed) return null;
-
-  const {
-    will_cover_lessons,
-    total_lessons,
-    coverage_percent,
-    suggested_hours_per_day,
-    current_hours_per_day,
-  } = coverageGap;
-
+  const { will_cover_lessons, total_lessons, coverage_percent, suggested_hours_per_day, current_hours_per_day } = coverageGap;
   const lessonsNotCovered = total_lessons - will_cover_lessons;
 
   return (
@@ -679,58 +635,27 @@ function CoverageWarningBanner({
             <AlertTriangle className="h-5 w-5 text-warning" />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-foreground">
-              Sua carga horária não cobre todo o conteúdo até a prova
-            </p>
+            <p className="text-sm font-semibold text-foreground">Sua carga horária não cobre todo o conteúdo até a prova</p>
             <p className="text-xs text-muted-foreground mt-1">
               Com <strong>{current_hours_per_day}h/dia</strong>, você fará{" "}
               <strong className="text-warning">{will_cover_lessons} de {total_lessons} aulas</strong>{" "}
-              ({coverage_percent}%). Faltarão{" "}
-              <strong>{lessonsNotCovered} aulas</strong> para concluir o edital antes da prova.
+              ({coverage_percent}%). Faltarão <strong>{lessonsNotCovered} aulas</strong>.
             </p>
           </div>
-          <button
-            onClick={() => setDismissed(true)}
-            className="text-muted-foreground hover:text-foreground transition-colors text-xs shrink-0"
-            title="Dispensar aviso"
-          >
-            ✕
-          </button>
+          <button onClick={() => setDismissed(true)} className="text-muted-foreground hover:text-foreground transition-colors text-xs shrink-0">✕</button>
         </div>
-
         <div className="flex items-center gap-2 flex-wrap pt-1">
-          <Button
-            size="sm"
-            onClick={() => adjustHoursMutation.mutate(suggested_hours_per_day)}
-            disabled={adjustHoursMutation.isPending}
-            className="bg-warning text-warning-foreground hover:bg-warning/90"
-          >
+          <Button size="sm" onClick={() => adjustHoursMutation.mutate(suggested_hours_per_day)}
+            disabled={adjustHoursMutation.isPending} className="bg-warning text-warning-foreground hover:bg-warning/90">
             <Clock className="h-3.5 w-3.5" />
-            {adjustHoursMutation.isPending
-              ? "Ajustando..."
-              : `Aumentar para ${suggested_hours_per_day}h/dia`}
+            {adjustHoursMutation.isPending ? "Ajustando..." : `Aumentar para ${suggested_hours_per_day}h/dia`}
           </Button>
-
-          {/* Sugestão alternativa: dobrar carga atual se não chegar à recomendada */}
           {current_hours_per_day * 2 < suggested_hours_per_day && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => adjustHoursMutation.mutate(current_hours_per_day * 2)}
-              disabled={adjustHoursMutation.isPending}
-            >
-              <Clock className="h-3.5 w-3.5" />
-              Tentar {current_hours_per_day * 2}h/dia
+            <Button size="sm" variant="outline" onClick={() => adjustHoursMutation.mutate(current_hours_per_day * 2)} disabled={adjustHoursMutation.isPending}>
+              <Clock className="h-3.5 w-3.5" />Tentar {current_hours_per_day * 2}h/dia
             </Button>
           )}
-
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => setDismissed(true)}
-            disabled={adjustHoursMutation.isPending}
-            className="text-muted-foreground"
-          >
+          <Button size="sm" variant="ghost" onClick={() => setDismissed(true)} disabled={adjustHoursMutation.isPending} className="text-muted-foreground">
             Manter {current_hours_per_day}h/dia
           </Button>
         </div>
@@ -740,10 +665,7 @@ function CoverageWarningBanner({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Componente principal: ScheduleView
-//
-// v9 FIX: levanta state do mês do calendário pra cá, permitindo
-// calcular daysToFetch dinamicamente conforme usuário navega
+// ScheduleView principal
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () => void }) {
@@ -760,26 +682,13 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
     localStorage.setItem(VIEW_STORAGE_KEY, v);
   };
 
-  // v9 FIX: state do mês visualizado no calendário (levantado pro pai)
   const today = new Date();
-  const [calendarMonth, setCalendarMonth] = useState({
-    year: today.getFullYear(),
-    month: today.getMonth(),
-  });
+  const [calendarMonth, setCalendarMonth] = useState({ year: today.getFullYear(), month: today.getMonth() });
 
-  // v9 FIX: daysToFetch dinâmico
-  // - Lista/Blocos: 14 dias (comportamento original)
-  // - Calendário: do hoje até o FIM do mês visualizado + 1 mês de folga
-  //   Isso garante que qualquer mês navegado tenha dados carregados.
   const daysToFetch = (() => {
     if (view !== "calendar") return 14;
-    // Fim do mês SEGUINTE ao visualizado (1 mês de folga)
     const endOfViewedMonthPlus1 = new Date(calendarMonth.year, calendarMonth.month + 2, 0);
-    const diffDays = Math.ceil(
-      (endOfViewedMonthPlus1.getTime() - today.getTime()) / 86_400_000
-    );
-    // Mínimo 42 (evita fetch muito pequeno se navegar pro passado)
-    // Máximo 800 (~2 anos + margem, bate com MAX_SCHEDULE_DAYS=730 do engine)
+    const diffDays = Math.ceil((endOfViewedMonthPlus1.getTime() - today.getTime()) / 86_400_000);
     return Math.min(800, Math.max(42, diffDays));
   })();
 
@@ -794,15 +703,12 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
   const checkinMutation = useMutation({
     mutationFn: ({ itemId, completed }: { itemId: string; completed: boolean }) =>
       scheduleApi.checkin(itemId, { completed }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["schedule", courseId] });
-    },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["schedule", courseId] }); },
     onError: () => toast.error("Erro ao marcar item"),
   });
 
   const uncheckinMutation = useMutation({
-    mutationFn: (itemId: string) =>
-      apiClient.delete(`/schedule/checkin/${itemId}`),
+    mutationFn: (itemId: string) => apiClient.delete(`/schedule/checkin/${itemId}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["schedule", courseId] });
       toast.success("Check-in desfeito.");
@@ -829,26 +735,23 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
   });
 
   if (isLoading) return (
-    <div className="space-y-4">
-      {[...Array(3)].map((_, i) => (
-        <div key={i} className="h-32 bg-muted rounded-xl animate-pulse" />
-      ))}
-    </div>
+    <div className="space-y-4">{[...Array(3)].map((_, i) => <div key={i} className="h-32 bg-muted rounded-xl animate-pulse" />)}</div>
   );
 
   const days = data?.days || [];
   const stats = data?.stats;
   const isProducerTemplate = data?.schedule?.source_type === "producer_template";
+
+  // v11: lê break_minutes do schedule para exibir nos divisores
+  const breakMinutes: number = data?.schedule?.break_minutes ?? stats?.break_minutes ?? 0;
+
   const daysUntilExam = stats?.target_date
-    ? Math.max(0, Math.round(
-      (new Date(stats.target_date + "T12:00:00").getTime() - Date.now()) / 86_400_000
-    ))
+    ? Math.max(0, Math.round((new Date(stats.target_date + "T12:00:00").getTime() - Date.now()) / 86_400_000))
     : null;
 
   const checkinProps = {
     courseId,
-    onCheckin: (id: string, completed: boolean) =>
-      checkinMutation.mutate({ itemId: id, completed }),
+    onCheckin: (id: string, completed: boolean) => checkinMutation.mutate({ itemId: id, completed }),
     onUncheckin: (id: string) => uncheckinMutation.mutate(id),
     loading: checkinMutation.isPending || uncheckinMutation.isPending,
   };
@@ -859,23 +762,17 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
         <div>
           <h1 className="font-display text-2xl font-bold text-foreground">Cronograma</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            {isProducerTemplate
-              ? "Cronograma adaptado à sua disponibilidade"
-              : "Adaptativo · atualiza com seu desempenho"}
+            {isProducerTemplate ? "Cronograma adaptado à sua disponibilidade" : "Adaptativo · atualiza com seu desempenho"}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <ViewToggle view={view} onChange={handleViewChange} />
           {!isProducerTemplate && (
-            <Button variant="outline" size="sm"
-              onClick={() => reorganizeMutation.mutate()}
-              disabled={reorganizeMutation.isPending}>
-              <RefreshCw className="h-4 w-4" />
-              Reorganizar
+            <Button variant="outline" size="sm" onClick={() => reorganizeMutation.mutate()} disabled={reorganizeMutation.isPending}>
+              <RefreshCw className="h-4 w-4" />Reorganizar
             </Button>
           )}
-          <Button variant="ghost" size="sm"
-            className="text-destructive hover:text-destructive"
+          <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive"
             onClick={() => { if (confirm("Deletar o cronograma?")) deleteMutation.mutate(); }}
             disabled={deleteMutation.isPending}>
             Deletar
@@ -892,15 +789,22 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
         </div>
       )}
 
-      {/* v9.2: Aviso quando 2h/dia não cobrem todas as aulas até a prova */}
+      {/* Indicador de pausa ativo */}
+      {breakMinutes > 0 && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-muted/40 border border-border">
+          <Coffee className="h-4 w-4 text-muted-foreground shrink-0" />
+          <p className="text-xs text-muted-foreground">
+            Pausa de <strong className="text-foreground">{breakMinutes} min</strong> entre atividades incluída no cálculo do dia.
+          </p>
+        </div>
+      )}
+
       {data?.coverage_gap && !isProducerTemplate && (
         <CoverageWarningBanner
           coverageGap={data.coverage_gap}
           courseId={courseId}
           currentDays={data.schedule?.days || [0, 1, 2, 3, 4]}
-          onAdjusted={() => {
-            queryClient.invalidateQueries({ queryKey: ["schedule", courseId] });
-          }}
+          onAdjusted={() => { queryClient.invalidateQueries({ queryKey: ["schedule", courseId] }); }}
         />
       )}
 
@@ -921,19 +825,14 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
           {daysUntilExam !== null ? (
             <Card className={cn(daysUntilExam <= 14 && "border-destructive/40")}>
               <CardContent className="p-4 text-center">
-                <p className={cn("text-2xl font-bold", daysUntilExam <= 14 ? "text-destructive" : "text-foreground")}>
-                  {daysUntilExam}
-                </p>
-                <p className="text-xs text-muted-foreground flex items-center justify-center gap-1">
-                  <Target className="h-3 w-3" />Dias p/ prova
-                </p>
+                <p className={cn("text-2xl font-bold", daysUntilExam <= 14 ? "text-destructive" : "text-foreground")}>{daysUntilExam}</p>
+                <p className="text-xs text-muted-foreground flex items-center justify-center gap-1"><Target className="h-3 w-3" />Dias p/ prova</p>
               </CardContent>
             </Card>
           ) : (
             <Card><CardContent className="p-4 text-center">
               <p className={cn("text-2xl font-bold",
-                stats.abandonment_risk > 0.6 ? "text-destructive" :
-                  stats.abandonment_risk > 0.3 ? "text-warning" : "text-success")}>
+                stats.abandonment_risk > 0.6 ? "text-destructive" : stats.abandonment_risk > 0.3 ? "text-warning" : "text-success")}>
                 {stats.abandonment_risk > 0.6 ? "Alto" : stats.abandonment_risk > 0.3 ? "Médio" : "Baixo"}
               </p>
               <p className="text-xs text-muted-foreground">Risco abandono</p>
@@ -947,9 +846,7 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
           <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
           <div>
             <p className="text-sm font-semibold text-destructive">Você está atrasado!</p>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Clique em Reorganizar para ajustar o plano ao seu ritmo atual.
-            </p>
+            <p className="text-xs text-muted-foreground mt-0.5">Clique em Reorganizar para ajustar o plano ao seu ritmo atual.</p>
           </div>
         </div>
       )}
@@ -966,21 +863,24 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
           <Calendar className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
           <p className="font-semibold text-foreground">Nenhum item nos próximos {daysToFetch} dias</p>
           <p className="text-sm text-muted-foreground mt-1">
-            {isProducerTemplate
-              ? "Você concluiu os itens programados. Parabéns!"
-              : "Clique em Reorganizar para gerar novos itens."}
+            {isProducerTemplate ? "Você concluiu os itens programados. Parabéns!" : "Clique em Reorganizar para gerar novos itens."}
           </p>
         </CardContent></Card>
       )}
 
-      {days.length > 0 && view === "list" && <ScheduleListView days={days} {...checkinProps} />}
-      {days.length > 0 && view === "blocks" && <ScheduleBlocksView days={days} {...checkinProps} />}
+      {days.length > 0 && view === "list" && (
+        <ScheduleListView days={days} breakMinutes={breakMinutes} {...checkinProps} />
+      )}
+      {days.length > 0 && view === "blocks" && (
+        <ScheduleBlocksView days={days} breakMinutes={breakMinutes} {...checkinProps} />
+      )}
       {days.length > 0 && view === "calendar" && (
         <ScheduleCalendarView
           days={days}
           viewYear={calendarMonth.year}
           viewMonth={calendarMonth.month}
           onMonthChange={(year, month) => setCalendarMonth({ year, month })}
+          breakMinutes={breakMinutes}
           {...checkinProps}
         />
       )}
@@ -989,13 +889,14 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Wizard de criação
+// Wizard de criação — v11: 5 passos com pausa entre atividades
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerated: () => void }) {
   const [step, setStep] = useState(1);
   const [days, setDays] = useState([0, 1, 2, 3, 4]);
   const [hours, setHours] = useState(2);
+  const [breakMinutes, setBreakMinutes] = useState(0);  // v11
   const [startTime, setStartTime] = useState("19:00");
   const [targetDate, setTargetDate] = useState("");
   const toast = useToast();
@@ -1003,7 +904,12 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
 
   const saveMutation = useMutation({
     mutationFn: async () => {
-      await scheduleApi.updateAvailability({ days, hours_per_day: hours, preferred_start_time: startTime });
+      await scheduleApi.updateAvailability({
+        days,
+        hours_per_day: hours,
+        preferred_start_time: startTime,
+        break_minutes: breakMinutes,  // v11
+      });
       await scheduleApi.generate(courseId, targetDate || undefined);
     },
     onSuccess: () => {
@@ -1018,6 +924,13 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
   const toggleDay = (d: number) =>
     setDays(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d].sort());
 
+  const BREAK_OPTIONS = [
+    { value: 0, label: "Sem pausa", sub: "Atividades em sequência" },
+    { value: 5, label: "5 min", sub: "Pausa rápida" },
+    { value: 10, label: "10 min", sub: "Pausa moderada" },
+    { value: 15, label: "15 min", sub: "Pausa longa" },
+  ];
+
   return (
     <div data-onboarding="schedule" className="max-w-lg mx-auto space-y-6 animate-fade-in">
       <div className="text-center space-y-2">
@@ -1028,12 +941,14 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
         <p className="text-muted-foreground text-sm">Configure seu plano adaptativo, ele aprende com seu desempenho</p>
       </div>
 
+      {/* Progress dots — 5 passos */}
       <div className="flex items-center gap-2 justify-center">
-        {[1, 2, 3, 4].map(s => (
+        {[1, 2, 3, 4, 5].map(s => (
           <div key={s} className={cn("h-2 rounded-full transition-all", s <= step ? "bg-primary w-8" : "bg-muted w-2")} />
         ))}
       </div>
 
+      {/* Passo 1: Dias */}
       {step === 1 && (
         <Card><CardContent className="p-6 space-y-4">
           <div>
@@ -1041,15 +956,9 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
             <p className="text-sm text-muted-foreground mt-0.5">Selecione pelo menos 1 dia</p>
           </div>
           <div className="grid grid-cols-7 gap-1.5">
-            {/* Backend usa Python weekday(): 0=Seg, 1=Ter, ..., 6=Dom */}
             {[
-              { value: 0, label: "Seg" },
-              { value: 1, label: "Ter" },
-              { value: 2, label: "Qua" },
-              { value: 3, label: "Qui" },
-              { value: 4, label: "Sex" },
-              { value: 5, label: "Sáb" },
-              { value: 6, label: "Dom" },
+              { value: 0, label: "Seg" }, { value: 1, label: "Ter" }, { value: 2, label: "Qua" },
+              { value: 3, label: "Qui" }, { value: 4, label: "Sex" }, { value: 5, label: "Sáb" }, { value: 6, label: "Dom" },
             ].map(({ value, label }) => (
               <button key={value} onClick={() => toggleDay(value)}
                 className={cn("h-12 rounded-xl text-xs font-semibold transition-all border-2",
@@ -1064,6 +973,7 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
         </CardContent></Card>
       )}
 
+      {/* Passo 2: Horas */}
       {step === 2 && (
         <Card><CardContent className="p-6 space-y-4">
           <div>
@@ -1097,7 +1007,53 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
         </CardContent></Card>
       )}
 
+      {/* Passo 3: Pausa entre atividades (v11 — NOVO) */}
       {step === 3 && (
+        <Card><CardContent className="p-6 space-y-4">
+          <div>
+            <p className="font-semibold text-foreground">Pausa entre atividades?</p>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              O tempo de pausa é descontado do seu dia — com {hours}h e {breakMinutes} min de pausa,
+              você terá{" "}
+              <strong className="text-primary">
+                {Math.floor(hours * 60 - breakMinutes * 3)} min de estudo efetivo
+              </strong>{" "}
+              (estimativa com 3 atividades/dia).
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {BREAK_OPTIONS.map(({ value, label, sub }) => (
+              <button key={value} onClick={() => setBreakMinutes(value)}
+                className={cn(
+                  "py-3 px-4 rounded-xl text-left border-2 transition-all",
+                  breakMinutes === value
+                    ? "bg-primary/10 border-primary"
+                    : "bg-background border-border hover:border-primary/50",
+                )}>
+                <p className={cn("text-sm font-semibold", breakMinutes === value ? "text-primary" : "text-foreground")}>
+                  {label}
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>
+              </button>
+            ))}
+          </div>
+          {breakMinutes > 0 && (
+            <p className="text-xs text-muted-foreground bg-muted/40 rounded-lg px-3 py-2 flex items-start gap-2">
+              <Coffee className="h-3.5 w-3.5 mt-0.5 shrink-0 text-muted-foreground" />
+              A pausa aparece como um divisor visual entre cada atividade no seu cronograma.
+            </p>
+          )}
+          <div className="flex gap-2">
+            <Button variant="outline" className="flex-1" onClick={() => setStep(2)}>Voltar</Button>
+            <Button className="flex-1" onClick={() => setStep(4)}>
+              Continuar <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        </CardContent></Card>
+      )}
+
+      {/* Passo 4: Horário preferido */}
+      {step === 4 && (
         <Card><CardContent className="p-6 space-y-4">
           <div>
             <p className="font-semibold text-foreground">Qual seu horário preferido?</p>
@@ -1118,13 +1074,14 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
             ))}
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" className="flex-1" onClick={() => setStep(2)}>Voltar</Button>
-            <Button className="flex-1" onClick={() => setStep(4)}>Continuar <ChevronRight className="h-4 w-4" /></Button>
+            <Button variant="outline" className="flex-1" onClick={() => setStep(3)}>Voltar</Button>
+            <Button className="flex-1" onClick={() => setStep(5)}>Continuar <ChevronRight className="h-4 w-4" /></Button>
           </div>
         </CardContent></Card>
       )}
 
-      {step === 4 && (
+      {/* Passo 5: Data da prova + resumo */}
+      {step === 5 && (
         <Card><CardContent className="p-6 space-y-4">
           <div>
             <p className="font-semibold text-foreground">Data da sua prova? (opcional)</p>
@@ -1135,9 +1092,12 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
             className="w-full h-10 rounded-lg border border-border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary" />
           <div className="p-3 rounded-lg bg-muted/40 space-y-1">
             <p className="text-xs font-medium text-foreground">📋 Resumo do seu plano:</p>
-            {/* v9 FIX: usa DAYS_BACKEND_PT pra traduzir valores Python weekday() corretamente */}
             <p className="text-xs text-muted-foreground">• {days.map(d => DAYS_BACKEND_PT[d]).join(", ")}</p>
             <p className="text-xs text-muted-foreground">• {hours}h/dia · {days.length * hours}h/semana</p>
+            {/* v11: mostra pausa no resumo */}
+            <p className="text-xs text-muted-foreground">
+              • {breakMinutes === 0 ? "Sem pausa entre atividades" : `${breakMinutes} min de pausa entre atividades`}
+            </p>
             <p className="text-xs text-muted-foreground">• Início às {startTime}</p>
             {targetDate && (
               <p className="text-xs text-primary font-medium">
@@ -1146,7 +1106,7 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
             )}
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" className="flex-1" onClick={() => setStep(3)}>Voltar</Button>
+            <Button variant="outline" className="flex-1" onClick={() => setStep(4)}>Voltar</Button>
             <Button className="flex-1" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate()}>
               <Sparkles className="h-4 w-4" />
               {saveMutation.isPending ? "Gerando..." : "Gerar Cronograma"}
@@ -1159,7 +1119,7 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Tela inicial (escolha entre template e IA)
+// Tela inicial e página principal (sem alterações)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ScheduleStartView({ courseId, onGenerated }: { courseId: string; onGenerated: () => void }) {
@@ -1180,11 +1140,9 @@ function ScheduleStartView({ courseId, onGenerated }: { courseId: string; onGene
   );
 
   const hasPublishedTemplate = !forceAI && !!templateData?.template;
-
   if (!hasPublishedTemplate || forceAI) {
     return <ScheduleWizard courseId={courseId} onGenerated={onGenerated} />;
   }
-
   return (
     <div className="max-w-lg mx-auto">
       <ProducerTemplateChoice
@@ -1200,10 +1158,6 @@ function ScheduleStartView({ courseId, onGenerated }: { courseId: string; onGene
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Página principal
-// ─────────────────────────────────────────────────────────────────────────────
-
 export default function SchedulePage() {
   const [courseId, setCourseId] = useState<string | null>(null);
   const [hasSchedule, setHasSchedule] = useState<boolean | null>(null);
@@ -1217,9 +1171,7 @@ export default function SchedulePage() {
   const courses = coursesData?.courses || [];
 
   useEffect(() => {
-    if (courses.length > 0 && !courseId) {
-      setCourseId(courses[0].id);
-    }
+    if (courses.length > 0 && !courseId) setCourseId(courses[0].id);
   }, [courses, courseId]);
 
   const resetScheduleCheck = (newCourseId: string) => {
@@ -1241,11 +1193,7 @@ export default function SchedulePage() {
 
   if (!courseId || checkLoading || hasSchedule === null) {
     return (
-      <div className="space-y-4">
-        {[...Array(3)].map((_, i) => (
-          <div key={i} className="h-24 bg-muted rounded-xl animate-pulse" />
-        ))}
-      </div>
+      <div className="space-y-4">{[...Array(3)].map((_, i) => <div key={i} className="h-24 bg-muted rounded-xl animate-pulse" />)}</div>
     );
   }
 
@@ -1255,25 +1203,15 @@ export default function SchedulePage() {
         <div className="flex gap-2 overflow-x-auto pb-1">
           {courses.map((c: any) => (
             <button key={c.id} onClick={() => resetScheduleCheck(c.id)}
-              className={cn(
-                "px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all border-2",
-                courseId === c.id
-                  ? "bg-primary text-primary-foreground border-primary"
-                  : "bg-background border-border hover:border-primary/50",
-              )}>
+              className={cn("px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all border-2",
+                courseId === c.id ? "bg-primary text-primary-foreground border-primary" : "bg-background border-border hover:border-primary/50")}>
               {c.name}
             </button>
           ))}
         </div>
       )}
-
-      {!hasSchedule && (
-        <ScheduleStartView courseId={courseId} onGenerated={() => setHasSchedule(true)} />
-      )}
-
-      {hasSchedule && (
-        <ScheduleView courseId={courseId} onDelete={() => setHasSchedule(false)} />
-      )}
+      {!hasSchedule && <ScheduleStartView courseId={courseId} onGenerated={() => setHasSchedule(true)} />}
+      {hasSchedule && <ScheduleView courseId={courseId} onDelete={() => setHasSchedule(false)} />}
     </div>
   );
 }
