@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils/cn";
 import {
     Filter, ChevronLeft, ChevronRight, CheckCircle2, XCircle,
     BookOpen, RotateCcw, Lightbulb, ChevronDown,
-    Target, Layers, TrendingUp, LayoutList, LayoutGrid,
+    Target, Layers, TrendingUp, LayoutList, LayoutGrid, X,
 } from "lucide-react";
 import type { Question, AnswerResult, DifficultyLevel } from "@/types/api";
 
@@ -180,104 +180,137 @@ function QuestionsContent() {
     const activeFilterCount = [filters.difficulty, filters.discipline, filters.topic, filters.historyFilter]
         .filter(Boolean).length;
 
+    // Conteúdo interno da sidebar (reutilizado em desktop inline e mobile drawer)
+    const sidebarContent = (
+        <div className="space-y-4 pt-1">
+
+            <div>
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Disciplina</p>
+                <div className="relative">
+                    <select
+                        value={filters.discipline}
+                        onChange={e => setFilters(f => ({ ...f, discipline: e.target.value, topic: "", page: 1 }))}
+                        className="w-full h-9 px-3 pr-8 rounded-lg border border-input bg-background text-sm appearance-none focus:outline-none focus:ring-2 focus:ring-ring"
+                    >
+                        <option value="">Todas</option>
+                        {(disciplinesData ?? []).map(d => <option key={d} value={d}>{d}</option>)}
+                    </select>
+                    <ChevronDown className="absolute right-2 top-2.5 h-4 w-4 text-muted-foreground pointer-events-none" />
+                </div>
+            </div>
+
+            {filters.discipline && (
+                <div>
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Tópico</p>
+                    <div className="relative">
+                        <select
+                            value={filters.topic}
+                            onChange={e => setFilters(f => ({ ...f, topic: e.target.value, page: 1 }))}
+                            className="w-full h-9 px-3 pr-8 rounded-lg border border-input bg-background text-sm appearance-none focus:outline-none focus:ring-2 focus:ring-ring"
+                        >
+                            <option value="">Todos</option>
+                            {(topicsData ?? []).map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                        <ChevronDown className="absolute right-2 top-2.5 h-4 w-4 text-muted-foreground pointer-events-none" />
+                    </div>
+                </div>
+            )}
+
+            <div>
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Dificuldade</p>
+                <div className="space-y-1">
+                    {DIFFICULTIES.map(({ value, label, color }) => (
+                        <button
+                            key={value}
+                            onClick={() => setFilters(f => ({ ...f, difficulty: value, page: 1 }))}
+                            className={cn(
+                                "w-full text-left px-3 py-1.5 rounded-lg text-sm border transition-all",
+                                filters.difficulty === value
+                                    ? "bg-primary text-primary-foreground border-primary"
+                                    : cn("border-transparent text-muted-foreground hover:text-foreground hover:bg-muted", color)
+                            )}
+                        >
+                            {label}
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            <div>
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Histórico</p>
+                <div className="space-y-1">
+                    {HISTORY_FILTERS.map(({ key, label }) => (
+                        <button
+                            key={key}
+                            onClick={() => setFilters(f => ({ ...f, historyFilter: key, page: 1 }))}
+                            className={cn(
+                                "w-full text-left px-3 py-1.5 rounded-lg text-sm border transition-all",
+                                filters.historyFilter === key
+                                    ? "bg-primary text-primary-foreground border-primary"
+                                    : "border-transparent text-muted-foreground hover:text-foreground hover:bg-muted"
+                            )}
+                        >
+                            {label}
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            {activeFilterCount > 0 && (
+                <button
+                    onClick={() => setFilters(blankFilters())}
+                    className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                    <RotateCcw className="h-3 w-3" /> Limpar filtros
+                </button>
+            )}
+        </div>
+    );
+
     return (
         <div className="flex gap-6 animate-fade-in">
 
-            {/* ── Sidebar filtros ── */}
+            {/* ── Backdrop mobile (cobre o conteúdo quando filtros abertos) ── */}
+            {showFilters && (
+                <div
+                    className="fixed inset-0 bg-black/50 z-30 sm:hidden"
+                    onClick={() => setShowFilters(false)}
+                />
+            )}
+
+            {/* ── Sidebar filtros ──
+                Mobile  : drawer fixo deslizando da esquerda (z-40, largura 280px)
+                Desktop : coluna inline que expande/colapsa com w-56
+            ── */}
             <aside className={cn(
-                "shrink-0 space-y-4 transition-all duration-200",
-                showFilters ? "w-56" : "w-0 overflow-hidden opacity-0 pointer-events-none"
+                "shrink-0 transition-all duration-300",
+                // Mobile: fixed drawer
+                "fixed top-0 left-0 h-full z-40 bg-background overflow-y-auto p-5 shadow-2xl",
+                // Desktop: inline, sem p e shadow
+                "sm:static sm:h-auto sm:z-auto sm:bg-transparent sm:overflow-visible sm:p-0 sm:shadow-none sm:space-y-4",
+                showFilters
+                    ? "w-72 sm:w-56"
+                    : "w-0 overflow-hidden opacity-0 pointer-events-none"
             )}>
-                <div className="space-y-4 pt-1">
-
-                    <div>
-                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Disciplina</p>
-                        <div className="relative">
-                            <select
-                                value={filters.discipline}
-                                onChange={e => setFilters(f => ({ ...f, discipline: e.target.value, topic: "", page: 1 }))}
-                                className="w-full h-9 px-3 pr-8 rounded-lg border border-input bg-background text-sm appearance-none focus:outline-none focus:ring-2 focus:ring-ring"
-                            >
-                                <option value="">Todas</option>
-                                {(disciplinesData ?? []).map(d => <option key={d} value={d}>{d}</option>)}
-                            </select>
-                            <ChevronDown className="absolute right-2 top-2.5 h-4 w-4 text-muted-foreground pointer-events-none" />
-                        </div>
-                    </div>
-
-                    {filters.discipline && (
-                        <div>
-                            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Tópico</p>
-                            <div className="relative">
-                                <select
-                                    value={filters.topic}
-                                    onChange={e => setFilters(f => ({ ...f, topic: e.target.value, page: 1 }))}
-                                    className="w-full h-9 px-3 pr-8 rounded-lg border border-input bg-background text-sm appearance-none focus:outline-none focus:ring-2 focus:ring-ring"
-                                >
-                                    <option value="">Todos</option>
-                                    {(topicsData ?? []).map(t => <option key={t} value={t}>{t}</option>)}
-                                </select>
-                                <ChevronDown className="absolute right-2 top-2.5 h-4 w-4 text-muted-foreground pointer-events-none" />
-                            </div>
-                        </div>
-                    )}
-
-                    <div>
-                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Dificuldade</p>
-                        <div className="space-y-1">
-                            {DIFFICULTIES.map(({ value, label, color }) => (
-                                <button
-                                    key={value}
-                                    onClick={() => setFilters(f => ({ ...f, difficulty: value, page: 1 }))}
-                                    className={cn(
-                                        "w-full text-left px-3 py-1.5 rounded-lg text-sm border transition-all",
-                                        filters.difficulty === value
-                                            ? "bg-primary text-primary-foreground border-primary"
-                                            : cn("border-transparent text-muted-foreground hover:text-foreground hover:bg-muted", color)
-                                    )}
-                                >
-                                    {label}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-
-                    <div>
-                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Histórico</p>
-                        <div className="space-y-1">
-                            {HISTORY_FILTERS.map(({ key, label }) => (
-                                <button
-                                    key={key}
-                                    onClick={() => setFilters(f => ({ ...f, historyFilter: key, page: 1 }))}
-                                    className={cn(
-                                        "w-full text-left px-3 py-1.5 rounded-lg text-sm border transition-all",
-                                        filters.historyFilter === key
-                                            ? "bg-primary text-primary-foreground border-primary"
-                                            : "border-transparent text-muted-foreground hover:text-foreground hover:bg-muted"
-                                    )}
-                                >
-                                    {label}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-
-                    {activeFilterCount > 0 && (
-                        <button
-                            onClick={() => setFilters(blankFilters())}
-                            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                        >
-                            <RotateCcw className="h-3 w-3" /> Limpar filtros
-                        </button>
-                    )}
+                {/* Botão fechar — apenas mobile */}
+                <div className="flex items-center justify-between mb-4 sm:hidden">
+                    <span className="text-sm font-semibold text-foreground">Filtros</span>
+                    <button
+                        onClick={() => setShowFilters(false)}
+                        className="p-1.5 rounded-lg hover:bg-muted transition-colors"
+                    >
+                        <X className="h-4 w-4 text-muted-foreground" />
+                    </button>
                 </div>
+
+                {sidebarContent}
             </aside>
 
             {/* ── Conteúdo principal ── */}
             <div data-onboarding="questions" className="flex-1 min-w-0 space-y-4">
 
-                {/* Header */}
-                <div className="flex items-center justify-between">
+                {/* Header — flex-wrap evita overflow no mobile */}
+                <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
                         <h1 className="font-display text-2xl font-bold text-foreground">Questões</h1>
                         <p className="text-sm text-muted-foreground mt-0.5">
@@ -287,6 +320,7 @@ function QuestionsContent() {
                         </p>
                     </div>
                     <div className="flex items-center gap-2">
+                        {/* Toggle Bloco / Lista — texto oculto em telas pequenas */}
                         <div className="flex items-center border border-border rounded-lg p-0.5 gap-0.5">
                             <button
                                 onClick={() => setViewMode("block")}
@@ -299,7 +333,7 @@ function QuestionsContent() {
                                 )}
                             >
                                 <LayoutGrid className="h-3.5 w-3.5" />
-                                Bloco
+                                <span className="hidden sm:inline">Bloco</span>
                             </button>
                             <button
                                 onClick={() => setViewMode("list")}
@@ -312,17 +346,18 @@ function QuestionsContent() {
                                 )}
                             >
                                 <LayoutList className="h-3.5 w-3.5" />
-                                Lista
+                                <span className="hidden sm:inline">Lista</span>
                             </button>
                         </div>
 
+                        {/* Botão filtros — texto oculto em telas pequenas */}
                         <Button
                             variant={showFilters ? "default" : "outline"}
                             size="sm"
                             onClick={() => setShowFilters(v => !v)}
                         >
                             <Filter className="h-4 w-4" />
-                            Filtros
+                            <span className="hidden sm:inline">Filtros</span>
                             {activeFilterCount > 0 && (
                                 <span className="ml-1 h-4 w-4 rounded-full bg-primary-foreground text-primary text-[10px] flex items-center justify-center font-bold">
                                     {activeFilterCount}

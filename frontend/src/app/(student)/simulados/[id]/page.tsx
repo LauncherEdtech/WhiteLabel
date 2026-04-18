@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils/cn";
 import { secondsToDisplay, isTimeCritical, timerColor } from "@/lib/utils/time";
-import { Clock, CheckCircle2, ChevronLeft, ChevronRight, Flag, BookOpen, LayoutList } from "lucide-react";
+import { Clock, CheckCircle2, ChevronLeft, ChevronRight, Flag, BookOpen, LayoutList, X } from "lucide-react";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -32,13 +32,14 @@ function DisciplinePanel({
     answers,
     currentIndex,
     onJump,
+    onClose,
 }: {
     questions: SimuladoQuestion[];
     answers: Record<string, string>;
     currentIndex: number;
     onJump: (index: number) => void;
+    onClose: () => void;
 }) {
-    // Agrupa questões por disciplina mantendo a ordem de aparecimento
     const groups = useMemo(() => {
         const map = new Map<string, { name: string; indices: number[] }>();
         questions.forEach((q, i) => {
@@ -52,58 +53,85 @@ function DisciplinePanel({
     if (groups.length <= 1) return null;
 
     return (
-        <aside className="w-52 shrink-0 space-y-1.5">
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-1 flex items-center gap-1.5">
+        <aside className={cn(
+            "shrink-0 transition-all duration-300",
+            // Mobile: fixed drawer overlay
+            "fixed top-0 left-0 h-full z-40 bg-background overflow-y-auto p-5 shadow-2xl w-72",
+            // Desktop: inline sidebar
+            "sm:static sm:h-auto sm:z-auto sm:bg-transparent sm:overflow-visible sm:p-0 sm:shadow-none sm:w-52 sm:space-y-1.5"
+        )}>
+            {/* Header do drawer — só mobile */}
+            <div className="flex items-center justify-between mb-4 sm:hidden">
+                <p className="text-sm font-semibold text-foreground flex items-center gap-1.5">
+                    <LayoutList className="h-4 w-4" />
+                    Disciplinas
+                </p>
+                <button
+                    onClick={onClose}
+                    className="p-1.5 rounded-lg hover:bg-muted transition-colors"
+                >
+                    <X className="h-4 w-4 text-muted-foreground" />
+                </button>
+            </div>
+
+            {/* Label desktop */}
+            <p className="hidden sm:flex text-xs font-semibold text-muted-foreground uppercase tracking-wider px-1 items-center gap-1.5">
                 <LayoutList className="h-3.5 w-3.5" />
                 Disciplinas
             </p>
-            {groups.map((group) => {
-                const answeredInGroup = group.indices.filter(i => answers[questions[i]?.id]).length;
-                const isActive = group.indices.includes(currentIndex);
-                const firstUnanswered = group.indices.find(i => !answers[questions[i]?.id]);
-                const jumpTo = firstUnanswered ?? group.indices[0];
 
-                return (
-                    <button
-                        key={group.name}
-                        onClick={() => onJump(jumpTo)}
-                        className={cn(
-                            "w-full text-left px-3 py-2.5 rounded-xl border transition-all",
-                            isActive
-                                ? "border-primary bg-primary/8 shadow-sm"
-                                : "border-border hover:border-primary/40 hover:bg-muted/50"
-                        )}
-                    >
-                        <p className={cn(
-                            "text-xs font-medium leading-snug line-clamp-2",
-                            isActive ? "text-primary" : "text-foreground"
-                        )}>
-                            {group.name}
-                        </p>
-                        <div className="flex items-center justify-between mt-1.5">
-                            <div className="flex-1 h-1 rounded-full bg-muted overflow-hidden mr-2">
-                                <div
-                                    className={cn(
-                                        "h-full rounded-full transition-all",
-                                        answeredInGroup === group.indices.length
-                                            ? "bg-success"
-                                            : "bg-primary"
-                                    )}
-                                    style={{ width: `${(answeredInGroup / group.indices.length) * 100}%` }}
-                                />
-                            </div>
-                            <span className={cn(
-                                "text-[10px] font-mono shrink-0",
-                                answeredInGroup === group.indices.length
-                                    ? "text-success"
-                                    : "text-muted-foreground"
+            <div className="space-y-1.5">
+                {groups.map((group) => {
+                    const answeredInGroup = group.indices.filter(i => answers[questions[i]?.id]).length;
+                    const isActive = group.indices.includes(currentIndex);
+                    const firstUnanswered = group.indices.find(i => !answers[questions[i]?.id]);
+                    const jumpTo = firstUnanswered ?? group.indices[0];
+
+                    return (
+                        <button
+                            key={group.name}
+                            onClick={() => {
+                                onJump(jumpTo);
+                                onClose(); // fecha drawer no mobile após navegar
+                            }}
+                            className={cn(
+                                "w-full text-left px-3 py-2.5 rounded-xl border transition-all",
+                                isActive
+                                    ? "border-primary bg-primary/8 shadow-sm"
+                                    : "border-border hover:border-primary/40 hover:bg-muted/50"
+                            )}
+                        >
+                            <p className={cn(
+                                "text-xs font-medium leading-snug line-clamp-2",
+                                isActive ? "text-primary" : "text-foreground"
                             )}>
-                                {answeredInGroup}/{group.indices.length}
-                            </span>
-                        </div>
-                    </button>
-                );
-            })}
+                                {group.name}
+                            </p>
+                            <div className="flex items-center justify-between mt-1.5">
+                                <div className="flex-1 h-1 rounded-full bg-muted overflow-hidden mr-2">
+                                    <div
+                                        className={cn(
+                                            "h-full rounded-full transition-all",
+                                            answeredInGroup === group.indices.length
+                                                ? "bg-success"
+                                                : "bg-primary"
+                                        )}
+                                        style={{ width: `${(answeredInGroup / group.indices.length) * 100}%` }}
+                                    />
+                                </div>
+                                <span className={cn(
+                                    "text-[10px] font-mono shrink-0",
+                                    answeredInGroup === group.indices.length
+                                        ? "text-success"
+                                        : "text-muted-foreground"
+                                )}>
+                                    {answeredInGroup}/{group.indices.length}
+                                </span>
+                            </div>
+                        </button>
+                    );
+                })}
+            </div>
         </aside>
     );
 }
@@ -125,9 +153,8 @@ export default function SimuladoPage() {
     const [startTime, setStartTime] = useState<number>(Date.now());
     const [confirmFinish, setConfirmFinish] = useState(false);
     const [started, setStarted] = useState(false);
-    // Questões do attempt (preenchidas após /start — inclui personalizadas)
     const [attemptQuestions, setAttemptQuestions] = useState<SimuladoQuestion[]>([]);
-    const [showDisciplines, setShowDisciplines] = useState(true);
+    const [showDisciplines, setShowDisciplines] = useState(false);
 
     const timeLimit = simulado?.time_limit_minutes ? simulado.time_limit_minutes * 60 : 3600;
 
@@ -147,7 +174,6 @@ export default function SimuladoPage() {
         const aid = data.attempt?.id;
         const qs: SimuladoQuestion[] = data.attempt?.questions || [];
 
-        // Pré-popula respostas já dadas (retomada de tentativa)
         const preAnswered: Record<string, string> = {};
         qs.forEach((q: SimuladoQuestion) => {
             if (q.chosen_key) preAnswered[q.id] = q.chosen_key;
@@ -191,13 +217,10 @@ export default function SimuladoPage() {
 
     if (!simulado) return null;
 
-    // Usa questões do attempt quando iniciado (inclui personalizadas),
-    // senão usa as do GET (simulados fixos no lobby)
     const questions: SimuladoQuestion[] = started
         ? attemptQuestions
         : (simulado.questions || []);
 
-    // Total real: para simulados personalizados, questions[] pode estar vazio no lobby
     const totalQuestions = started
         ? questions.length
         : (simulado.total_questions || questions.length || 0);
@@ -230,7 +253,6 @@ export default function SimuladoPage() {
                                 <p className="text-xs text-muted-foreground">Tempo</p>
                             </div>
                         </div>
-                        {/* Badge de filtro de histórico */}
                         {simulado.settings?.question_filter && simulado.settings.question_filter !== "all" && (
                             <div className="flex items-center justify-center gap-1.5 text-xs text-primary bg-primary/8 px-3 py-1.5 rounded-full border border-primary/20 w-fit mx-auto">
                                 <BookOpen className="h-3 w-3" />
@@ -254,16 +276,30 @@ export default function SimuladoPage() {
     }
 
     // ── Prova ─────────────────────────────────────────────────────────────────
+    const hasDisciplines = questions.some(q => q.discipline);
+
     return (
         <div className="animate-fade-in">
-            {/* Header fixo com timer */}
-            <div className="flex items-center justify-between py-2 mb-4">
-                <div className="flex items-center gap-3">
-                    <div className="text-sm text-muted-foreground font-mono">
+
+            {/* Backdrop mobile — aparece atrás do drawer de disciplinas */}
+            {showDisciplines && (
+                <div
+                    className="fixed inset-0 bg-black/50 z-30 sm:hidden"
+                    onClick={() => setShowDisciplines(false)}
+                />
+            )}
+
+            {/* Header com timer
+                Mobile : 3 itens compactos (contador | timer | botões)
+                Desktop: igual ao original
+            ── */}
+            <div className="flex items-center justify-between py-2 mb-4 gap-2">
+                {/* Esquerda: contador + toggle disciplinas */}
+                <div className="flex items-center gap-2">
+                    <div className="text-sm text-muted-foreground font-mono shrink-0">
                         {currentIndex + 1}<span className="text-muted-foreground/50">/{totalQuestions}</span>
                     </div>
-                    {/* Toggle painel de disciplinas */}
-                    {questions.some(q => q.discipline) && (
+                    {hasDisciplines && (
                         <button
                             onClick={() => setShowDisciplines(v => !v)}
                             className={cn(
@@ -274,46 +310,58 @@ export default function SimuladoPage() {
                             )}
                         >
                             <LayoutList className="h-3 w-3" />
-                            Disciplinas
+                            {/* Texto oculto em telas pequenas */}
+                            <span className="hidden sm:inline">Disciplinas</span>
                         </button>
                     )}
                 </div>
 
-                <div className={cn("flex items-center gap-2 font-display text-xl font-bold tabular-nums", timerColor(seconds))}>
-                    <Clock className={cn("h-5 w-5", isTimeCritical(seconds) && "animate-pulse")} />
+                {/* Centro: timer */}
+                <div className={cn(
+                    "flex items-center gap-1.5 font-display font-bold tabular-nums",
+                    "text-base sm:text-xl",
+                    timerColor(seconds)
+                )}>
+                    <Clock className={cn("h-4 w-4 sm:h-5 sm:w-5", isTimeCritical(seconds) && "animate-pulse")} />
                     {secondsToDisplay(seconds)}
                 </div>
 
+                {/* Direita: botão finalizar — ícone no mobile, texto no desktop */}
                 <Button
-                    variant="outline" size="sm"
+                    variant="outline"
+                    size="sm"
                     onClick={() => setConfirmFinish(true)}
                     disabled={finishAttempt.isPending}
                 >
                     <Flag className="h-4 w-4" />
-                    Finalizar
+                    <span className="hidden sm:inline">Finalizar</span>
                 </Button>
             </div>
 
             {/* Barra de progresso geral */}
             <Progress value={(answeredCount / totalQuestions) * 100} className="h-1 mb-4" />
 
-            {/* Layout com sidebar de disciplinas */}
+            {/* Layout: sidebar de disciplinas + questão
+                Mobile : DisciplinePanel como drawer fixo (z-40), conteúdo ocupa 100%
+                Desktop: sidebar inline w-52 + flex-1
+            ── */}
             <div className="flex gap-5">
-                {/* Sidebar */}
+                {/* Sidebar de disciplinas */}
                 {showDisciplines && questions.length > 0 && (
                     <DisciplinePanel
                         questions={questions}
                         answers={answers}
                         currentIndex={currentIndex}
                         onJump={(i) => setCurrentIndex(i)}
+                        onClose={() => setShowDisciplines(false)}
                     />
                 )}
 
-                {/* Questão + navegação */}
+                {/* Questão + navegação — sempre ocupa 100% no mobile */}
                 <div className="flex-1 min-w-0 space-y-4">
                     {currentQuestion && (
                         <Card className="animate-fade-in">
-                            <CardContent className="p-6 space-y-5">
+                            <CardContent className="p-4 sm:p-6 space-y-5">
                                 {/* Metadados */}
                                 <div className="flex items-center gap-2 flex-wrap">
                                     {currentQuestion.discipline && (
@@ -383,17 +431,18 @@ export default function SimuladoPage() {
                     )}
 
                     {/* Navegação + mapa de questões */}
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-2">
                         <Button
                             variant="outline" size="sm"
                             onClick={() => setCurrentIndex(i => Math.max(0, i - 1))}
                             disabled={currentIndex === 0}
                         >
-                            <ChevronLeft className="h-4 w-4" /> Anterior
+                            <ChevronLeft className="h-4 w-4" />
+                            <span className="hidden sm:inline">Anterior</span>
                         </Button>
 
-                        {/* Mapa de questões — mostra no máx 20 por vez */}
-                        <div className="flex gap-1 flex-wrap justify-center max-w-xs">
+                        {/* Mapa de questões */}
+                        <div className="flex gap-1 flex-wrap justify-center flex-1 min-w-0">
                             {questions.slice(
                                 Math.max(0, currentIndex - 9),
                                 Math.min(questions.length, Math.max(0, currentIndex - 9) + 20)
@@ -422,7 +471,8 @@ export default function SimuladoPage() {
                             onClick={() => setCurrentIndex(i => Math.min(questions.length - 1, i + 1))}
                             disabled={currentIndex === questions.length - 1}
                         >
-                            Próxima <ChevronRight className="h-4 w-4" />
+                            <span className="hidden sm:inline">Próxima</span>
+                            <ChevronRight className="h-4 w-4" />
                         </Button>
                     </div>
                 </div>
