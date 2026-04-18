@@ -8,12 +8,13 @@ import { useState } from "react";
 import {
     LayoutDashboard, BookOpen, HelpCircle,
     ClipboardList, Calendar, BarChart3,
-    LogOut, GraduationCap, Trophy, Menu, X,
+    LogOut, GraduationCap, Trophy, Menu, X, Bell,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import { useTenantStore } from "@/lib/stores/tenantStore";
 import { useLogout } from "@/lib/hooks/useAuth";
 import { useAuthStore } from "@/lib/stores/authStore";
+import { useUnreadCount } from "@/lib/hooks/useNotifications";
 
 const navItems = [
     { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -31,6 +32,8 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
     const { user } = useAuthStore();
     const logout = useLogout();
     const branding = getBranding();
+    const { data: unreadData } = useUnreadCount();
+    const unreadCount = unreadData?.unread_count ?? 0;
 
     return (
         <div className="flex flex-col h-full">
@@ -83,6 +86,26 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
                         </Link>
                     );
                 })}
+
+                {/* Notificações — separado com badge de não lidas */}
+                <Link
+                    href="/notifications"
+                    onClick={onClose}
+                    className={cn(
+                        "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150",
+                        pathname === "/notifications"
+                            ? "bg-primary text-primary-foreground shadow-sm"
+                            : "text-muted-foreground hover:text-foreground hover:bg-accent"
+                    )}
+                >
+                    <Bell className="h-4 w-4 shrink-0" />
+                    Notificações
+                    {unreadCount > 0 && (
+                        <span className="ml-auto h-5 min-w-[20px] px-1.5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
+                            {unreadCount > 99 ? "99+" : unreadCount}
+                        </span>
+                    )}
+                </Link>
             </nav>
 
             {/* Footer com usuário */}
@@ -110,8 +133,6 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
     );
 }
 
-// ── desktopOnly: renderiza só o conteúdo, sem hamburger/drawer ───────────────
-// Usado pelo layout quando o container da sidebar já é gerenciado externamente
 export function StudentSidebar({ desktopOnly = false }: { desktopOnly?: boolean }) {
     const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -121,12 +142,12 @@ export function StudentSidebar({ desktopOnly = false }: { desktopOnly?: boolean 
 
     return (
         <>
-            {/* ── Desktop: sidebar fixa ── */}
+            {/* Desktop: sidebar fixa */}
             <aside className="hidden lg:flex w-64 shrink-0 flex-col border-r border-border bg-card h-screen">
                 <SidebarContent />
             </aside>
 
-            {/* ── Mobile: botão hamburger ── */}
+            {/* Mobile: botão hamburger */}
             <button
                 className="lg:hidden fixed top-3 left-4 z-50 p-2 rounded-lg bg-card border border-border shadow-sm"
                 onClick={() => setDrawerOpen(true)}
@@ -134,7 +155,7 @@ export function StudentSidebar({ desktopOnly = false }: { desktopOnly?: boolean 
                 <Menu className="h-5 w-5 text-foreground" />
             </button>
 
-            {/* ── Mobile: drawer overlay ── */}
+            {/* Mobile: drawer overlay */}
             {drawerOpen && (
                 <div className="fixed inset-0 z-50 lg:hidden">
                     <div

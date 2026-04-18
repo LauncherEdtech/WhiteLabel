@@ -5,11 +5,12 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
     LayoutDashboard, BookOpen, HelpCircle,
-    ClipboardList, Calendar, BarChart3, LogOut, Trophy,
+    ClipboardList, Calendar, BarChart3, LogOut, Trophy, Bell,
 } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import { useLogout } from "@/lib/hooks/useAuth";
 import { useAuthStore } from "@/lib/stores/authStore";
+import { useUnreadCount } from "@/lib/hooks/useNotifications";
 
 const navItems = [
     { href: "/dashboard", icon: LayoutDashboard, label: "Início" },
@@ -25,10 +26,12 @@ export function StudentMinimalNav() {
     const pathname = usePathname();
     const logout = useLogout();
     const { user } = useAuthStore();
+    const { data: unreadData } = useUnreadCount();
+    const unreadCount = unreadData?.unread_count ?? 0;
 
     return (
         <>
-            {/* ── Barra superior fixa ── */}
+            {/* Barra superior fixa */}
             <div className="fixed top-0 left-0 right-0 z-50 h-12 flex items-center justify-between px-4 bg-card/90 backdrop-blur-xl border-b border-border">
                 <p className="text-sm text-muted-foreground">
                     Olá,{" "}
@@ -37,16 +40,38 @@ export function StudentMinimalNav() {
                     </span>{" "}
                     👋
                 </p>
-                <button
-                    onClick={logout}
-                    className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-destructive transition-colors px-3 py-1.5 rounded-lg hover:bg-destructive/10"
-                >
-                    <LogOut className="h-4 w-4" />
-                    <span>Sair</span>
-                </button>
+
+                <div className="flex items-center gap-2">
+                    {/* Sino de notificações */}
+                    <Link
+                        href="/notifications"
+                        className={cn(
+                            "relative flex items-center justify-center h-8 w-8 rounded-lg transition-colors",
+                            pathname === "/notifications"
+                                ? "text-primary bg-primary/10"
+                                : "text-muted-foreground hover:text-foreground hover:bg-accent"
+                        )}
+                        title="Notificações"
+                    >
+                        <Bell className="h-4 w-4" />
+                        {unreadCount > 0 && (
+                            <span className="absolute -top-0.5 -right-0.5 h-4 min-w-[16px] px-0.5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center leading-none">
+                                {unreadCount > 99 ? "99+" : unreadCount}
+                            </span>
+                        )}
+                    </Link>
+
+                    <button
+                        onClick={logout}
+                        className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-destructive transition-colors px-3 py-1.5 rounded-lg hover:bg-destructive/10"
+                    >
+                        <LogOut className="h-4 w-4" />
+                        <span>Sair</span>
+                    </button>
+                </div>
             </div>
 
-            {/* ── Dock flutuante inferior ── */}
+            {/* Dock flutuante inferior */}
             <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-lg">
                 <nav className={cn(
                     "flex items-center justify-around px-2 py-3 rounded-2xl",
