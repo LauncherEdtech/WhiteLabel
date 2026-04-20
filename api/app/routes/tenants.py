@@ -65,6 +65,9 @@ class UpdateAdminSchema(Schema):
 
 @tenants_bp.before_request
 def before_request():
+    from flask import request as _req
+    if _req.method == "OPTIONS":
+        return  # deixa o Flask-CORS tratar o preflight
     resolve_tenant()
 
 

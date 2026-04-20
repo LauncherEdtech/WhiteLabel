@@ -1,1016 +1,937 @@
-# api/app/routes/questions.py
-# Banco de questões com filtros avançados + registro de respostas com tempo.
-# SEGURANÇA: Questões pertencem ao tenant — nunca visíveis entre produtores.
+# api/app/routes/admin/questions.py
 #
-# ── SEPARAÇÃO DE TIPOS ────────────────────────────────────────────────────────
-#   GET /questions/         → apenas source_type="bank" (nunca retorna questões de aula)
-#   POST /questions/        → cria questão source_type="bank" + dispara análise Gemini
-#   GET /lessons/:id/questions  → questões source_type="lesson" (em courses.py)
-#   POST /lessons/:id/questions/generate → gera questões da aula via Gemini (em courses.py)
+# Rotas administrativas para o banco de questões compartilhado.
+# Restrito a super_admin via JWT.
 # ─────────────────────────────────────────────────────────────────────────────
 
-from datetime import datetime, timezone
-from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
-from marshmallow import Schema, fields, validate, ValidationError, EXCLUDE
-from sqlalchemy import and_, or_
+import hashlib
+import io
+import zipfile
+from datetime import datetime
+from uuid import uuid4
 
-from app.extensions import db, limiter
+import boto3
+from botocore.exceptions import ClientError
+from flask import Blueprint, current_app, jsonify, request
+from flask_jwt_extended import get_jwt, get_jwt_identity, jwt_required
+from sqlalchemy import func
+
+from app.extensions import db
 from app.models.question import (
-    Question,
     Alternative,
-    QuestionAttempt,
     DifficultyLevel,
+    Question,
     QuestionSourceType,
+    QuestionTag,
+    QuestionType,
     ReviewStatus,
 )
-from app.models.course import Subject
+from app.models.tenant import Tenant
 from app.models.user import UserRole
-from app.middleware.tenant import (
-    resolve_tenant,
-    require_tenant,
-    require_feature,
-    get_current_tenant,
-)
 
-questions_bp = Blueprint("questions", __name__)
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
+admin_questions_bp = Blueprint("admin_questions", __name__)
 
 
-def _is_producer_or_above(claims: dict) -> bool:
-    return claims.get("role") in (
-        UserRole.SUPER_ADMIN.value,
-        UserRole.PRODUCER_ADMIN.value,
-        UserRole.PRODUCER_STAFF.value,
-    )
+# ── Helper de autorização ─────────────────────────────────────────────────────
 
 
-def _question_access_filter(tenant):
-    """
-    Filtro de acesso a questões levando em conta o banco global.
-    Retorna condição SQLAlchemy que inclui questões próprias do tenant
-    e, se a feature estiver ativa, as questões do banco global aprovadas.
-    """
-    own = and_(
-        Question.tenant_id == tenant.id,
-        Question.is_active == True,
-        Question.is_deleted == False,
-    )
-    if tenant.is_feature_enabled("question_bank_concursos"):
-        global_bank = and_(
-            Question.tenant_id.is_(None),
-            Question.source_type == QuestionSourceType.BANK,
-            Question.review_status == "approved",
-            Question.is_active == True,
-        )
-        return or_(own, global_bank)
-    return own
-
-
-# ── Schemas ───────────────────────────────────────────────────────────────────
-
-
-class AlternativeSchema(Schema):
-    key = fields.Str(required=True, validate=validate.OneOf(["a", "b", "c", "d", "e"]))
-    text = fields.Str(required=True, validate=validate.Length(min=1))
-    distractor_justification = fields.Str(allow_none=True, load_default=None)
-
-    class Meta:
-        unknown = EXCLUDE
-
-
-class QuestionSchema(Schema):
-    statement = fields.Str(required=True, validate=validate.Length(min=10))
-    context = fields.Str(allow_none=True, load_default=None)
-    subject_id = fields.Str(allow_none=True, load_default=None)
-    discipline = fields.Str(allow_none=True, load_default=None)
-    topic = fields.Str(allow_none=True, load_default=None)
-    subtopic = fields.Str(allow_none=True, load_default=None)
-    microtopic = fields.Str(allow_none=True, load_default=None)
-    difficulty = fields.Str(
-        load_default="medium",
-        validate=validate.OneOf(["easy", "medium", "hard"]),
-    )
-    exam_board = fields.Str(allow_none=True, load_default=None)
-    exam_year = fields.Int(
-        allow_none=True, load_default=None, validate=validate.Range(min=1990, max=2030)
-    )
-    exam_name = fields.Str(allow_none=True, load_default=None)
-    competency = fields.Str(allow_none=True, load_default=None)
-    correct_alternative_key = fields.Str(
-        required=True,
-        validate=validate.OneOf(["a", "b", "c", "d", "e"]),
-    )
-    correct_justification = fields.Str(allow_none=True, load_default=None)
-    alternatives = fields.List(
-        fields.Nested(AlternativeSchema),
-        required=True,
-        validate=validate.Length(min=2, max=5),
-    )
-
-    class Meta:
-        unknown = EXCLUDE
-
-
-class AnswerSchema(Schema):
-    """Aluno responde uma questão."""
-
-    chosen_alternative_key = fields.Str(
-        required=True,
-        validate=validate.OneOf(["a", "b", "c", "d", "e", "A", "B", "C", "D", "E"]),
-    )
-    # Tempo de resposta em segundos — medido no frontend
-    response_time_seconds = fields.Int(
-        allow_none=True,
-        load_default=None,
-        validate=validate.Range(min=1, max=3600),
-    )
-    context = fields.Str(
-        load_default="practice",
-        validate=validate.OneOf(
-            ["practice", "simulado", "schedule", "review", "lesson"]
-        ),
-    )
-
-    class Meta:
-        unknown = EXCLUDE
-
-
-class QuestionFilterSchema(Schema):
-    """Parâmetros de filtro para listagem de questões."""
-
-    subject_id = fields.Str(load_default=None)
-    discipline = fields.Str(load_default=None)
-    topic = fields.Str(load_default=None)
-    difficulty = fields.Str(
-        load_default=None,
-        validate=validate.OneOf(["easy", "medium", "hard", ""]),
-    )
-    exam_board = fields.Str(load_default=None)
-    exam_year = fields.Int(load_default=None)
-    # Filtros baseados no histórico do aluno
-    previously_correct = fields.Bool(load_default=None)  # Apenas acertadas antes
-    previously_wrong = fields.Bool(load_default=None)  # Apenas erradas antes
-    not_answered = fields.Bool(load_default=None)  # Apenas não respondidas
-    # Paginação
-    page = fields.Int(load_default=1, validate=validate.Range(min=1))
-    per_page = fields.Int(load_default=20, validate=validate.Range(min=1, max=100))
-
-    class Meta:
-        unknown = EXCLUDE
-
-
-# ── Before request ────────────────────────────────────────────────────────────
-
-
-@questions_bp.before_request
-def before_request():
-    resolve_tenant()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# LISTAGEM COM FILTROS — apenas questões do banco (source_type="bank")
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-@questions_bp.route("/", methods=["GET"])
-@jwt_required()
-@require_tenant
-def list_questions():
-    """
-    Lista questões do banco de concursos com filtros avançados.
-
-    IMPORTANTE: Retorna APENAS questões source_type="bank" (enviadas pelo produtor).
-    Questões de aula (source_type="lesson") são acessadas via GET /lessons/:id/questions.
-
-    Filtros disponíveis (query params):
-    - subject_id, discipline, topic, difficulty
-    - exam_board, exam_year
-    - previously_correct, previously_wrong, not_answered
-    - page, per_page
-
-    SEGURANÇA: Filtra sempre por tenant_id.
-    Aluno nunca vê questões de outro produtor.
-    """
-    tenant = get_current_tenant()
-    user_id = get_jwt_identity()
+def _require_super_admin():
     claims = get_jwt()
+    if claims.get("role") != UserRole.SUPER_ADMIN.value:
+        return jsonify({"error": "forbidden", "message": "Acesso restrito."}), 403
+    return None
 
-    schema = QuestionFilterSchema()
-    try:
-        filters = schema.load(request.args)
-    except ValidationError as e:
-        return jsonify({"error": "validation_error", "details": e.messages}), 400
 
-    # ── Query base: questões do banco visíveis para este tenant ──────────────
-    # Sempre inclui questões próprias (tenant_id = tenant.id, source_type = bank)
-    # Se feature question_bank_concursos habilitada: inclui também o banco global
-    # (tenant_id IS NULL, source_type = bank, review_status = approved)
-    own_bank = and_(
-        Question.tenant_id == tenant.id,
-        Question.source_type == QuestionSourceType.BANK,
-        Question.is_active == True,
-        Question.is_deleted == False,
-    )
+# ── Mapeamentos de normalização ───────────────────────────────────────────────
 
-    if tenant.is_feature_enabled("question_bank_concursos"):
-        global_bank = and_(
-            Question.tenant_id.is_(None),
-            Question.source_type == QuestionSourceType.BANK,
-            Question.review_status == "approved",
-            Question.is_active == True,
-        )
-        query = Question.query.filter(or_(own_bank, global_bank))
-    else:
-        query = Question.query.filter(own_bank)
+_DIFFICULTY_MAP = {
+    "easy": DifficultyLevel.EASY,
+    "medium": DifficultyLevel.MEDIUM,
+    "hard": DifficultyLevel.HARD,
+    "facil": DifficultyLevel.EASY,
+    "fácil": DifficultyLevel.EASY,
+    "medio": DifficultyLevel.MEDIUM,
+    "médio": DifficultyLevel.MEDIUM,
+    "dificil": DifficultyLevel.HARD,
+    "difícil": DifficultyLevel.HARD,
+}
 
-    # ── Filtros de metadados ──────────────────────────────────────────────────
-    if filters.get("subject_id"):
-        query = query.filter(Question.subject_id == filters["subject_id"])
+_QTYPE_MAP = {
+    "interpretacao": QuestionType.INTERPRETACAO,
+    "interpretação": QuestionType.INTERPRETACAO,
+    "aplicacao": QuestionType.APLICACAO,
+    "aplicação": QuestionType.APLICACAO,
+    "raciocinio": QuestionType.RACIOCINIO,
+    "raciocínio": QuestionType.RACIOCINIO,
+    "memorizacao": QuestionType.MEMORIZACAO,
+    "memorização": QuestionType.MEMORIZACAO,
+    "definicao": QuestionType.MEMORIZACAO,
+    "definição": QuestionType.MEMORIZACAO,
+}
 
-    if filters.get("discipline"):
-        query = query.filter(Question.discipline.ilike(f"%{filters['discipline']}%"))
+# Mapeamento normalizado de cabeçalhos xlsx → campo interno
+# Aceita variações de maiúsculo/minúsculo e acentuação
+_XLSX_COL_MAP = {
+    "disciplina": "discipline",
+    "enunciado": "statement",
+    "imagem": "image_file",
+    "fonte": "context",
+    "alternativa a": "alt_a",
+    "alternativa b": "alt_b",
+    "alternativa c": "alt_c",
+    "alternativa d": "alt_d",
+    "alternativa e": "alt_e",
+    "gabarito": "correct_alternative_key",
+    # Campos opcionais
+    "topico": "topic",
+    "tópico": "topic",
+    "subtopico": "subtopic",
+    "subtópico": "subtopic",
+    "dificuldade": "difficulty",
+    "banca": "exam_board",
+    "ano": "exam_year",
+    "concurso": "exam_name",
+    "dica": "tip",
+    "justificativa": "correct_justification",
+    "justificativa gabarito": "correct_justification",
+    "justificativa_gabarito": "correct_justification",
+    "justificativa a": "just_a",
+    "justificativa b": "just_b",
+    "justificativa c": "just_c",
+    "justificativa d": "just_d",
+    "justificativa e": "just_e",
+}
 
-    if filters.get("topic"):
-        query = query.filter(Question.topic.ilike(f"%{filters['topic']}%"))
 
-    if filters.get("difficulty"):
-        query = query.filter(Question.difficulty == filters["difficulty"])
+# ── Serializer ────────────────────────────────────────────────────────────────
 
-    if filters.get("exam_board"):
-        query = query.filter(Question.exam_board.ilike(f"%{filters['exam_board']}%"))
 
-    if filters.get("exam_year"):
-        query = query.filter(Question.exam_year == filters["exam_year"])
+def _serialize_admin(q: Question) -> dict:
+    submitted_tenant = None
+    if q.submitted_by_tenant_id:
+        t = db.session.get(Tenant, q.submitted_by_tenant_id)
+        if t:
+            submitted_tenant = {"id": t.id, "name": t.name, "slug": t.slug}
 
-    # ── Filtros baseados no histórico do aluno ────────────────────────────────
-    if filters.get("previously_correct") is True:
-        correct_ids = (
-            db.session.query(QuestionAttempt.question_id)
-            .filter_by(
-                user_id=user_id,
-                tenant_id=tenant.id,
-                is_correct=True,
-                is_deleted=False,
-            )
-            .distinct()
-        )
-        query = query.filter(Question.id.in_(correct_ids))
-
-    elif filters.get("previously_wrong") is True:
-        wrong_ids = (
-            db.session.query(QuestionAttempt.question_id)
-            .filter_by(
-                user_id=user_id,
-                tenant_id=tenant.id,
-                is_correct=False,
-                is_deleted=False,
-            )
-            .distinct()
-        )
-        never_correct_ids = (
-            db.session.query(QuestionAttempt.question_id)
-            .filter_by(
-                user_id=user_id,
-                tenant_id=tenant.id,
-                is_correct=True,
-                is_deleted=False,
-            )
-            .distinct()
-        )
-        query = query.filter(
-            Question.id.in_(wrong_ids),
-            Question.id.notin_(never_correct_ids),
-        )
-
-    elif filters.get("not_answered") is True:
-        answered_ids = (
-            db.session.query(QuestionAttempt.question_id)
-            .filter_by(
-                user_id=user_id,
-                tenant_id=tenant.id,
-                is_deleted=False,
-            )
-            .distinct()
-        )
-        query = query.filter(Question.id.notin_(answered_ids))
-
-    # ── Paginação ─────────────────────────────────────────────────────────────
-    page = filters["page"]
-    per_page = filters["per_page"]
-    total = query.count()
-
-    questions = query.order_by(Question.created_at.desc()).paginate(
-        page=page,
-        per_page=per_page,
-        error_out=False,
-    )
-
-    attempt_map = _get_last_attempts_map(
-        user_id, tenant.id, [q.id for q in questions.items]
-    )
-
-    return (
-        jsonify(
+    return {
+        "id": q.id,
+        "external_id": q.external_id,
+        "statement": q.statement,
+        "image_url": q.image_url,
+        "discipline": q.discipline,
+        "topic": q.topic,
+        "subtopic": q.subtopic,
+        "difficulty": q.difficulty.value if q.difficulty else None,
+        "question_type": q.question_type.value if q.question_type else None,
+        "correct_alternative_key": q.correct_alternative_key,
+        "correct_justification": q.correct_justification,
+        "tip": q.tip,
+        "exam_board": q.exam_board,
+        "exam_year": q.exam_year,
+        "exam_name": q.exam_name,
+        "review_status": q.review_status.value,
+        "rejection_reason": q.rejection_reason,
+        "reviewed_at": q.reviewed_at.isoformat() if q.reviewed_at else None,
+        "submitted_by_tenant": submitted_tenant,
+        "is_active": q.is_active,
+        "total_attempts": q.total_attempts,
+        "accuracy_rate": q.accuracy_rate,
+        "alternatives": [
             {
-                "questions": [
-                    _serialize_question(q, attempt_map.get(q.id), include_answer=False)
-                    for q in questions.items
-                ],
-                "pagination": {
-                    "page": page,
-                    "per_page": per_page,
-                    "total": total,
-                    "pages": questions.pages,
-                    "has_next": questions.has_next,
-                    "has_prev": questions.has_prev,
-                },
+                "key": a.key,
+                "text": a.text,
+                "distractor_justification": a.distractor_justification,
             }
-        ),
-        200,
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# CRUD DE QUESTÕES (produtor) — sempre source_type="bank"
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-@questions_bp.route("/", methods=["POST"])
-@jwt_required()
-@require_tenant
-@limiter.limit("100 per hour")
-def create_question():
-    """
-    Cria questão manualmente no banco de concursos.
-    Sempre cria como source_type="bank".
-    Dispara análise automática via Gemini se metadados incompletos.
-    """
-    claims = get_jwt()
-    if not _is_producer_or_above(claims):
-        return jsonify({"error": "forbidden"}), 403
-
-    tenant = get_current_tenant()
-
-    schema = QuestionSchema()
-    try:
-        data = schema.load(request.get_json(force=True) or {})
-    except ValidationError as e:
-        return jsonify({"error": "validation_error", "details": e.messages}), 400
-
-    # SEGURANÇA: Valida que subject_id pertence ao tenant
-    if data.get("subject_id"):
-        subject = Subject.query.filter_by(
-            id=data["subject_id"],
-            tenant_id=tenant.id,
-            is_deleted=False,
-        ).first()
-        if not subject:
-            return jsonify({"error": "subject_not_found"}), 404
-
-    question = Question(
-        tenant_id=tenant.id,
-        source_type=QuestionSourceType.BANK,  # ← sempre bank quando criada pelo produtor
-        lesson_id=None,  # ← nunca vinculada a aula aqui
-        subject_id=data.get("subject_id"),
-        statement=data["statement"],
-        context=data.get("context"),
-        discipline=data.get("discipline"),
-        topic=data.get("topic"),
-        subtopic=data.get("subtopic"),
-        microtopic=data.get("microtopic"),
-        difficulty=DifficultyLevel(data["difficulty"]),
-        exam_board=data.get("exam_board"),
-        exam_year=data.get("exam_year"),
-        exam_name=data.get("exam_name"),
-        competency=data.get("competency"),
-        correct_alternative_key=data["correct_alternative_key"],
-        correct_justification=data.get("correct_justification"),
-        is_active=True,
-        is_reviewed=True,  # Marcada como revisada — foi o produtor que criou
-    )
-    db.session.add(question)
-    db.session.flush()
-
-    # Cria as alternativas
-    for alt_data in data["alternatives"]:
-        alt = Alternative(
-            tenant_id=tenant.id,
-            question_id=question.id,
-            key=alt_data["key"],
-            text=alt_data["text"],
-            distractor_justification=alt_data.get("distractor_justification"),
-        )
-        db.session.add(alt)
-
-    db.session.commit()
-
-    # ── Dispara análise Gemini se metadados incompletos ───────────────────────
-    # Se o produtor não preencheu disciplina/tópico/dificuldade, o Gemini preenche
-    _needs_analysis = not data.get("discipline") or not data.get("topic")
-    if _needs_analysis:
-        try:
-            from app.tasks import analyze_question_task
-
-            analyze_question_task.delay(question.id, tenant.id)
-        except Exception:
-            pass  # Falha no Celery não bloqueia a criação da questão
-
-    return (
-        jsonify(
-            {
-                "message": "Questão criada.",
-                "question": _serialize_question(question, include_answer=True),
-            }
-        ),
-        201,
-    )
-
-
-@questions_bp.route("/<string:question_id>", methods=["GET"])
-@jwt_required()
-@require_tenant
-def get_question(question_id: str):
-    """
-    Retorna questão completa com alternativas.
-    Aluno: NÃO recebe gabarito nem justificativas (isso vem apenas após responder).
-    Produtor: recebe tudo.
-
-    SEGURANÇA: Questões de aula (source_type="lesson") também são acessíveis aqui
-    desde que o aluno tenha acesso ao tenant — o isolamento é feito pela lesson_id
-    na listagem, não no GET individual.
-    """
-    tenant = get_current_tenant()
-    claims = get_jwt()
-    user_id = get_jwt_identity()
-
-    question = Question.query.filter(
-        Question.id == question_id,
-        _question_access_filter(tenant),
-    ).first()
-    if not question:
-        return jsonify({"error": "not_found"}), 404
-
-    is_producer = _is_producer_or_above(claims)
-
-    last_attempt = (
-        QuestionAttempt.query.filter_by(
-            question_id=question.id,
-            user_id=user_id,
-            tenant_id=tenant.id,
-            is_deleted=False,
-        )
-        .order_by(QuestionAttempt.created_at.desc())
-        .first()
-        if not is_producer
-        else None
-    )
-
-    show_answer = is_producer or (last_attempt is not None)
-
-    return (
-        jsonify(
-            {
-                "question": _serialize_question(
-                    question, last_attempt, include_answer=show_answer
-                )
-            }
-        ),
-        200,
-    )
-
-
-@questions_bp.route("/<string:question_id>", methods=["PUT"])
-@jwt_required()
-@require_tenant
-def update_question(question_id: str):
-    """Atualiza questão. Apenas produtor."""
-    claims = get_jwt()
-    if not _is_producer_or_above(claims):
-        return jsonify({"error": "forbidden"}), 403
-
-    tenant = get_current_tenant()
-    question = Question.query.filter_by(
-        id=question_id,
-        tenant_id=tenant.id,
-        is_deleted=False,
-    ).first()
-    if not question:
-        return jsonify({"error": "not_found"}), 404
-
-    schema = QuestionSchema()
-    try:
-        data = schema.load(request.get_json(force=True) or {})
-    except ValidationError as e:
-        return jsonify({"error": "validation_error", "details": e.messages}), 400
-
-    question.statement = data["statement"]
-    question.context = data.get("context", question.context)
-    question.discipline = data.get("discipline", question.discipline)
-    question.topic = data.get("topic", question.topic)
-    question.subtopic = data.get("subtopic", question.subtopic)
-    question.microtopic = data.get("microtopic", question.microtopic)
-    question.difficulty = DifficultyLevel(data["difficulty"])
-    question.exam_board = data.get("exam_board", question.exam_board)
-    question.exam_year = data.get("exam_year", question.exam_year)
-    question.exam_name = data.get("exam_name", question.exam_name)
-    question.competency = data.get("competency", question.competency)
-    question.correct_alternative_key = data["correct_alternative_key"]
-    question.correct_justification = data.get(
-        "correct_justification", question.correct_justification
-    )
-    question.is_reviewed = True
-
-    # Recria alternativas
-    for alt in question.alternatives:
-        db.session.delete(alt)
-    db.session.flush()
-
-    for alt_data in data["alternatives"]:
-        alt = Alternative(
-            tenant_id=tenant.id,
-            question_id=question.id,
-            key=alt_data["key"],
-            text=alt_data["text"],
-            distractor_justification=alt_data.get("distractor_justification"),
-        )
-        db.session.add(alt)
-
-    db.session.commit()
-
-    return (
-        jsonify(
-            {
-                "message": "Questão atualizada.",
-                "question": _serialize_question(question, include_answer=True),
-            }
-        ),
-        200,
-    )
-
-
-@questions_bp.route("/<string:question_id>", methods=["DELETE"])
-@jwt_required()
-@require_tenant
-def delete_question(question_id: str):
-    """Soft delete de questão. Apenas produtor."""
-    claims = get_jwt()
-    if not _is_producer_or_above(claims):
-        return jsonify({"error": "forbidden"}), 403
-
-    tenant = get_current_tenant()
-    question = Question.query.filter_by(
-        id=question_id,
-        tenant_id=tenant.id,
-        is_deleted=False,
-    ).first()
-    if not question:
-        return jsonify({"error": "not_found"}), 404
-
-    question.is_deleted = True
-    question.is_active = False
-    db.session.commit()
-
-    return jsonify({"message": "Questão removida."}), 200
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# RESPONDER QUESTÃO (aluno)
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-@questions_bp.route("/<string:question_id>/answer", methods=["POST"])
-@jwt_required()
-@require_tenant
-@limiter.limit("200 per hour")
-def answer_question(question_id: str):
-    """
-    Aluno responde uma questão.
-    Retorna: se acertou, gabarito, justificativas, XP ganho.
-    Funciona para questões de banco E questões de aula.
-    """
-    tenant = get_current_tenant()
-    user_id = get_jwt_identity()
-
-    question = Question.query.filter(
-        Question.id == question_id,
-        _question_access_filter(tenant),
-    ).first()
-    if not question:
-        return jsonify({"error": "not_found"}), 404
-
-    schema = AnswerSchema()
-    try:
-        data = schema.load(request.get_json(force=True) or {})
-    except ValidationError as e:
-        return jsonify({"error": "validation_error", "details": e.messages}), 400
-    # Normaliza para maiúsculo — banco global usa A-E, questões antigas usam a-e
-    chosen_key = data["chosen_alternative_key"].upper()
-    is_correct = chosen_key == question.correct_alternative_key.upper()
-    context = data.get("context", "practice")
-
-    # Upsert: se já existe tentativa para este (user, question, context), atualiza
-    existing_attempt = QuestionAttempt.query.filter_by(
-        user_id=user_id,
-        question_id=question.id,
-        tenant_id=tenant.id,
-        context=context,
-        is_deleted=False,
-    ).first()
-
-    is_new_attempt = existing_attempt is None
-
-    if existing_attempt:
-        existing_attempt.chosen_alternative_key = chosen_key
-        existing_attempt.is_correct = is_correct
-        existing_attempt.response_time_seconds = data.get("response_time_seconds")
-        existing_attempt.created_at = datetime.now(timezone.utc)
-        attempt = existing_attempt
-    else:
-        attempt = QuestionAttempt(
-            tenant_id=tenant.id,
-            user_id=user_id,
-            question_id=question.id,
-            chosen_alternative_key=chosen_key,
-            is_correct=is_correct,
-            response_time_seconds=data.get("response_time_seconds"),
-            context=context,
-        )
-        db.session.add(attempt)
-
-    # Atualiza stats apenas em novas tentativas (evita inflacionar contadores)
-    if is_new_attempt:
-        question.total_attempts += 1
-        if is_correct:
-            question.correct_attempts += 1
-
-    db.session.commit()
-
-    try:
-        from app.routes.analytics import _cache_delete, _dashboard_cache_key
-        _cache_delete(_dashboard_cache_key(user_id, tenant.id))
-        _cache_delete(f"next_action:{tenant.id}:{user_id}")
-    except Exception:
-        pass
-
-    # Monta resposta com justificativas
-    alternatives_with_feedback = []
-    for alt in sorted(question.alternatives, key=lambda a: a.key):
-        alt_data = {
-            "key": alt.key,
-            "text": alt.text,
-            "is_correct": alt.key == question.correct_alternative_key,
-            "is_chosen": alt.key == chosen_key,
-        }
-        if alt.key == question.correct_alternative_key:
-            alt_data["justification"] = question.correct_justification
-        elif alt.distractor_justification:
-            alt_data["justification"] = alt.distractor_justification
-        alternatives_with_feedback.append(alt_data)
-
-    xp_gained = 10 if is_correct else 2
-
-    # Dispara atualização de gamificação via Celery (não bloqueia a resposta)
-    try:
-        from app.tasks import update_gamification_after_answer
-
-        update_gamification_after_answer.delay(
-            user_id, tenant.id, is_correct, xp_gained
-        )
-    except Exception:
-        pass
-
-    # Dispara adaptação do cronograma se a questão pertence a uma disciplina
-    # Threshold: >= 10 tentativas e acurácia < 50% → injeta revisões extras
-    # Se acurácia >= 70% → remove revisões adaptativas pendentes
-    try:
-        if question.subject_id:
-            from app.tasks.schedule_tasks import adapt_after_question_attempt
-
-            adapt_after_question_attempt.delay(
-                user_id=user_id,
-                tenant_id=tenant.id,
-                subject_id=question.subject_id,
-            )
-    except Exception:
-        pass  # Nunca falha a resposta da questão por causa do cronograma
-
-    return (
-        jsonify(
-            {
-                "is_correct": is_correct,
-                "chosen_key": chosen_key,
-                "correct_key": question.correct_alternative_key,
-                "xp_gained": xp_gained,
-                "alternatives": alternatives_with_feedback,
-                "attempt_id": attempt.id,
-            }
-        ),
-        200,
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# HISTÓRICO DO ALUNO
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-@questions_bp.route("/my-history", methods=["GET"])
-@jwt_required()
-@require_tenant
-def my_history():
-    """Histórico de tentativas do aluno agrupado por disciplina."""
-    tenant = get_current_tenant()
-    user_id = get_jwt_identity()
-
-    attempts = (
-        QuestionAttempt.query.filter_by(
-            user_id=user_id,
-            tenant_id=tenant.id,
-            is_deleted=False,
-        )
-        .order_by(QuestionAttempt.created_at.desc())
-        .limit(200)
-        .all()
-    )
-
-    by_discipline = {}
-    for attempt in attempts:
-        question = attempt.question
-        if not question:
-            continue
-        discipline = question.discipline or "Sem disciplina"
-        if discipline not in by_discipline:
-            by_discipline[discipline] = {"total": 0, "correct": 0, "wrong": 0}
-        by_discipline[discipline]["total"] += 1
-        if attempt.is_correct:
-            by_discipline[discipline]["correct"] += 1
-        else:
-            by_discipline[discipline]["wrong"] += 1
-
-    for disc in by_discipline:
-        total = by_discipline[disc]["total"]
-        correct = by_discipline[disc]["correct"]
-        by_discipline[disc]["accuracy_rate"] = (
-            round((correct / total) * 100, 1) if total else 0
-        )
-
-    total_attempts = len(attempts)
-    total_correct = sum(1 for a in attempts if a.is_correct)
-
-    return (
-        jsonify(
-            {
-                "summary": {
-                    "total_answered": total_attempts,
-                    "total_correct": total_correct,
-                    "total_wrong": total_attempts - total_correct,
-                    "overall_accuracy": (
-                        round((total_correct / total_attempts) * 100, 1)
-                        if total_attempts
-                        else 0
-                    ),
-                },
-                "by_discipline": by_discipline,
-            }
-        ),
-        200,
-    )
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-
-def _get_last_attempts_map(user_id: str, tenant_id: str, question_ids: list) -> dict:
-    """
-    Retorna a última tentativa de cada questão para o aluno atual.
-    Usado para mostrar status (acertou/errou) na listagem.
-    """
-    if not question_ids:
-        return {}
-
-    attempts = (
-        QuestionAttempt.query.filter(
-            QuestionAttempt.user_id == user_id,
-            QuestionAttempt.tenant_id == tenant_id,
-            QuestionAttempt.question_id.in_(question_ids),
-            QuestionAttempt.is_deleted == False,
-        )
-        .order_by(QuestionAttempt.created_at.desc())
-        .all()
-    )
-
-    attempt_map = {}
-    for attempt in attempts:
-        if attempt.question_id not in attempt_map:
-            attempt_map[attempt.question_id] = attempt
-    return attempt_map
-
-
-def _serialize_question(
-    question: Question, last_attempt=None, include_answer: bool = False
-) -> dict:
-    """
-    Serializa questão.
-    SEGURANÇA: include_answer=False oculta gabarito para alunos
-    que ainda não responderam — evita que vejam a resposta antes.
-    """
-    alternatives = []
-    for alt in sorted(question.alternatives, key=lambda a: a.key):
-        alt_data = {
-            "key": alt.key,
-            "text": alt.text,
-        }
-        if include_answer:
-            alt_data["distractor_justification"] = alt.distractor_justification
-        alternatives.append(alt_data)
-
-    data = {
-        "id": question.id,
-        "source_type": question.source_type.value if question.source_type else "bank",
-        "lesson_id": question.lesson_id,
-        "statement": question.statement,
-        "context": question.context,
-        "discipline": question.discipline,
-        "topic": question.topic,
-        "subtopic": question.subtopic,
-        "tip": question.tip,
-        "difficulty": question.difficulty.value if question.difficulty else None,
-        "exam_board": question.exam_board,
-        "exam_year": question.exam_year,
-        "exam_name": question.exam_name,
-        "competency": question.competency,
-        "is_reviewed": question.is_reviewed,
-        "alternatives": alternatives,
-        "stats": {
-            "total_attempts": question.total_attempts,
-            "accuracy_rate": round(question.accuracy_rate * 100, 1),
-            "avg_response_time_seconds": round(
-                question.avg_response_time_seconds or 0, 1
-            ),
-        },
-        "my_status": {
-            "answered": last_attempt is not None,
-            "is_correct": last_attempt.is_correct if last_attempt else None,
-            "chosen_key": last_attempt.chosen_alternative_key if last_attempt else None,
-        },
+            for a in q.alternatives
+        ],
+        "tags": [t.tag for t in q.tags],
+        "created_at": q.created_at.isoformat() if q.created_at else None,
     }
 
-    if include_answer:
-        data["correct_alternative_key"] = question.correct_alternative_key
-        data["correct_justification"] = question.correct_justification
 
-    return data
+# ── Helpers xlsx ──────────────────────────────────────────────────────────────
 
 
-# ── Pipeline Gemini — Importação de questões de concurso (source_type="bank") ──
+def _make_external_id(sheet_name: str, row_idx: int, statement: str) -> str:
+    """Gera external_id estável para idempotência entre importações."""
+    raw = f"{sheet_name}::{row_idx}::{statement[:80]}"
+    return "xlsx_" + hashlib.md5(raw.encode("utf-8")).hexdigest()[:20]
 
 
-@questions_bp.route("/disciplines", methods=["GET"])
-@jwt_required()
-@require_tenant
-def get_disciplines():
-    """Retorna disciplinas disponíveis para este tenant (inclui banco global se feature ativa)."""
-    tenant = get_current_tenant()
-    condition = _question_access_filter(tenant)
-    rows = (
-        db.session.query(Question.discipline)
-        .filter(condition, Question.discipline.isnot(None))
-        .distinct()
-        .order_by(Question.discipline)
-        .all()
+def _cell_str(value) -> str | None:
+    """Converte valor de célula para string, retorna None se vazio."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s if s and s.lower() not in ("nan", "none", "") else None
+
+
+def _get_s3_client():
+    region = current_app.config.get("AWS_REGION", "us-east-1")
+    return boto3.client(
+        "s3",
+        region_name=region,
+        endpoint_url=f"https://s3.{region}.amazonaws.com",
     )
-    return jsonify(disciplines=[r[0] for r in rows])
 
 
-@questions_bp.route("/topics", methods=["GET"])
-@jwt_required()
-@require_tenant
-def get_topics():
-    """Retorna tópicos de uma disciplina específica."""
-    tenant = get_current_tenant()
-    discipline = request.args.get("discipline", "").strip()
-    if not discipline:
-        return jsonify(topics=[])
-    condition = _question_access_filter(tenant)
-    rows = (
-        db.session.query(Question.topic)
-        .filter(
-            condition,
-            Question.discipline.ilike(f"%{discipline}%"),
-            Question.topic.isnot(None),
-        )
-        .distinct()
-        .order_by(Question.topic)
-        .all()
-    )
-    return jsonify(topics=[r[0] for r in rows])
+def _upload_image_to_s3(image_bytes: bytes, filename: str, question_id: str) -> str | None:
+    """Upload de imagem para S3. Retorna URL pública ou None em caso de erro."""
+    bucket = current_app.config.get("AWS_S3_BUCKET", "")
+    region = current_app.config.get("AWS_REGION", "us-east-1")
+    if not bucket:
+        return None
 
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "jpg"
+    content_type = {
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "gif": "image/gif",
+        "webp": "image/webp",
+    }.get(ext, "image/jpeg")
 
-@questions_bp.route("/count", methods=["GET"])
-@jwt_required()
-@require_tenant
-def get_count():
-    """Retorna total de questões disponíveis com os filtros aplicados."""
-    tenant = get_current_tenant()
-    schema = QuestionFilterSchema()
+    safe_name = filename.replace(" ", "_").lower()
+    key = f"questions/images/{question_id}/{safe_name}"
+
     try:
-        filters = schema.load(request.args)
-    except ValidationError:
-        return jsonify(total=0)
-
-    condition = _question_access_filter(tenant)
-    query = Question.query.filter(condition)
-    if filters.get("discipline"):
-        query = query.filter(Question.discipline.ilike(f"%{filters['discipline']}%"))
-    if filters.get("topic"):
-        query = query.filter(Question.topic.ilike(f"%{filters['topic']}%"))
-    if filters.get("difficulty"):
-        query = query.filter(Question.difficulty == filters["difficulty"])
-    return jsonify(total=query.count())
+        s3 = _get_s3_client()
+        s3.put_object(Bucket=bucket, Key=key, Body=image_bytes, ContentType=content_type)
+        return f"https://{bucket}.s3.{region}.amazonaws.com/{key}"
+    except ClientError as e:
+        current_app.logger.error(f"S3 image upload error [{filename}]: {e}")
+        return None
 
 
-@questions_bp.route("/extract-text", methods=["POST"])
-@jwt_required()
-@require_tenant
-@require_feature("ai_features")
-def extract_questions_from_text():
+def _parse_xlsx_sheets(xlsx_bytes: bytes) -> list[dict]:
     """
-    Extrai questões de concurso de um texto via Gemini.
-    As questões extraídas são source_type="bank" — vão para o banco geral.
+    Lê todas as abas do xlsx.
+    Retorna lista de dicts normalizados (um por questão).
     """
-    data = request.get_json() or {}
-    context = data.get("context", "").strip()
+    import openpyxl
 
-    if not context or len(context) < 50:
-        return (
-            jsonify(
-                {
-                    "error": "bad_request",
-                    "message": "Forneça pelo menos 50 caracteres de contexto.",
-                }
-            ),
-            400,
-        )
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), data_only=True)
+    rows = []
 
-    from app.services.gemini_service import GeminiService
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        if ws.max_row < 2:
+            continue
 
-    svc = GeminiService()
-    questions = svc.extract_questions(context)
+        # Lê cabeçalhos da primeira linha
+        headers_raw = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
 
-    return jsonify({"questions": questions, "total": len(questions)}), 200
+        # Mapeia coluna (0-indexed) → campo interno
+        col_map: dict[int, str] = {}
+        for col_idx, raw_header in enumerate(headers_raw):
+            normalized = str(raw_header or "").strip().lower()
+            if normalized in _XLSX_COL_MAP:
+                col_map[col_idx] = _XLSX_COL_MAP[normalized]
+
+        if not col_map:
+            continue  # Aba sem cabeçalho reconhecível — ignora
+
+        for row_idx in range(2, ws.max_row + 1):
+            cells: dict[str, str | None] = {}
+            for col_idx, field_name in col_map.items():
+                cells[field_name] = _cell_str(ws.cell(row=row_idx, column=col_idx + 1).value)
+
+            # Pula linha completamente vazia
+            if not cells.get("statement"):
+                continue
+
+            cells["_sheet"] = sheet_name
+            cells["_row"] = row_idx  # type: ignore
+            rows.append(cells)
+
+    return rows
 
 
-@questions_bp.route("/extract", methods=["POST"])
-@jwt_required()
-@require_tenant
-@require_feature("ai_features")
-def extract_questions_from_file():
+def _extract_zip(file_bytes: bytes) -> tuple[bytes | None, dict[str, bytes]]:
     """
-    Extrai questões de concurso de PDF/arquivo via Gemini.
-    As questões extraídas são source_type="bank" — vão para o banco geral.
+    Extrai zip e retorna (xlsx_bytes, image_map).
+    image_map: {nome_do_arquivo_em_minúsculo: bytes}
     """
-    if "file" not in request.files:
-        return jsonify({"error": "bad_request", "message": "Arquivo não enviado."}), 400
+    xlsx_bytes: bytes | None = None
+    image_map: dict[str, bytes] = {}
+    image_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
-    file = request.files["file"]
-    context_hint = request.form.get("context", "")
+    with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
+        for name in zf.namelist():
+            basename = name.rsplit("/", 1)[-1]
+            lower = basename.lower()
 
-    content = file.read()
-    filename = file.filename or ""
+            if lower.endswith(".xlsx") and not lower.startswith("~$"):
+                if xlsx_bytes is None:  # Pega apenas o primeiro xlsx encontrado
+                    xlsx_bytes = zf.read(name)
+            elif any(lower.endswith(ext) for ext in image_exts):
+                image_map[lower] = zf.read(name)
 
-    if filename.lower().endswith(".pdf"):
+    return xlsx_bytes, image_map
+
+
+def _insert_or_update_question(
+    row: dict,
+    image_map: dict[str, bytes],
+    enrich_ai: bool,
+) -> tuple[str, bool]:
+    """
+    Insere ou atualiza questão a partir de um row normalizado.
+    Retorna (status, image_uploaded).
+    status: "inserted" | "updated" | "skipped"
+    """
+    statement = row.get("statement", "")
+    sheet_name = row.get("_sheet", "")
+    row_idx = int(row.get("_row", 0))  # type: ignore
+
+    ext_id = _make_external_id(sheet_name, row_idx, statement)
+
+    # Verifica existência por external_id (idempotência)
+    q = db.session.query(Question).filter_by(external_id=ext_id).first()
+
+    if q is None:
+        # Verifica duplicata por hash do enunciado
+        if Question.find_duplicate(statement):
+            return "skipped", False
+
+    is_new = q is None
+
+    if is_new:
+        q = Question()
+        q.id = str(uuid4())
+        q.external_id = ext_id
+        q.tenant_id = None
+        q.source_type = QuestionSourceType.BANK
+        q.review_status = ReviewStatus.APPROVED
+        q.submitted_by_tenant_id = None
+        q.submitted_by_user_id = None
+
+    # Campos principais
+    q.statement = statement
+    q.context = row.get("context")  # coluna "fonte" → texto de apoio/atribuição
+    q.discipline = (row.get("discipline") or sheet_name or "").strip().upper()
+    q.topic = row.get("topic")
+    q.subtopic = row.get("subtopic")
+    q.tip = row.get("tip")
+    q.correct_alternative_key = (row.get("correct_alternative_key") or "").strip().upper()
+    q.correct_justification = row.get("correct_justification")
+    q.is_active = True
+
+    # Dificuldade
+    diff_raw = (row.get("difficulty") or "medium").lower().strip()
+    q.difficulty = _DIFFICULTY_MAP.get(diff_raw, DifficultyLevel.MEDIUM)
+
+    # Metadados de prova
+    q.exam_board = row.get("exam_board")
+    q.exam_name = row.get("exam_name")
+    if row.get("exam_year"):
         try:
-            import io
-            import pypdf
+            q.exam_year = int(str(row["exam_year"]).split(".")[0])
+        except (ValueError, TypeError):
+            pass
 
-            reader = pypdf.PdfReader(io.BytesIO(content))
-            text = "\n".join(page.extract_text() or "" for page in reader.pages)
-        except Exception:
-            return (
-                jsonify(
-                    {"error": "bad_request", "message": "Não foi possível ler o PDF."}
-                ),
-                400,
+    # Imagem: procura no image_map (vem do zip)
+    image_uploaded = False
+    image_filename = row.get("image_file")
+    if image_filename:
+        img_bytes = image_map.get(image_filename.lower())
+        if img_bytes:
+            url = _upload_image_to_s3(img_bytes, image_filename, q.id)
+            if url:
+                q.image_url = url
+                image_uploaded = True
+
+    if is_new:
+        db.session.add(q)
+        db.session.flush()
+
+        # Cria alternativas (A–E; E pode ser vazia = questão de 4 alternativas)
+        for key in ("a", "b", "c", "d", "e"):
+            text = row.get(f"alt_{key}")
+            if not text:
+                continue
+            is_correct = key.upper() == q.correct_alternative_key
+            justification = row.get(f"just_{key}") if not is_correct else None
+            db.session.add(
+                Alternative(
+                    id=str(uuid4()),
+                    tenant_id=None,
+                    question_id=q.id,
+                    key=key.upper(),
+                    text=text,
+                    distractor_justification=justification,
+                )
             )
-    else:
-        try:
-            text = content.decode("utf-8")
-        except UnicodeDecodeError:
-            text = content.decode("latin-1")
 
-    if len(text.strip()) < 50:
-        return (
-            jsonify(
-                {"error": "bad_request", "message": "Arquivo sem conteúdo suficiente."}
-            ),
-            400,
+    # Dispara enriquecimento Gemini se campos faltantes ou solicitado
+    if enrich_ai or not q.topic or not q.tip:
+        try:
+            from app.tasks import analyze_question_task
+            analyze_question_task.delay(q.id, None)
+        except Exception:
+            pass
+
+    return ("inserted" if is_new else "updated"), image_uploaded
+
+
+# ── Bulk Import (JSON) ────────────────────────────────────────────────────────
+
+
+@admin_questions_bp.route("/questions/bulk-import", methods=["POST"])
+@jwt_required()
+def bulk_import():
+    err = _require_super_admin()
+    if err:
+        return err
+
+    data = request.get_json()
+    if not isinstance(data, list):
+        return jsonify(error="Esperado um array JSON"), 400
+
+    inserted = updated = skipped = errors = 0
+    skip_details = []
+    error_details = []
+
+    for item in data:
+        ext_id = item.get("external_id")
+        try:
+            q = (
+                db.session.query(Question).filter_by(external_id=ext_id).first()
+                if ext_id
+                else None
+            )
+
+            if q is None:
+                duplicate = Question.find_duplicate(item.get("statement", ""))
+                if duplicate:
+                    skip_details.append(
+                        {
+                            "external_id": ext_id,
+                            "reason": "hash_duplicate",
+                            "existing_id": duplicate.id,
+                        }
+                    )
+                    skipped += 1
+                    continue
+
+            is_new = q is None
+
+            if is_new:
+                q = Question()
+                q.id = str(uuid4())
+                q.external_id = ext_id
+                q.tenant_id = None
+                q.source_type = QuestionSourceType.BANK
+                q.review_status = ReviewStatus.APPROVED
+                q.submitted_by_tenant_id = None
+                q.submitted_by_user_id = None
+
+            q.statement = item["statement"]
+            q.discipline = item.get("discipline", "").strip().upper()
+            q.topic = item.get("topic")
+            q.subtopic = item.get("subtopic")
+            q.difficulty = _DIFFICULTY_MAP.get(
+                item.get("difficulty", "medium"), DifficultyLevel.MEDIUM
+            )
+            q.question_type = _QTYPE_MAP.get(item.get("question_type", ""))
+            q.correct_alternative_key = item.get("correct_answer_key", "").upper()
+            q.correct_justification = item.get("explanation")
+            q.tip = item.get("tip")
+            q.exam_board = item.get("exam_board")
+            q.exam_year = item.get("exam_year")
+            q.exam_name = item.get("exam_name")
+            q.source_document_id = item.get("source")
+            q.is_active = True
+
+            if is_new:
+                db.session.add(q)
+                db.session.flush()
+
+                for alt in item.get("alternatives", []):
+                    db.session.add(
+                        Alternative(
+                            id=str(uuid4()),
+                            tenant_id=None,
+                            question_id=q.id,
+                            key=alt["key"].upper(),
+                            text=alt["text"],
+                            distractor_justification=(
+                                alt.get("explanation") if not alt.get("is_correct") else None
+                            ),
+                        )
+                    )
+
+                for tag_str in item.get("tags", []):
+                    tag_str = tag_str.strip().lower()
+                    if tag_str:
+                        db.session.add(
+                            QuestionTag(
+                                id=str(uuid4()),
+                                tenant_id=None,
+                                question_id=q.id,
+                                tag=tag_str,
+                            )
+                        )
+
+                inserted += 1
+            else:
+                updated += 1
+
+            if (inserted + updated) % 50 == 0:
+                db.session.commit()
+
+        except Exception as e:
+            db.session.rollback()
+            errors += 1
+            error_details.append({"external_id": ext_id, "error": str(e)})
+
+    db.session.commit()
+
+    return (
+        jsonify(
+            inserted=inserted,
+            updated=updated,
+            skipped=skipped,
+            errors=errors,
+            skip_details=skip_details[:20],
+            error_details=error_details[:20],
+        ),
+        200,
+    )
+
+
+# ── XLSX Preview ──────────────────────────────────────────────────────────────
+
+
+@admin_questions_bp.route("/questions/xlsx-preview", methods=["POST"])
+@jwt_required()
+def xlsx_preview():
+    """
+    Recebe .xlsx ou .zip e retorna resumo sem importar nada.
+    Usado pelo frontend para mostrar preview antes de confirmar.
+    """
+    err = _require_super_admin()
+    if err:
+        return err
+
+    if "file" not in request.files:
+        return jsonify(error="Campo 'file' ausente."), 400
+
+    uploaded = request.files["file"]
+    filename = (uploaded.filename or "").lower()
+
+    if not filename.endswith((".xlsx", ".zip")):
+        return jsonify(error="Formato inválido. Envie um .xlsx ou .zip."), 400
+
+    file_bytes = uploaded.read()
+    image_map: dict[str, bytes] = {}
+
+    if filename.endswith(".zip"):
+        try:
+            xlsx_bytes, image_map = _extract_zip(file_bytes)
+        except zipfile.BadZipFile:
+            return jsonify(error="Arquivo zip corrompido."), 400
+        if not xlsx_bytes:
+            return jsonify(error="Nenhum xlsx encontrado no zip."), 400
+    else:
+        xlsx_bytes = file_bytes
+
+    try:
+        rows = _parse_xlsx_sheets(xlsx_bytes)
+    except Exception as e:
+        return jsonify(error=f"Erro ao ler xlsx: {str(e)}"), 400
+
+    if not rows:
+        return jsonify(error="Nenhuma questão encontrada no arquivo."), 400
+
+    # Agrega por aba/disciplina
+    by_sheet: dict[str, int] = {}
+    disciplines: set[str] = set()
+    questions_with_image = 0
+
+    for row in rows:
+        sheet = row.get("_sheet", "?")
+        by_sheet[sheet] = by_sheet.get(sheet, 0) + 1
+        if row.get("image_file"):
+            questions_with_image += 1
+        disc = (row.get("discipline") or sheet).strip().upper()
+        if disc:
+            disciplines.add(disc)
+
+    # Amostra de duplicatas (limitada para não travar)
+    sample_rows = rows[:100]
+    estimated_duplicates = sum(
+        1 for r in sample_rows if Question.find_duplicate(r.get("statement", ""))
+    )
+    # Extrapola proporcionalmente
+    if len(rows) > 100:
+        estimated_duplicates = int(estimated_duplicates * len(rows) / 100)
+
+    return jsonify(
+        total_questions=len(rows),
+        by_sheet=[{"sheet": k, "count": v} for k, v in by_sheet.items()],
+        disciplines=sorted(disciplines),
+        questions_with_image=questions_with_image,
+        images_in_zip=len(image_map),
+        estimated_duplicates=estimated_duplicates,
+    ), 200
+
+
+# ── XLSX Import ───────────────────────────────────────────────────────────────
+
+
+@admin_questions_bp.route("/questions/xlsx-import", methods=["POST"])
+@jwt_required()
+def xlsx_import():
+    """
+    Importa questões a partir de .xlsx ou .zip.
+
+    Multipart form-data:
+      file       — arquivo .xlsx  OU  .zip (xlsx + pasta images/)
+      enrich_ai  — "true"|"false"  (default: true)
+                   Dispara análise Gemini para preencher campos faltantes
+                   (tópico, dica, justificativas dos distratores).
+
+    Formato xlsx esperado (qualquer ordem, case-insensitive):
+      Disciplina | Enunciado | Imagem | fonte |
+      Alternativa A-E | Gabarito
+
+    Campos opcionais (aproveitados se presentes):
+      Tópico | Subtópico | Dificuldade | Banca | Ano | Concurso |
+      Dica | Justificativa | Justificativa A-E
+
+    Quando arquivo é .zip:
+      - Deve conter exatamente 1 arquivo .xlsx (qualquer subpasta)
+      - Imagens em qualquer pasta dentro do zip
+      - Coluna "Imagem" no xlsx contém o nome do arquivo (ex: q001.png)
+      - Upload automático para S3 → questions/images/{question_id}/{filename}
+    """
+    err = _require_super_admin()
+    if err:
+        return err
+
+    if "file" not in request.files:
+        return jsonify(error="Campo 'file' ausente no form-data."), 400
+
+    uploaded = request.files["file"]
+    filename = (uploaded.filename or "").lower()
+    enrich_ai = request.form.get("enrich_ai", "true").lower() == "true"
+
+    if not filename.endswith((".xlsx", ".zip")):
+        return jsonify(error="Formato inválido. Envie um .xlsx ou .zip."), 400
+
+    file_bytes = uploaded.read()
+    image_map: dict[str, bytes] = {}
+
+    if filename.endswith(".zip"):
+        try:
+            xlsx_bytes, image_map = _extract_zip(file_bytes)
+        except zipfile.BadZipFile:
+            return jsonify(error="Arquivo zip corrompido."), 400
+        if not xlsx_bytes:
+            return jsonify(error="Nenhum xlsx encontrado no zip."), 400
+    else:
+        xlsx_bytes = file_bytes
+
+    try:
+        rows = _parse_xlsx_sheets(xlsx_bytes)
+    except Exception as e:
+        current_app.logger.error(f"xlsx parse error: {e}")
+        return jsonify(error=f"Erro ao ler o xlsx: {str(e)}"), 400
+
+    if not rows:
+        return jsonify(error="Nenhuma questão encontrada no arquivo."), 400
+
+    inserted = updated = skipped = errors = 0
+    images_uploaded = 0
+    error_details = []
+
+    for row in rows:
+        try:
+            status, img_uploaded = _insert_or_update_question(row, image_map, enrich_ai)
+            if status == "inserted":
+                inserted += 1
+            elif status == "updated":
+                updated += 1
+            elif status == "skipped":
+                skipped += 1
+            if img_uploaded:
+                images_uploaded += 1
+
+            if (inserted + updated) % 50 == 0:
+                db.session.commit()
+
+        except Exception as e:
+            db.session.rollback()
+            errors += 1
+            error_details.append({
+                "row": row.get("_row"),
+                "sheet": row.get("_sheet"),
+                "statement_preview": (row.get("statement") or "")[:60],
+                "error": str(e),
+            })
+
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify(error=f"Erro ao salvar no banco: {str(e)}"), 500
+
+    return jsonify(
+        inserted=inserted,
+        updated=updated,
+        skipped=skipped,
+        errors=errors,
+        images_uploaded=images_uploaded,
+        total_rows=len(rows),
+        enrich_ai=enrich_ai,
+        error_details=error_details[:20],
+    ), 200
+
+
+# ── Listagem ──────────────────────────────────────────────────────────────────
+
+
+@admin_questions_bp.route("/questions", methods=["GET"])
+@jwt_required()
+def list_questions():
+    err = _require_super_admin()
+    if err:
+        return err
+
+    discipline = request.args.get("discipline")
+    topic = request.args.get("topic")
+    difficulty = request.args.get("difficulty")
+    q_type = request.args.get("question_type")
+    review_status = request.args.get("review_status")
+    tenant_filter = request.args.get("submitted_by_tenant_id")
+    page = int(request.args.get("page", 1))
+    per_page = min(int(request.args.get("per_page", 30)), 100)
+
+    query = db.session.query(Question).filter(
+        Question.source_type == QuestionSourceType.BANK,
+        Question.tenant_id.is_(None),
+    )
+    if discipline:
+        query = query.filter(Question.discipline.ilike(f"%{discipline}%"))
+    if topic:
+        query = query.filter(Question.topic.ilike(f"%{topic}%"))
+    if difficulty:
+        query = query.filter(Question.difficulty == difficulty)
+    if q_type:
+        query = query.filter(Question.question_type == q_type)
+    if review_status:
+        query = query.filter(Question.review_status == review_status)
+    if tenant_filter:
+        query = query.filter(Question.submitted_by_tenant_id == tenant_filter)
+
+    paginated = query.order_by(Question.created_at.desc()).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+
+    return jsonify(
+        questions=[_serialize_admin(q) for q in paginated.items],
+        total=paginated.total,
+        page=page,
+        pages=paginated.pages,
+    )
+
+
+@admin_questions_bp.route("/questions/pending", methods=["GET"])
+@jwt_required()
+def list_pending():
+    err = _require_super_admin()
+    if err:
+        return err
+
+    tenant_filter = request.args.get("tenant_id")
+    page = int(request.args.get("page", 1))
+    per_page = min(int(request.args.get("per_page", 30)), 100)
+
+    query = db.session.query(Question).filter(
+        Question.review_status == ReviewStatus.PENDING,
+        Question.source_type == QuestionSourceType.BANK,
+        Question.tenant_id.is_(None),
+    )
+    if tenant_filter:
+        query = query.filter(Question.submitted_by_tenant_id == tenant_filter)
+
+    paginated = query.order_by(Question.created_at.asc()).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+
+    summary = (
+        db.session.query(
+            Question.submitted_by_tenant_id,
+            func.count(Question.id).label("count"),
+        )
+        .filter(
+            Question.review_status == ReviewStatus.PENDING,
+            Question.source_type == QuestionSourceType.BANK,
+            Question.tenant_id.is_(None),
+            Question.submitted_by_tenant_id.isnot(None),
+        )
+        .group_by(Question.submitted_by_tenant_id)
+        .all()
+    )
+
+    by_tenant = []
+    for tenant_id, count in summary:
+        t = db.session.get(Tenant, tenant_id)
+        by_tenant.append(
+            {
+                "tenant_id": tenant_id,
+                "tenant_name": t.name if t else "Desconhecido",
+                "tenant_slug": t.slug if t else None,
+                "count": count,
+            }
         )
 
-    from app.services.gemini_service import GeminiService
+    return jsonify(
+        questions=[_serialize_admin(q) for q in paginated.items],
+        total=paginated.total,
+        page=page,
+        pages=paginated.pages,
+        by_tenant=by_tenant,
+    )
 
-    svc = GeminiService()
-    questions = svc.extract_questions(text[:15000])
 
-    return jsonify({"questions": questions, "total": len(questions)}), 200
+# ── Ações de revisão ──────────────────────────────────────────────────────────
+
+
+@admin_questions_bp.route("/questions/<question_id>/approve", methods=["POST"])
+@jwt_required()
+def approve_question(question_id):
+    err = _require_super_admin()
+    if err:
+        return err
+
+    q = db.session.get(Question, question_id)
+    if not q:
+        return jsonify(error="Questão não encontrada"), 404
+    if q.source_type != QuestionSourceType.BANK or q.tenant_id is not None:
+        return jsonify(error="Apenas questões do banco global podem ser revisadas"), 400
+
+    q.review_status = ReviewStatus.APPROVED
+    q.rejection_reason = None
+    q.reviewed_by_user_id = get_jwt_identity()
+    q.reviewed_at = datetime.utcnow()
+    q.is_reviewed = True
+    db.session.commit()
+
+    return jsonify(message="Questão aprovada.", question=_serialize_admin(q))
+
+
+@admin_questions_bp.route("/questions/<question_id>/reject", methods=["POST"])
+@jwt_required()
+def reject_question(question_id):
+    err = _require_super_admin()
+    if err:
+        return err
+
+    q = db.session.get(Question, question_id)
+    if not q:
+        return jsonify(error="Questão não encontrada"), 404
+    if q.source_type != QuestionSourceType.BANK or q.tenant_id is not None:
+        return jsonify(error="Apenas questões do banco global podem ser revisadas"), 400
+
+    data = request.get_json() or {}
+    reason = (data.get("reason") or "").strip()
+    if not reason:
+        return jsonify(error="Motivo da rejeição é obrigatório"), 400
+
+    q.review_status = ReviewStatus.REJECTED
+    q.rejection_reason = reason
+    q.reviewed_by_user_id = get_jwt_identity()
+    q.reviewed_at = datetime.utcnow()
+    q.is_reviewed = True
+    db.session.commit()
+
+    return jsonify(message="Questão rejeitada.", question=_serialize_admin(q))
+
+
+@admin_questions_bp.route("/questions/<question_id>", methods=["DELETE"])
+@jwt_required()
+def delete_question(question_id):
+    err = _require_super_admin()
+    if err:
+        return err
+
+    q = db.session.get(Question, question_id)
+    if not q:
+        return jsonify(error="Questão não encontrada"), 404
+
+    q.is_active = False
+    db.session.commit()
+    return jsonify(message="Questão desativada.")
+
+
+# ── Stats ─────────────────────────────────────────────────────────────────────
+
+
+@admin_questions_bp.route("/questions/stats", methods=["GET"])
+@jwt_required()
+def bank_stats():
+    err = _require_super_admin()
+    if err:
+        return err
+
+    base = db.session.query(Question).filter(
+        Question.source_type == QuestionSourceType.BANK,
+        Question.tenant_id.is_(None),
+    )
+
+    by_status = {
+        r[0].value: r[1]
+        for r in base.with_entities(Question.review_status, func.count(Question.id))
+        .group_by(Question.review_status)
+        .all()
+    }
+
+    by_discipline = {
+        r[0]: r[1]
+        for r in base.filter(Question.review_status == ReviewStatus.APPROVED)
+        .with_entities(Question.discipline, func.count(Question.id))
+        .group_by(Question.discipline)
+        .order_by(func.count(Question.id).desc())
+        .all()
+    }
+
+    by_difficulty = {
+        r[0].value: r[1]
+        for r in base.filter(Question.review_status == ReviewStatus.APPROVED)
+        .with_entities(Question.difficulty, func.count(Question.id))
+        .group_by(Question.difficulty)
+        .all()
+    }
+
+    top_submitters = (
+        base.filter(Question.submitted_by_tenant_id.isnot(None))
+        .with_entities(
+            Question.submitted_by_tenant_id,
+            func.count(Question.id).label("total"),
+        )
+        .group_by(Question.submitted_by_tenant_id)
+        .order_by(func.count(Question.id).desc())
+        .limit(10)
+        .all()
+    )
+
+    top_submitters_named = []
+    for tenant_id, total in top_submitters:
+        t = db.session.get(Tenant, tenant_id)
+        top_submitters_named.append(
+            {
+                "tenant_id": tenant_id,
+                "tenant_name": t.name if t else "Desconhecido",
+                "total": total,
+            }
+        )
+
+    return jsonify(
+        total_questions=base.count(),
+        by_status=by_status,
+        by_discipline=by_discipline,
+        by_difficulty=by_difficulty,
+        top_submitters=top_submitters_named,
+    )

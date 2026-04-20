@@ -138,7 +138,8 @@ def send_password_reset_email(self, to_email, to_name, reset_url, tenant_name,
 
 @celery_app.task(bind=True, max_retries=3, ignore_result=True)
 def send_welcome_email(self, to_email, to_name, password, tenant_name, platform_url,
-                       support_email="", logo_url="", primary_color="#4F46E5"):
+                       support_email="", logo_url="", primary_color="#4F46E5",
+                       course_names=None):
     try:
         header = _email_header(tenant_name, logo_url, primary_color)
         support_line = (
@@ -146,14 +147,33 @@ def send_welcome_email(self, to_email, to_name, password, tenant_name, platform_
             f'Dúvidas? Entre em contato: <a href="mailto:{support_email}" style="color:{primary_color};">'
             f'{support_email}</a></p>'
         ) if support_email else ""
+
+        # Bloco de cursos matriculados
+        courses_block = ""
+        if course_names:
+            course_items = "".join(
+                f'<tr><td style="padding:4px 0;">'
+                f'<span style="display:inline-block;background:{primary_color}1A;color:{primary_color};'
+                f'padding:3px 10px;border-radius:20px;font-size:13px;font-weight:600;">📚 {c}</span>'
+                f'</td></tr>'
+                for c in course_names
+            )
+            courses_block = (
+                f'<div style="margin-bottom:28px;">'
+                f'<p style="margin:0 0 10px;color:#374151;font-size:14px;font-weight:600;">Você foi matriculado em:</p>'
+                f'<table width="100%" cellpadding="0" cellspacing="0">{course_items}</table>'
+                f'</div>'
+            )
+
         content = (
-            f'<div style="padding:32px;">'
-            f'<h2 style="margin:0 0 8px;font-size:22px;color:#111827;">Bem-vindo(a)! 🎓</h2>'
-            f'<p style="margin:0 0 24px;color:#6B7280;font-size:14px;">Sua conta foi criada com sucesso.</p>'
-            f'<p style="margin:0 0 24px;color:#374151;font-size:15px;">Olá <strong>{to_name}</strong>,</p>'
-            f'<p style="margin:0 0 20px;color:#4B5563;font-size:15px;">'
-            f'Confira abaixo suas credenciais de acesso à plataforma <strong>{tenant_name}</strong>:</p>'
-            f'<div style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;padding:20px;margin-bottom:28px;">'
+            f'<div style="padding:40px 32px 32px;text-align:center;">'
+            f'<h2 style="margin:0 0 8px;font-size:24px;font-weight:700;color:#111827;letter-spacing:-0.5px;">Bem-vindo(a)! 🎓</h2>'
+            f'<p style="margin:0 0 32px;color:#6B7280;font-size:15px;line-height:1.6;">Sua conta na <strong>{tenant_name}</strong> foi criada.</p>'
+            f'<p style="margin:0 0 20px;color:#374151;font-size:16px;line-height:1.5;text-align:left;">Olá <strong>{to_name}</strong>,</p>'
+            f'{courses_block}'
+            f'<p style="margin:0 0 20px;color:#4B5563;font-size:15px;line-height:1.5;text-align:left;">'
+            f'Suas credenciais de acesso:</p>'
+            f'<div style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;padding:20px;margin-bottom:28px;text-align:left;">'
             f'<table width="100%" cellpadding="0" cellspacing="0">'
             f'<tr><td style="padding:6px 0;color:#6B7280;font-size:13px;width:80px;">E-mail</td>'
             f'<td style="padding:6px 0;color:#111827;font-size:14px;font-weight:600;">{to_email}</td></tr>'
@@ -163,14 +183,19 @@ def send_welcome_email(self, to_email, to_name, password, tenant_name, platform_
             f'{password}</code></td></tr>'
             f'</table>'
             f'</div>'
-            f'<div style="text-align:center;margin:28px 0;">'
-            f'<a href="{platform_url}" style="display:inline-block;background:{primary_color};color:#FFFFFF;'
-            f'padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;">'
-            f'Acessar a plataforma →</a>'
-            f'</div>'
-            f'<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:14px;">'
-            f'<p style="margin:0;color:#92400E;font-size:12px;line-height:1.5;">'
-            f'🔐 Recomendamos alterar sua senha após o primeiro acesso.'
+            f'<table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0">'
+            f'<tr><td align="center">'
+            f'<table role="presentation" border="0" cellspacing="0" cellpadding="0">'
+            f'<tr><td align="center" bgcolor="{primary_color}" style="border-radius:8px;">'
+            f'<a href="{platform_url}" target="_blank" style="display:inline-block;padding:14px 32px;'
+            f'font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:16px;color:#FFFFFF;'
+            f'text-decoration:none;font-weight:700;border-radius:8px;">Acessar a plataforma →</a>'
+            f'</td></tr></table>'
+            f'</td></tr></table>'
+            f'<div style="background:#F9FAFB;border-radius:8px;padding:16px 24px;margin-top:28px;text-align:left;">'
+            f'<p style="margin:0;color:#6B7280;font-size:13px;line-height:1.6;">'
+            f'💡 Você pode alterar sua senha a qualquer momento nas configurações do seu perfil. '
+            f'Não é obrigatório, mas recomendamos criar uma senha pessoal.'
             f'</p>'
             f'</div>'
             f'{support_line}'
@@ -180,7 +205,7 @@ def send_welcome_email(self, to_email, to_name, password, tenant_name, platform_
         html = _email_wrapper(header, content, footer)
         _send_via_resend(
             to_email=to_email,
-            subject=f"[{tenant_name}] Seu acesso à plataforma",
+            subject=f"[{tenant_name}] Bem-vindo(a) à plataforma!",
             html=html,
         )
         return {"status": "sent", "to": to_email}

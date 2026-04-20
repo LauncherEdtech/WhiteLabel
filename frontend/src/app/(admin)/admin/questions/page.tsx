@@ -14,8 +14,9 @@ import { useForm } from "react-hook-form";
 import { cn } from "@/lib/utils/cn";
 import {
     BookOpen, Upload, Clock, CheckCircle2, XCircle, AlertCircle,
-    ChevronDown, ChevronUp, Search, Filter, FileJson,
-    BarChart3, Building2, Loader2, Plus,
+    ChevronDown, ChevronUp, Search, Filter, FileJson, FileSpreadsheet,
+    BarChart3, Building2, Loader2, Plus, Sparkles, Image, Download,
+    FolderOpen, Layers,
 } from "lucide-react";
 import { QUERY_KEYS } from "@/lib/constants/queryKeys";
 
@@ -49,8 +50,20 @@ interface ImportResult {
     updated: number;
     skipped: number;
     errors: number;
+    images_uploaded?: number;
+    total_rows?: number;
+    enrich_ai?: boolean;
     skip_details: { external_id: string; reason: string; existing_id?: string }[];
-    error_details: { external_id: string; error: string }[];
+    error_details: { row?: number; sheet?: string; statement_preview?: string; external_id?: string; error: string }[];
+}
+
+interface XlsxPreview {
+    total_questions: number;
+    by_sheet: { sheet: string; count: number }[];
+    disciplines: string[];
+    questions_with_image: number;
+    images_in_zip: number;
+    estimated_duplicates: number;
 }
 
 const DIFFICULTY_LABEL: Record<string, string> = {
@@ -62,57 +75,51 @@ const DIFFICULTY_VARIANT: Record<string, string> = {
     hard: "bg-destructive/10 text-destructive border-destructive/20",
 };
 
-// ── Página principal ──────────────────────────────────────────────────────────
+// ── Page ──────────────────────────────────────────────────────────────────────
 
-export default function QuestionsPage() {
+export default function AdminQuestionsPage() {
     const [tab, setTab] = useState<"stats" | "import" | "pending">("stats");
 
     const { data: stats, isLoading: statsLoading } = useQuery<BankStats>({
         queryKey: QUERY_KEYS.QUESTION_BANK_STATS,
         queryFn: () => apiClient.get("/admin/questions/stats").then(r => r.data),
+        staleTime: 60_000,
     });
 
     const { data: pendingData, isLoading: pendingLoading } = useQuery({
         queryKey: QUERY_KEYS.QUESTION_BANK_PENDING,
-        queryFn: () => apiClient.get("/admin/questions/pending?per_page=50").then(r => r.data),
+        queryFn: () => apiClient.get("/admin/questions/pending").then(r => r.data),
+        staleTime: 30_000,
         enabled: tab === "pending",
     });
 
     const pendingQuestions: PendingQuestion[] = pendingData?.questions ?? [];
     const pendingTotal: number = pendingData?.total ?? 0;
-    const byTenant: { tenant_id: string; tenant_name: string; count: number }[] =
-        pendingData?.by_tenant ?? [];
+    const byTenant = pendingData?.by_tenant ?? [];
 
-    type TabItem = {
-        key: "stats" | "import" | "pending";
-        label: string;
-        icon: React.ElementType;
-        badge?: number;
-    };
-
-    const tabs: TabItem[] = [
-        { key: "stats", label: "Visão Geral", icon: BarChart3 },
-        { key: "import", label: "Importar Questões", icon: Upload },
+    const tabs = [
+        { key: "stats" as const, label: "Visão Geral", icon: BarChart3 },
+        { key: "import" as const, label: "Importar Questões", icon: Upload },
         {
-            key: "pending", label: "Revisão Pendente", icon: Clock,
-            badge: stats?.by_status?.pending
+            key: "pending" as const,
+            label: "Revisão Pendente",
+            icon: Clock,
+            badge: stats?.by_status?.pending,
         },
     ];
 
     return (
-        <div className="space-y-5 animate-fade-in">
+        <div className="space-y-6">
             {/* Header */}
-            <div className="flex items-center justify-between">
-                <div>
-                    <h1 className="font-display text-2xl font-bold text-foreground">
-                        Banco de Questões
-                    </h1>
-                    <p className="text-sm text-muted-foreground mt-0.5">
-                        {stats
-                            ? `${stats.total_questions.toLocaleString("pt-BR")} questões no banco global`
-                            : "Banco compartilhado entre todos os infoprodutores"}
-                    </p>
-                </div>
+            <div>
+                <h1 className="text-2xl font-display font-bold text-foreground">
+                    Banco de Questões
+                </h1>
+                <p className="text-sm text-muted-foreground mt-0.5">
+                    {stats
+                        ? `${stats.total_questions.toLocaleString("pt-BR")} questões no banco global`
+                        : "Banco compartilhado entre todos os infoprodutores"}
+                </p>
             </div>
 
             {/* Tabs */}
@@ -176,118 +183,429 @@ function StatsPanel({ stats, isLoading }: { stats?: BankStats; isLoading: boolea
     ];
 
     return (
-        <div className="space-y-5">
-            {/* KPIs */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="space-y-6">
+            <div className="grid grid-cols-4 gap-4">
                 {statusCards.map(({ label, value, color }) => (
                     <Card key={label}>
-                        <CardContent className="p-4">
-                            <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider mb-1">
-                                {label}
+                        <CardContent className="p-4 text-center">
+                            <p className={cn("text-3xl font-display font-bold", color)}>
+                                {(value ?? 0).toLocaleString("pt-BR")}
                             </p>
-                            <p className={cn("text-3xl font-bold font-display", color)}>
-                                {value.toLocaleString("pt-BR")}
-                            </p>
+                            <p className="text-xs text-muted-foreground mt-1">{label}</p>
                         </CardContent>
                     </Card>
                 ))}
             </div>
 
-            <div className="grid grid-cols-2 gap-5">
-                {/* Por disciplina */}
+            {Object.keys(stats.by_discipline ?? {}).length > 0 && (
                 <Card>
                     <CardContent className="p-4">
-                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-                            Por Disciplina
-                        </p>
-                        <div className="space-y-2">
+                        <p className="text-sm font-semibold mb-3">Por disciplina</p>
+                        <div className="grid grid-cols-2 gap-2">
                             {Object.entries(stats.by_discipline)
                                 .sort(([, a], [, b]) => b - a)
-                                .slice(0, 8)
-                                .map(([discipline, count]) => {
-                                    const total = stats.by_status?.approved ?? 1;
-                                    const pct = Math.round((count / total) * 100);
-                                    return (
-                                        <div key={discipline}>
-                                            <div className="flex items-center justify-between mb-1">
-                                                <p className="text-xs text-foreground truncate max-w-[200px]">
-                                                    {discipline}
-                                                </p>
-                                                <p className="text-xs text-muted-foreground font-mono ml-2 shrink-0">
-                                                    {count}
-                                                </p>
-                                            </div>
-                                            <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-                                                <div
-                                                    className="h-full bg-primary rounded-full"
-                                                    style={{ width: `${pct}%` }}
-                                                />
-                                            </div>
-                                        </div>
-                                    );
-                                })}
+                                .slice(0, 12)
+                                .map(([disc, count]) => (
+                                    <div key={disc} className="flex items-center justify-between py-1">
+                                        <p className="text-xs text-muted-foreground truncate mr-2">{disc}</p>
+                                        <p className="text-sm font-semibold font-mono text-foreground">
+                                            {count}
+                                        </p>
+                                    </div>
+                                ))}
                         </div>
                     </CardContent>
                 </Card>
-
-                {/* Top submitters + dificuldade */}
-                <div className="space-y-4">
-                    <Card>
-                        <CardContent className="p-4">
-                            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-                                Por Dificuldade
-                            </p>
-                            <div className="space-y-2">
-                                {Object.entries(stats.by_difficulty).map(([diff, count]) => (
-                                    <div key={diff} className="flex items-center justify-between">
-                                        <span className={cn(
-                                            "text-xs px-2 py-0.5 rounded-full border",
-                                            DIFFICULTY_VARIANT[diff]
-                                        )}>
-                                            {DIFFICULTY_LABEL[diff] ?? diff}
-                                        </span>
-                                        <span className="text-sm font-semibold font-mono text-foreground">
-                                            {count}
-                                        </span>
-                                    </div>
-                                ))}
-                            </div>
-                        </CardContent>
-                    </Card>
-
-                    {stats.top_submitters.length > 0 && (
-                        <Card>
-                            <CardContent className="p-4">
-                                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-                                    Top Submissões por Produtor
-                                </p>
-                                <div className="space-y-2">
-                                    {stats.top_submitters.map(s => (
-                                        <div key={s.tenant_id} className="flex items-center gap-2">
-                                            <div className="h-6 w-6 rounded-md bg-primary/10 flex items-center justify-center shrink-0">
-                                                <Building2 className="h-3.5 w-3.5 text-primary" />
-                                            </div>
-                                            <p className="text-sm text-foreground flex-1 truncate">
-                                                {s.tenant_name}
-                                            </p>
-                                            <p className="text-sm font-semibold font-mono text-foreground">
-                                                {s.total}
-                                            </p>
-                                        </div>
-                                    ))}
-                                </div>
-                            </CardContent>
-                        </Card>
-                    )}
-                </div>
-            </div>
+            )}
         </div>
     );
 }
 
 // ── Import Panel ──────────────────────────────────────────────────────────────
 
+type ImportMode = "xlsx" | "json";
+
 function ImportPanel() {
+    const [mode, setMode] = useState<ImportMode>("xlsx");
+
+    return (
+        <div className="space-y-4">
+            {/* Header */}
+            <div className="flex items-center justify-between">
+                <p className="text-sm text-muted-foreground">
+                    Importe questões via planilha Excel (.xlsx / .zip com imagens) ou JSON gerado pelo notebook Gemini.
+                </p>
+                <div className="flex gap-1 bg-muted rounded-lg p-1">
+                    <button
+                        onClick={() => setMode("xlsx")}
+                        className={cn(
+                            "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
+                            mode === "xlsx"
+                                ? "bg-background text-foreground shadow-sm"
+                                : "text-muted-foreground hover:text-foreground"
+                        )}
+                    >
+                        <FileSpreadsheet className="h-3.5 w-3.5" />
+                        XLSX / ZIP
+                    </button>
+                    <button
+                        onClick={() => setMode("json")}
+                        className={cn(
+                            "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
+                            mode === "json"
+                                ? "bg-background text-foreground shadow-sm"
+                                : "text-muted-foreground hover:text-foreground"
+                        )}
+                    >
+                        <FileJson className="h-3.5 w-3.5" />
+                        JSON
+                    </button>
+                </div>
+            </div>
+
+            {mode === "xlsx" ? <XlsxImportPanel /> : <JsonImportPanel />}
+        </div>
+    );
+}
+
+// ── XLSX Import Panel ─────────────────────────────────────────────────────────
+
+function XlsxImportPanel() {
+    const toast = useToast();
+    const queryClient = useQueryClient();
+    const fileRef = useRef<HTMLInputElement>(null);
+    const [dragging, setDragging] = useState(false);
+    const [file, setFile] = useState<File | null>(null);
+    const [preview, setPreview] = useState<XlsxPreview | null>(null);
+    const [previewLoading, setPreviewLoading] = useState(false);
+    const [enrichAi, setEnrichAi] = useState(true);
+    const [result, setResult] = useState<ImportResult | null>(null);
+    const [showSingle, setShowSingle] = useState(false);
+
+    const importMutation = useMutation({
+        mutationFn: (formData: FormData) =>
+            apiClient.post("/admin/questions/xlsx-import", formData, {
+                headers: { "Content-Type": "multipart/form-data" },
+            }).then(r => r.data),
+        onSuccess: (data: ImportResult) => {
+            setResult(data);
+            queryClient.invalidateQueries({ queryKey: QUERY_KEYS.QUESTION_BANK_STATS });
+            if (data.errors > 0) {
+                toast.error(`Import concluído com ${data.errors} erro(s)`);
+            } else {
+                const imgMsg = data.images_uploaded ? ` · ${data.images_uploaded} imagem(ns) no S3` : "";
+                toast.success(
+                    `${data.inserted} questões importadas`,
+                    `${data.skipped} duplicatas ignoradas${imgMsg}`
+                );
+            }
+        },
+        onError: () => toast.error("Erro ao processar o arquivo"),
+    });
+
+    async function loadPreview(f: File) {
+        setPreviewLoading(true);
+        setPreview(null);
+        setResult(null);
+        const fd = new FormData();
+        fd.append("file", f);
+        try {
+            const res = await apiClient.post("/admin/questions/xlsx-preview", fd, {
+                headers: { "Content-Type": "multipart/form-data" },
+            });
+            setPreview(res.data);
+        } catch (e: any) {
+            const msg = e?.response?.data?.error ?? "Erro ao ler o arquivo";
+            toast.error("Arquivo inválido", msg);
+            setFile(null);
+        } finally {
+            setPreviewLoading(false);
+        }
+    }
+
+    function handleFile(f: File) {
+        const valid = f.name.endsWith(".xlsx") || f.name.endsWith(".zip");
+        if (!valid) {
+            toast.error("Formato inválido", "Aceito: .xlsx ou .zip contendo xlsx + imagens");
+            return;
+        }
+        setFile(f);
+        loadPreview(f);
+    }
+
+    function handleDrop(e: React.DragEvent) {
+        e.preventDefault();
+        setDragging(false);
+        const f = e.dataTransfer.files[0];
+        if (f) handleFile(f);
+    }
+
+    function reset() {
+        setFile(null);
+        setPreview(null);
+        setResult(null);
+        if (fileRef.current) fileRef.current.value = "";
+    }
+
+    function handleImport() {
+        if (!file) return;
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("enrich_ai", enrichAi ? "true" : "false");
+        importMutation.mutate(fd);
+    }
+
+    const isZip = file?.name.endsWith(".zip") ?? false;
+
+    return (
+        <div className="space-y-4">
+            {/* Formato guide */}
+            <Card className="border-primary/20 bg-primary/5">
+                <CardContent className="p-4">
+                    <div className="flex items-start gap-3">
+                        <FileSpreadsheet className="h-5 w-5 text-primary shrink-0 mt-0.5" />
+                        <div className="space-y-2 text-sm">
+                            <p className="font-semibold text-foreground">Formato esperado da planilha</p>
+                            <p className="text-muted-foreground text-xs leading-relaxed">
+                                Cada aba do Excel vira uma disciplina. Colunas reconhecidas (case-insensitive):
+                            </p>
+                            <div className="flex flex-wrap gap-1.5">
+                                {[
+                                    "Disciplina", "Enunciado", "Imagem*", "fonte",
+                                    "Alternativa A", "Alternativa B", "Alternativa C", "Alternativa D", "Alternativa E*",
+                                    "Gabarito",
+                                    "Tópico*", "Subtópico*", "Dificuldade*", "Banca*", "Ano*", "Concurso*",
+                                    "Dica*", "Justificativa*", "Justificativa A…E*",
+                                ].map(col => (
+                                    <span
+                                        key={col}
+                                        className={cn(
+                                            "text-xs px-2 py-0.5 rounded-md font-mono",
+                                            col.endsWith("*")
+                                                ? "bg-muted text-muted-foreground"
+                                                : "bg-primary/10 text-primary font-medium"
+                                        )}
+                                    >
+                                        {col.replace("*", "")}
+                                        {col.endsWith("*") && <span className="text-muted-foreground/60"> opt</span>}
+                                    </span>
+                                ))}
+                            </div>
+                            <div className="flex items-start gap-2 pt-1">
+                                <Image className="h-3.5 w-3.5 text-muted-foreground mt-0.5 shrink-0" />
+                                <p className="text-xs text-muted-foreground">
+                                    Para questões com imagem: coloque o nome do arquivo na coluna{" "}
+                                    <code className="font-mono">Imagem</code> (ex: <code>q001.png</code>) e envie tudo
+                                    compactado em um <strong>.zip</strong> contendo o xlsx + pasta com as imagens.
+                                    O sistema faz o upload automático para o S3.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </CardContent>
+            </Card>
+
+            {/* Questão única */}
+            <div className="flex justify-end">
+                <Button variant="outline" size="sm" onClick={() => setShowSingle(true)}>
+                    <Plus className="h-4 w-4" />
+                    Questão única
+                </Button>
+            </div>
+
+            {/* Dropzone */}
+            {!file && (
+                <div
+                    onDragOver={e => { e.preventDefault(); setDragging(true); }}
+                    onDragLeave={() => setDragging(false)}
+                    onDrop={handleDrop}
+                    onClick={() => fileRef.current?.click()}
+                    className={cn(
+                        "border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-all",
+                        dragging
+                            ? "border-primary bg-primary/5 scale-[1.01]"
+                            : "border-border hover:border-primary/50 hover:bg-muted/30"
+                    )}
+                >
+                    <input
+                        ref={fileRef}
+                        type="file"
+                        accept=".xlsx,.zip"
+                        className="hidden"
+                        onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])}
+                    />
+                    <div className="flex items-center justify-center gap-3 mb-3">
+                        <FileSpreadsheet className="h-9 w-9 text-muted-foreground" />
+                        <FolderOpen className="h-7 w-7 text-muted-foreground/60" />
+                    </div>
+                    <p className="text-sm font-medium text-foreground">
+                        Arraste o arquivo ou clique para selecionar
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                        Aceito: <code className="font-mono">.xlsx</code> (sem imagens) ou{" "}
+                        <code className="font-mono">.zip</code> (xlsx + imagens)
+                    </p>
+                </div>
+            )}
+
+            {/* Loading preview */}
+            {previewLoading && (
+                <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                    <p className="text-sm">Analisando arquivo...</p>
+                </div>
+            )}
+
+            {/* Preview card */}
+            {preview && file && !previewLoading && (
+                <div className="space-y-3">
+                    <div className="flex items-center justify-between p-4 rounded-xl bg-success/5 border border-success/20">
+                        <div className="flex items-center gap-3">
+                            {isZip
+                                ? <FolderOpen className="h-5 w-5 text-success" />
+                                : <FileSpreadsheet className="h-5 w-5 text-success" />
+                            }
+                            <div>
+                                <p className="text-sm font-semibold text-foreground">
+                                    {file.name}
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                    {(file.size / 1024).toFixed(0)} KB
+                                </p>
+                            </div>
+                        </div>
+                        <Button variant="ghost" size="sm" onClick={reset}>
+                            Trocar arquivo
+                        </Button>
+                    </div>
+
+                    {/* Stats do preview */}
+                    <div className="grid grid-cols-2 gap-3">
+                        <Card>
+                            <CardContent className="p-4">
+                                <p className="text-2xl font-display font-bold text-foreground">
+                                    {preview.total_questions.toLocaleString("pt-BR")}
+                                </p>
+                                <p className="text-xs text-muted-foreground mt-0.5">questões detectadas</p>
+                            </CardContent>
+                        </Card>
+                        <Card>
+                            <CardContent className="p-4">
+                                <p className="text-2xl font-display font-bold text-foreground">
+                                    {preview.by_sheet.length}
+                                </p>
+                                <p className="text-xs text-muted-foreground mt-0.5">
+                                    aba{preview.by_sheet.length !== 1 ? "s" : ""} / disciplina{preview.by_sheet.length !== 1 ? "s" : ""}
+                                </p>
+                            </CardContent>
+                        </Card>
+                    </div>
+
+                    {/* Abas */}
+                    <div className="p-3 rounded-lg bg-muted/40 border border-border space-y-1.5">
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                            Abas encontradas
+                        </p>
+                        <div className="space-y-1">
+                            {preview.by_sheet.map(({ sheet, count }) => (
+                                <div key={sheet} className="flex items-center justify-between">
+                                    <span className="text-xs text-foreground truncate mr-2">{sheet}</span>
+                                    <span className="text-xs font-mono text-muted-foreground shrink-0">
+                                        {count} questões
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Avisos */}
+                    <div className="space-y-2">
+                        {preview.questions_with_image > 0 && (
+                            <div className={cn(
+                                "flex items-center gap-2 p-2.5 rounded-lg text-xs",
+                                preview.images_in_zip > 0
+                                    ? "bg-success/10 border border-success/20 text-success"
+                                    : "bg-warning/10 border border-warning/20 text-warning"
+                            )}>
+                                <Image className="h-3.5 w-3.5 shrink-0" />
+                                {preview.images_in_zip > 0
+                                    ? `${preview.questions_with_image} questão(ões) com imagem — ${preview.images_in_zip} imagem(ns) encontrada(s) no zip, prontas para upload S3`
+                                    : `${preview.questions_with_image} questão(ões) com imagem — envie um .zip com o xlsx + pasta de imagens para fazer upload automático`
+                                }
+                            </div>
+                        )}
+                        {preview.estimated_duplicates > 0 && (
+                            <div className="flex items-center gap-2 p-2.5 rounded-lg text-xs bg-muted/50 border border-border text-muted-foreground">
+                                <Layers className="h-3.5 w-3.5 shrink-0" />
+                                ~{preview.estimated_duplicates} possível(is) duplicata(s) — serão ignoradas automaticamente
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Opção AI */}
+                    <div
+                        onClick={() => setEnrichAi(!enrichAi)}
+                        className={cn(
+                            "flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all select-none",
+                            enrichAi
+                                ? "border-primary/30 bg-primary/5"
+                                : "border-border hover:border-border/80"
+                        )}
+                    >
+                        <div className={cn(
+                            "h-8 w-8 rounded-lg flex items-center justify-center shrink-0 transition-colors",
+                            enrichAi ? "bg-primary/10" : "bg-muted"
+                        )}>
+                            <Sparkles className={cn("h-4 w-4", enrichAi ? "text-primary" : "text-muted-foreground")} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-foreground">
+                                Enriquecer com IA (Gemini)
+                            </p>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                                Preenche automaticamente tópico, dica e justificativas dos distratores quando ausentes
+                            </p>
+                        </div>
+                        <div className={cn(
+                            "h-5 w-9 rounded-full transition-colors shrink-0",
+                            enrichAi ? "bg-primary" : "bg-muted-foreground/30"
+                        )}>
+                            <div className={cn(
+                                "h-4 w-4 bg-white rounded-full shadow-sm mt-0.5 transition-transform",
+                                enrichAi ? "translate-x-4 ml-0.5" : "translate-x-0.5"
+                            )} />
+                        </div>
+                    </div>
+
+                    {/* Botão importar */}
+                    <Button
+                        className="w-full"
+                        size="lg"
+                        disabled={importMutation.isPending}
+                        loading={importMutation.isPending}
+                        onClick={handleImport}
+                    >
+                        {importMutation.isPending
+                            ? `Importando ${preview.total_questions.toLocaleString("pt-BR")} questões...`
+                            : `Importar ${preview.total_questions.toLocaleString("pt-BR")} questões`
+                        }
+                    </Button>
+                </div>
+            )}
+
+            {/* Resultado */}
+            {result && (
+                <ImportResultCard result={result} onReset={reset} />
+            )}
+
+            <SingleQuestionModal open={showSingle} onClose={() => setShowSingle(false)} />
+        </div>
+    );
+}
+
+// ── JSON Import Panel ─────────────────────────────────────────────────────────
+
+function JsonImportPanel() {
     const toast = useToast();
     const queryClient = useQueryClient();
     const fileRef = useRef<HTMLInputElement>(null);
@@ -295,8 +613,6 @@ function ImportPanel() {
     const [jsonText, setJsonText] = useState("");
     const [result, setResult] = useState<ImportResult | null>(null);
     const [dragging, setDragging] = useState(false);
-
-    // ── Questão única ─────────────────────────────────────────────────────────
     const [showSingle, setShowSingle] = useState(false);
 
     const importMutation = useMutation({
@@ -348,22 +664,15 @@ function ImportPanel() {
         else toast.error("Apenas arquivos .json são aceitos");
     }
 
-    function handleTextChange(v: string) {
-        setJsonText(v);
-        if (v.trim()) parseText(v);
-        else setParsed(null);
-    }
-
     const disciplines = parsed
         ? [...new Set(parsed.map((q: any) => q.discipline).filter(Boolean))]
         : [];
 
     return (
         <div className="space-y-4">
-            {/* Ações rápidas */}
             <div className="flex items-center justify-between">
-                <p className="text-sm text-muted-foreground">
-                    Importe o arquivo gerado pelo notebook Gemini ou adicione questões manualmente.
+                <p className="text-xs text-muted-foreground">
+                    Importe o arquivo gerado pelo notebook Gemini.
                 </p>
                 <Button variant="outline" size="sm" onClick={() => setShowSingle(true)}>
                     <Plus className="h-4 w-4" />
@@ -371,7 +680,6 @@ function ImportPanel() {
                 </Button>
             </div>
 
-            {/* Upload zone */}
             <div
                 onDragOver={e => { e.preventDefault(); setDragging(true); }}
                 onDragLeave={() => setDragging(false)}
@@ -395,12 +703,9 @@ function ImportPanel() {
                 <p className="text-sm font-medium text-foreground">
                     Arraste o arquivo JSON ou clique para selecionar
                 </p>
-                <p className="text-xs text-muted-foreground mt-1">
-                    questoes_para_importacao.json
-                </p>
+                <p className="text-xs text-muted-foreground mt-1">questoes_para_importacao.json</p>
             </div>
 
-            {/* Ou cole */}
             <div className="relative">
                 <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex items-center">
                     <div className="flex-1 border-t border-border" />
@@ -413,13 +718,16 @@ function ImportPanel() {
                 <textarea
                     rows={6}
                     value={jsonText}
-                    onChange={e => handleTextChange(e.target.value)}
+                    onChange={e => {
+                        setJsonText(e.target.value);
+                        if (e.target.value.trim()) parseText(e.target.value);
+                        else setParsed(null);
+                    }}
                     placeholder='[{"external_id":"...","statement":"...","discipline":"..."}]'
                     className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring"
                 />
             </div>
 
-            {/* Preview */}
             {parsed && (
                 <div className="flex items-center justify-between p-3 rounded-lg bg-success/10 border border-success/20">
                     <div>
@@ -431,11 +739,7 @@ function ImportPanel() {
                             {disciplines.length > 4 ? ` +${disciplines.length - 4}` : ""}
                         </p>
                     </div>
-                    <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => { setParsed(null); setJsonText(""); setResult(null); }}
-                    >
+                    <Button variant="ghost" size="sm" onClick={() => { setParsed(null); setJsonText(""); setResult(null); }}>
                         Limpar
                     </Button>
                 </div>
@@ -453,61 +757,88 @@ function ImportPanel() {
                 }
             </Button>
 
-            {/* Resultado */}
-            {result && (
-                <Card className={cn(
-                    "border",
-                    result.errors > 0 ? "border-destructive/30 bg-destructive/5" : "border-success/30 bg-success/5"
-                )}>
-                    <CardContent className="p-4">
-                        <div className="flex items-center gap-2 mb-3">
-                            {result.errors > 0
-                                ? <AlertCircle className="h-4 w-4 text-destructive" />
-                                : <CheckCircle2 className="h-4 w-4 text-success" />
-                            }
-                            <p className="text-sm font-semibold text-foreground">
-                                {result.errors > 0 ? "Import concluído com erros" : "Import concluído com sucesso"}
-                            </p>
-                        </div>
+            {result && <ImportResultCard result={result} onReset={() => { setParsed(null); setJsonText(""); setResult(null); }} />}
 
-                        <div className="grid grid-cols-4 gap-3 text-center">
-                            {[
-                                { label: "Inseridas", value: result.inserted, color: "text-success" },
-                                { label: "Atualizadas", value: result.updated, color: "text-primary" },
-                                { label: "Ignoradas", value: result.skipped, color: "text-warning" },
-                                { label: "Erros", value: result.errors, color: "text-destructive" },
-                            ].map(({ label, value, color }) => (
-                                <div key={label} className="p-2 rounded-lg bg-background/60">
-                                    <p className={cn("text-xl font-bold font-display", color)}>
-                                        {value}
-                                    </p>
-                                    <p className="text-xs text-muted-foreground">{label}</p>
-                                </div>
-                            ))}
-                        </div>
-
-                        {result.error_details.length > 0 && (
-                            <div className="mt-3 p-3 rounded-lg bg-background/60 space-y-1">
-                                <p className="text-xs font-semibold text-muted-foreground mb-2">ERROS DETALHADOS</p>
-                                {result.error_details.slice(0, 5).map((e, i) => (
-                                    <p key={i} className="text-xs font-mono text-destructive">
-                                        {e.external_id} — {e.error}
-                                    </p>
-                                ))}
-                                {result.error_details.length > 5 && (
-                                    <p className="text-xs text-muted-foreground">
-                                        +{result.error_details.length - 5} erros omitidos
-                                    </p>
-                                )}
-                            </div>
-                        )}
-                    </CardContent>
-                </Card>
-            )}
-
-            {/* Modal questão única */}
             <SingleQuestionModal open={showSingle} onClose={() => setShowSingle(false)} />
         </div>
+    );
+}
+
+// ── Import Result Card ────────────────────────────────────────────────────────
+
+function ImportResultCard({ result, onReset }: { result: ImportResult; onReset: () => void }) {
+    const hasErrors = result.errors > 0;
+    return (
+        <Card className={cn(
+            "border",
+            hasErrors ? "border-destructive/30 bg-destructive/5" : "border-success/30 bg-success/5"
+        )}>
+            <CardContent className="p-4">
+                <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                        {hasErrors
+                            ? <AlertCircle className="h-4 w-4 text-destructive" />
+                            : <CheckCircle2 className="h-4 w-4 text-success" />
+                        }
+                        <p className="text-sm font-semibold text-foreground">
+                            {hasErrors ? "Import concluído com erros" : "Import concluído com sucesso"}
+                        </p>
+                    </div>
+                    <Button variant="ghost" size="sm" onClick={onReset}>Nova importação</Button>
+                </div>
+
+                <div className="grid grid-cols-4 gap-3 text-center">
+                    {[
+                        { label: "Inseridas", value: result.inserted, color: "text-success" },
+                        { label: "Atualizadas", value: result.updated, color: "text-primary" },
+                        { label: "Ignoradas", value: result.skipped, color: "text-warning" },
+                        { label: "Erros", value: result.errors, color: "text-destructive" },
+                    ].map(({ label, value, color }) => (
+                        <div key={label} className="p-2 rounded-lg bg-background/60">
+                            <p className={cn("text-xl font-bold font-display", color)}>{value}</p>
+                            <p className="text-xs text-muted-foreground">{label}</p>
+                        </div>
+                    ))}
+                </div>
+
+                {(result.images_uploaded ?? 0) > 0 && (
+                    <div className="mt-3 flex items-center gap-2 p-2 rounded-lg bg-success/10 border border-success/20">
+                        <Image className="h-3.5 w-3.5 text-success shrink-0" />
+                        <p className="text-xs text-success font-medium">
+                            {result.images_uploaded} imagem(ns) salva(s) no S3
+                        </p>
+                    </div>
+                )}
+
+                {result.enrich_ai && (
+                    <div className="mt-2 flex items-center gap-2 p-2 rounded-lg bg-primary/5 border border-primary/20">
+                        <Sparkles className="h-3.5 w-3.5 text-primary shrink-0" />
+                        <p className="text-xs text-primary">
+                            Enriquecimento IA em processamento em segundo plano
+                        </p>
+                    </div>
+                )}
+
+                {result.error_details.length > 0 && (
+                    <div className="mt-3 p-3 rounded-lg bg-background/60 space-y-1">
+                        <p className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wider">
+                            Detalhes dos erros
+                        </p>
+                        {result.error_details.slice(0, 5).map((e, i) => (
+                            <p key={i} className="text-xs font-mono text-destructive">
+                                {e.sheet && `[${e.sheet} linha ${e.row}] `}
+                                {e.statement_preview ?? e.external_id} — {e.error}
+                            </p>
+                        ))}
+                        {result.error_details.length > 5 && (
+                            <p className="text-xs text-muted-foreground">
+                                +{result.error_details.length - 5} erros omitidos
+                            </p>
+                        )}
+                    </div>
+                )}
+            </CardContent>
+        </Card>
     );
 }
 
@@ -554,7 +885,6 @@ function PendingPanel({
 
     return (
         <div className="space-y-4">
-            {/* Resumo por produtor */}
             {byTenant.length > 0 && (
                 <div className="flex flex-wrap gap-2">
                     <button
@@ -614,10 +944,7 @@ function PendingPanel({
             )}
 
             {rejectTarget && (
-                <RejectModal
-                    question={rejectTarget}
-                    onClose={() => setRejectTarget(null)}
-                />
+                <RejectModal question={rejectTarget} onClose={() => setRejectTarget(null)} />
             )}
         </div>
     );
@@ -645,9 +972,7 @@ function PendingQuestionCard({
                                 {question.discipline}
                             </Badge>
                             {question.topic && (
-                                <span className="text-xs text-muted-foreground">
-                                    {question.topic}
-                                </span>
+                                <span className="text-xs text-muted-foreground">{question.topic}</span>
                             )}
                             <span className={cn(
                                 "text-xs px-2 py-0.5 rounded-full border",
@@ -656,11 +981,7 @@ function PendingQuestionCard({
                                 {DIFFICULTY_LABEL[question.difficulty]}
                             </span>
                         </div>
-
-                        <p className="text-sm text-foreground line-clamp-2">
-                            {question.statement}
-                        </p>
-
+                        <p className="text-sm text-foreground line-clamp-2">{question.statement}</p>
                         <div className="flex items-center gap-3 mt-1.5 flex-wrap">
                             {question.submitted_by_tenant && (
                                 <p className="text-xs text-muted-foreground flex items-center gap-1">
@@ -700,7 +1021,6 @@ function PendingQuestionCard({
                     </div>
                 </div>
 
-                {/* Expanded: alternativas */}
                 {expanded && (
                     <div className="mt-4 pt-4 border-t border-border space-y-2">
                         <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
@@ -708,9 +1028,7 @@ function PendingQuestionCard({
                         </p>
                         {question.alternatives.map(alt => (
                             <div key={alt.key} className="flex gap-2 text-sm">
-                                <span className="font-semibold text-muted-foreground w-4 shrink-0">
-                                    {alt.key}
-                                </span>
+                                <span className="font-semibold text-muted-foreground w-4 shrink-0">{alt.key}</span>
                                 <span className="text-foreground">{alt.text}</span>
                             </div>
                         ))}
@@ -761,7 +1079,10 @@ function RejectModal({ question, onClose }: { question: PendingQuestion; onClose
                             Motivo da rejeição <span className="text-destructive">*</span>
                         </label>
                         <textarea
-                            {...register("reason", { required: "Motivo obrigatório", minLength: { value: 10, message: "Mínimo 10 caracteres" } })}
+                            {...register("reason", {
+                                required: "Motivo obrigatório",
+                                minLength: { value: 10, message: "Mínimo 10 caracteres" },
+                            })}
                             rows={3}
                             placeholder="Ex: Gabarito incorreto, questão desatualizada, enunciado incompleto..."
                             className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
@@ -833,7 +1154,7 @@ function SingleQuestionModal({ open, onClose }: { open: boolean; onClose: () => 
             return;
         }
 
-        const payload = [{
+        mutation.mutate([{
             external_id: null,
             statement: data.statement,
             discipline: data.discipline.toUpperCase(),
@@ -848,10 +1169,7 @@ function SingleQuestionModal({ open, onClose }: { open: boolean; onClose: () => 
             alternatives,
             tags: [],
             source_type: "bank",
-            has_image: false,
-        }];
-
-        mutation.mutate(payload);
+        }]);
     }
 
     return (
@@ -865,7 +1183,6 @@ function SingleQuestionModal({ open, onClose }: { open: boolean; onClose: () => 
                 </DialogHeader>
 
                 <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-                    {/* Enunciado */}
                     <div className="space-y-1">
                         <label className="text-sm font-medium">
                             Enunciado <span className="text-destructive">*</span>
@@ -878,16 +1195,12 @@ function SingleQuestionModal({ open, onClose }: { open: boolean; onClose: () => 
                         />
                     </div>
 
-                    {/* Metadados */}
                     <div className="grid grid-cols-2 gap-3">
                         <div className="space-y-1">
                             <label className="text-sm font-medium">
                                 Disciplina <span className="text-destructive">*</span>
                             </label>
-                            <Input
-                                {...register("discipline", { required: true })}
-                                placeholder="Ex: DIREITO CONSTITUCIONAL"
-                            />
+                            <Input {...register("discipline", { required: true })} placeholder="Ex: DIREITO CONSTITUCIONAL" />
                         </div>
                         <div className="space-y-1">
                             <label className="text-sm font-medium">Tópico</label>
@@ -895,10 +1208,7 @@ function SingleQuestionModal({ open, onClose }: { open: boolean; onClose: () => 
                         </div>
                         <div className="space-y-1">
                             <label className="text-sm font-medium">Dificuldade</label>
-                            <select
-                                {...register("difficulty")}
-                                className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm"
-                            >
+                            <select {...register("difficulty")} className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm">
                                 <option value="easy">Fácil</option>
                                 <option value="medium">Médio</option>
                                 <option value="hard">Difícil</option>
@@ -906,10 +1216,7 @@ function SingleQuestionModal({ open, onClose }: { open: boolean; onClose: () => 
                         </div>
                         <div className="space-y-1">
                             <label className="text-sm font-medium">Tipo</label>
-                            <select
-                                {...register("question_type")}
-                                className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm"
-                            >
+                            <select {...register("question_type")} className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm">
                                 <option value="">— selecione —</option>
                                 <option value="interpretacao">Interpretação</option>
                                 <option value="aplicacao">Aplicação</option>
@@ -927,7 +1234,6 @@ function SingleQuestionModal({ open, onClose }: { open: boolean; onClose: () => 
                         </div>
                     </div>
 
-                    {/* Alternativas */}
                     <div className="space-y-2">
                         <p className="text-sm font-medium">
                             Alternativas{" "}
@@ -938,9 +1244,7 @@ function SingleQuestionModal({ open, onClose }: { open: boolean; onClose: () => 
                         {LETTERS.map(l => (
                             <div key={l} className={cn(
                                 "flex items-center gap-3 p-2.5 rounded-lg border transition-all",
-                                l === correctKey
-                                    ? "border-success/40 bg-success/5"
-                                    : "border-border"
+                                l === correctKey ? "border-success/40 bg-success/5" : "border-border"
                             )}>
                                 <span className={cn(
                                     "text-sm font-semibold w-5 text-center shrink-0",
@@ -957,21 +1261,18 @@ function SingleQuestionModal({ open, onClose }: { open: boolean; onClose: () => 
                                     type="button"
                                     onClick={() => setCorrectKey(l)}
                                     className={cn(
-                                        "h-5 w-5 rounded-full border-2 shrink-0 transition-all",
+                                        "h-5 w-5 rounded-full border-2 shrink-0 transition-all flex items-center justify-center",
                                         l === correctKey
                                             ? "border-success bg-success"
                                             : "border-muted-foreground/40 hover:border-success"
                                     )}
                                 >
-                                    {l === correctKey && (
-                                        <CheckCircle2 className="h-3.5 w-3.5 text-white m-auto" />
-                                    )}
+                                    {l === correctKey && <CheckCircle2 className="h-3.5 w-3.5 text-white" />}
                                 </button>
                             </div>
                         ))}
                     </div>
 
-                    {/* Justificativa + dica */}
                     <div className="space-y-3">
                         <div className="space-y-1">
                             <label className="text-sm font-medium">Justificativa da correta</label>
