@@ -70,7 +70,6 @@ _QTYPE_MAP = {
 }
 
 # Mapeamento normalizado de cabeçalhos xlsx → campo interno
-# Aceita variações de maiúsculo/minúsculo e acentuação
 _XLSX_COL_MAP = {
     "disciplina": "discipline",
     "enunciado": "statement",
@@ -182,14 +181,14 @@ def _upload_image_to_s3(image_bytes: bytes, filename: str, question_id: str) -> 
     if not bucket:
         return None
 
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "jpg"
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "png"
     content_type = {
         "jpg": "image/jpeg",
         "jpeg": "image/jpeg",
         "png": "image/png",
         "gif": "image/gif",
         "webp": "image/webp",
-    }.get(ext, "image/jpeg")
+    }.get(ext, "image/png")
 
     safe_name = filename.replace(" ", "_").lower()
     key = f"questions/images/{question_id}/{safe_name}"
@@ -203,10 +202,52 @@ def _upload_image_to_s3(image_bytes: bytes, filename: str, question_id: str) -> 
         return None
 
 
+def _build_embedded_image_map(ws) -> dict[int, tuple[bytes, str]]:
+    """
+    Escaneia imagens embutidas em uma aba do xlsx.
+
+    Retorna {excel_row_number: (image_bytes, format_extension)}
+
+    Suporta dois casos:
+      1. Imagem embutida diretamente na célula (openpyxl Image com OneCellAnchor)
+      2. Coluna "Imagem" preenchida com nome de arquivo → tratada separadamente
+
+    A âncora openpyxl usa row 0-indexed, então:
+        excel_row = anchor._from.row + 1
+    """
+    image_map: dict[int, tuple[bytes, str]] = {}
+
+    for img in getattr(ws, "_images", []):
+        try:
+            anch = img.anchor
+            if not hasattr(anch, "_from"):
+                continue
+            excel_row = anch._from.row + 1  # 0-indexed → 1-based Excel row
+            img_bytes = img._data()
+            fmt = (getattr(img, "format", None) or "png").lower().strip(".")
+            if fmt not in ("png", "jpg", "jpeg", "gif", "webp"):
+                fmt = "png"
+            image_map[excel_row] = (img_bytes, fmt)
+        except Exception:
+            continue  # Nunca deixar uma imagem problemática travar toda a importação
+
+    return image_map
+
+
 def _parse_xlsx_sheets(xlsx_bytes: bytes) -> list[dict]:
     """
     Lê todas as abas do xlsx.
-    Retorna lista de dicts normalizados (um por questão).
+
+    Para cada questão detecta:
+      - Dados das colunas (statement, alternativas, gabarito, etc.)
+      - Imagem embutida na célula (detectada por âncora, sem precisar de coluna preenchida)
+      - Imagem referenciada por nome na coluna "Imagem" (tratada em _insert_or_update_question)
+
+    Chaves internas no dict retornado:
+      _sheet                  — nome da aba
+      _row                    — número da linha Excel (1-based)
+      _embedded_image_bytes   — bytes da imagem embutida (se houver)
+      _embedded_image_fmt     — extensão do formato ("png", "jpg", etc.)
     """
     import openpyxl
 
@@ -217,6 +258,9 @@ def _parse_xlsx_sheets(xlsx_bytes: bytes) -> list[dict]:
         ws = wb[sheet_name]
         if ws.max_row < 2:
             continue
+
+        # Mapa de imagens embutidas nesta aba: {excel_row: (bytes, fmt)}
+        embedded_images = _build_embedded_image_map(ws)
 
         # Lê cabeçalhos da primeira linha
         headers_raw = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
@@ -232,7 +276,7 @@ def _parse_xlsx_sheets(xlsx_bytes: bytes) -> list[dict]:
             continue  # Aba sem cabeçalho reconhecível — ignora
 
         for row_idx in range(2, ws.max_row + 1):
-            cells: dict[str, str | None] = {}
+            cells: dict = {}
             for col_idx, field_name in col_map.items():
                 cells[field_name] = _cell_str(ws.cell(row=row_idx, column=col_idx + 1).value)
 
@@ -241,7 +285,14 @@ def _parse_xlsx_sheets(xlsx_bytes: bytes) -> list[dict]:
                 continue
 
             cells["_sheet"] = sheet_name
-            cells["_row"] = row_idx  # type: ignore
+            cells["_row"] = row_idx
+
+            # Injeta imagem embutida se existir para esta linha
+            if row_idx in embedded_images:
+                img_bytes, img_fmt = embedded_images[row_idx]
+                cells["_embedded_image_bytes"] = img_bytes
+                cells["_embedded_image_fmt"] = img_fmt
+
             rows.append(cells)
 
     return rows
@@ -260,9 +311,8 @@ def _extract_zip(file_bytes: bytes) -> tuple[bytes | None, dict[str, bytes]]:
         for name in zf.namelist():
             basename = name.rsplit("/", 1)[-1]
             lower = basename.lower()
-
             if lower.endswith(".xlsx") and not lower.startswith("~$"):
-                if xlsx_bytes is None:  # Pega apenas o primeiro xlsx encontrado
+                if xlsx_bytes is None:
                     xlsx_bytes = zf.read(name)
             elif any(lower.endswith(ext) for ext in image_exts):
                 image_map[lower] = zf.read(name)
@@ -277,22 +327,48 @@ def _insert_or_update_question(
 ) -> tuple[str, bool]:
     """
     Insere ou atualiza questão a partir de um row normalizado.
+
+    Ordem de prioridade para imagem:
+      1. Imagem embutida diretamente na célula (_embedded_image_bytes)
+      2. Nome de arquivo na coluna "Imagem" + imagem no zip (image_map)
+
     Retorna (status, image_uploaded).
     status: "inserted" | "updated" | "skipped"
     """
     statement = row.get("statement", "")
     sheet_name = row.get("_sheet", "")
-    row_idx = int(row.get("_row", 0))  # type: ignore
+    row_idx = int(row.get("_row", 0))
 
     ext_id = _make_external_id(sheet_name, row_idx, statement)
 
-    # Verifica existência por external_id (idempotência)
     q = db.session.query(Question).filter_by(external_id=ext_id).first()
 
     if q is None:
-        # Verifica duplicata por hash do enunciado
         if Question.find_duplicate(statement):
             return "skipped", False
+
+    # ── Validações obrigatórias ───────────────────────────────────────────────
+    correct_key = (row.get("correct_alternative_key") or "").strip().upper()
+
+    # Gabarito deve ser A, B, C, D ou E
+    if correct_key not in ("A", "B", "C", "D", "E"):
+        return (
+            f"error:Gabarito inválido ou ausente: '{correct_key}' "
+            f"(esperado A, B, C, D ou E)",
+            False,
+        )
+
+    # Alternativas presentes
+    alts_present = [k for k in ("a", "b", "c", "d", "e") if row.get(f"alt_{k}")]
+    if len(alts_present) < 2:
+        return "error:Menos de 2 alternativas preenchidas", False
+
+    # A alternativa correta deve existir de fato
+    if correct_key.lower() not in alts_present:
+        return (
+            f"error:Gabarito '{correct_key}' não possui alternativa preenchida",
+            False,
+        )
 
     is_new = q is None
 
@@ -308,20 +384,18 @@ def _insert_or_update_question(
 
     # Campos principais
     q.statement = statement
-    q.context = row.get("context")  # coluna "fonte" → texto de apoio/atribuição
+    q.context = row.get("context")
     q.discipline = (row.get("discipline") or sheet_name or "").strip().upper()
     q.topic = row.get("topic")
     q.subtopic = row.get("subtopic")
     q.tip = row.get("tip")
-    q.correct_alternative_key = (row.get("correct_alternative_key") or "").strip().upper()
+    q.correct_alternative_key = correct_key
     q.correct_justification = row.get("correct_justification")
     q.is_active = True
 
-    # Dificuldade
     diff_raw = (row.get("difficulty") or "medium").lower().strip()
     q.difficulty = _DIFFICULTY_MAP.get(diff_raw, DifficultyLevel.MEDIUM)
 
-    # Metadados de prova
     q.exam_board = row.get("exam_board")
     q.exam_name = row.get("exam_name")
     if row.get("exam_year"):
@@ -330,13 +404,23 @@ def _insert_or_update_question(
         except (ValueError, TypeError):
             pass
 
-    # Imagem: procura no image_map (vem do zip)
+    # ── Upload de imagem ──────────────────────────────────────────────────────
+    # Prioridade 1: imagem embutida diretamente na célula do xlsx
+    # Prioridade 2: nome de arquivo na coluna "Imagem" + imagem no zip
     image_uploaded = False
-    image_filename = row.get("image_file")
-    if image_filename:
-        img_bytes = image_map.get(image_filename.lower())
+
+    if row.get("_embedded_image_bytes"):
+        fmt = row.get("_embedded_image_fmt", "png")
+        filename = f"questao_{q.id[:8]}.{fmt}"
+        url = _upload_image_to_s3(row["_embedded_image_bytes"], filename, q.id)
+        if url:
+            q.image_url = url
+            image_uploaded = True
+
+    elif row.get("image_file") and image_map:
+        img_bytes = image_map.get(row["image_file"].lower())
         if img_bytes:
-            url = _upload_image_to_s3(img_bytes, image_filename, q.id)
+            url = _upload_image_to_s3(img_bytes, row["image_file"], q.id)
             if url:
                 q.image_url = url
                 image_uploaded = True
@@ -345,7 +429,6 @@ def _insert_or_update_question(
         db.session.add(q)
         db.session.flush()
 
-        # Cria alternativas (A–E; E pode ser vazia = questão de 4 alternativas)
         for key in ("a", "b", "c", "d", "e"):
             text = row.get(f"alt_{key}")
             if not text:
@@ -363,7 +446,6 @@ def _insert_or_update_question(
                 )
             )
 
-    # Dispara enriquecimento Gemini se campos faltantes ou solicitado
     if enrich_ai or not q.topic or not q.tip:
         try:
             from app.tasks import analyze_question_task
@@ -508,7 +590,7 @@ def bulk_import():
 def xlsx_preview():
     """
     Recebe .xlsx ou .zip e retorna resumo sem importar nada.
-    Usado pelo frontend para mostrar preview antes de confirmar.
+    Detecta imagens embutidas nas células automaticamente.
     """
     err = _require_super_admin()
     if err:
@@ -544,26 +626,38 @@ def xlsx_preview():
     if not rows:
         return jsonify(error="Nenhuma questão encontrada no arquivo."), 400
 
-    # Agrega por aba/disciplina
     by_sheet: dict[str, int] = {}
     disciplines: set[str] = set()
     questions_with_image = 0
+    questions_invalid = 0
 
     for row in rows:
         sheet = row.get("_sheet", "?")
         by_sheet[sheet] = by_sheet.get(sheet, 0) + 1
-        if row.get("image_file"):
+
+        # Conta imagens: embutidas na célula OU referenciadas por nome
+        has_img = bool(row.get("_embedded_image_bytes")) or bool(row.get("image_file"))
+        if has_img:
             questions_with_image += 1
+
         disc = (row.get("discipline") or sheet).strip().upper()
         if disc:
             disciplines.add(disc)
 
-    # Amostra de duplicatas (limitada para não travar)
+        # Conta questões que falhariam na validação do gabarito/alternativas
+        correct_key = (row.get("correct_alternative_key") or "").strip().upper()
+        alts_present = [k for k in ("a", "b", "c", "d", "e") if row.get(f"alt_{k}")]
+        if (
+            correct_key not in ("A", "B", "C", "D", "E")
+            or len(alts_present) < 2
+            or correct_key.lower() not in alts_present
+        ):
+            questions_invalid += 1
+
     sample_rows = rows[:100]
     estimated_duplicates = sum(
         1 for r in sample_rows if Question.find_duplicate(r.get("statement", ""))
     )
-    # Extrapola proporcionalmente
     if len(rows) > 100:
         estimated_duplicates = int(estimated_duplicates * len(rows) / 100)
 
@@ -574,6 +668,7 @@ def xlsx_preview():
         questions_with_image=questions_with_image,
         images_in_zip=len(image_map),
         estimated_duplicates=estimated_duplicates,
+        questions_invalid=questions_invalid,  # quantas serão rejeitadas na importação
     ), 200
 
 
@@ -586,25 +681,13 @@ def xlsx_import():
     """
     Importa questões a partir de .xlsx ou .zip.
 
+    Detecta imagens automaticamente de duas formas:
+      1. Imagem embutida diretamente na célula (mais comum — basta subir o .xlsx)
+      2. Nome de arquivo na coluna "Imagem" + imagem no .zip
+
     Multipart form-data:
-      file       — arquivo .xlsx  OU  .zip (xlsx + pasta images/)
+      file       — .xlsx  OU  .zip (xlsx + pasta images/)
       enrich_ai  — "true"|"false"  (default: true)
-                   Dispara análise Gemini para preencher campos faltantes
-                   (tópico, dica, justificativas dos distratores).
-
-    Formato xlsx esperado (qualquer ordem, case-insensitive):
-      Disciplina | Enunciado | Imagem | fonte |
-      Alternativa A-E | Gabarito
-
-    Campos opcionais (aproveitados se presentes):
-      Tópico | Subtópico | Dificuldade | Banca | Ano | Concurso |
-      Dica | Justificativa | Justificativa A-E
-
-    Quando arquivo é .zip:
-      - Deve conter exatamente 1 arquivo .xlsx (qualquer subpasta)
-      - Imagens em qualquer pasta dentro do zip
-      - Coluna "Imagem" no xlsx contém o nome do arquivo (ex: q001.png)
-      - Upload automático para S3 → questions/images/{question_id}/{filename}
     """
     err = _require_super_admin()
     if err:
@@ -655,6 +738,14 @@ def xlsx_import():
                 updated += 1
             elif status == "skipped":
                 skipped += 1
+            elif status.startswith("error:"):
+                errors += 1
+                error_details.append({
+                    "row": row.get("_row"),
+                    "sheet": row.get("_sheet"),
+                    "statement_preview": (row.get("statement") or "")[:60],
+                    "error": status[6:],
+                })
             if img_uploaded:
                 images_uploaded += 1
 
