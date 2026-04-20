@@ -3,6 +3,7 @@
 // em vez de definir localmente — permite import em Server Components.
 // FIX: usePathname garante que o document.title do tenant é reaplicado após
 // cada navegação client-side do Next.js (que reseta o título via metadata estático).
+// FIX: favicon usa logo_url como fallback quando favicon_url não está definido.
 
 "use client";
 
@@ -48,9 +49,12 @@ export function applyBrandingCssVars(branding: Record<string, any>) {
     }
 
     if (branding.platform_name) document.title = branding.platform_name;
-    if (branding.favicon_url) {
+
+    // Usa favicon_url se disponível, senão cai para logo_url
+    const faviconHref = branding.favicon_url || branding.logo_url;
+    if (faviconHref) {
         const favicon = document.querySelector<HTMLLinkElement>("link[rel='icon']");
-        if (favicon) favicon.href = branding.favicon_url;
+        if (favicon) favicon.href = faviconHref;
     }
 }
 
@@ -83,12 +87,18 @@ export function TenantBrandingLoader() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // Re-aplica o título do tenant a cada navegação client-side.
+    // Re-aplica título e favicon do tenant a cada navegação client-side.
     // O Next.js App Router reseta document.title baseado no metadata estático
     // ("Plataforma de Estudos") após cada rota — este efeito corrige isso.
     useEffect(() => {
-        const name = (tenant?.branding as any)?.platform_name;
-        if (name) document.title = name;
+        const branding = tenant?.branding as any;
+        if (!branding) return;
+        if (branding.platform_name) document.title = branding.platform_name;
+        const faviconHref = branding.favicon_url || branding.logo_url;
+        if (faviconHref) {
+            const favicon = document.querySelector<HTMLLinkElement>("link[rel='icon']");
+            if (favicon) favicon.href = faviconHref;
+        }
     }, [pathname, tenant?.branding]);
 
     return null;
