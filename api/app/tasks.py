@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# HELPER — RESEND
+# HELPERS — EMAIL
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _send_via_resend(to_email: str, subject: str, html: str) -> dict:
@@ -30,22 +30,68 @@ def _send_via_resend(to_email: str, subject: str, html: str) -> dict:
     return response
 
 
+def _email_header(tenant_name: str, logo_url: str = "", primary_color: str = "#4F46E5") -> str:
+    """Gera o cabeçalho do email com logo ou nome do tenant."""
+    if logo_url:
+        brand_block = (
+            f'<img src="{logo_url}" alt="{tenant_name}" '
+            f'style="max-height:48px;max-width:200px;object-fit:contain;" />'
+        )
+    else:
+        brand_block = (
+            f'<span style="font-size:20px;font-weight:700;color:{primary_color};">'
+            f'{tenant_name}</span>'
+        )
+    return (
+        f'<div style="background:{primary_color};padding:24px 32px;border-radius:12px 12px 0 0;text-align:center;">'
+        f'{brand_block}'
+        f'</div>'
+    )
+
+
+def _email_footer(tenant_name: str) -> str:
+    return (
+        f'<div style="padding:20px 32px;text-align:center;border-top:1px solid #E5E7EB;">'
+        f'<p style="margin:0;color:#9CA3AF;font-size:12px;">'
+        f'© {tenant_name} · Todos os direitos reservados'
+        f'</p>'
+        f'</div>'
+    )
+
+
+def _email_wrapper(header: str, body: str, footer: str) -> str:
+    return (
+        f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+        f'<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+        f'<body style="margin:0;padding:0;background:#F3F4F6;font-family:Arial,sans-serif;">'
+        f'<table width="100%" cellpadding="0" cellspacing="0" style="min-height:100vh;background:#F3F4F6;">'
+        f'<tr><td align="center" style="padding:40px 16px;">'
+        f'<div style="max-width:560px;width:100%;background:#FFFFFF;border-radius:12px;'
+        f'box-shadow:0 1px 3px rgba(0,0,0,0.08);overflow:hidden;">'
+        f'{header}{body}{footer}'
+        f'</div>'
+        f'</td></tr></table>'
+        f'</body></html>'
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # E-MAIL TASKS
 # ══════════════════════════════════════════════════════════════════════════════
 
 @celery_app.task(bind=True, max_retries=3, ignore_result=True)
-def send_broadcast_email(self, to_email, to_name, subject, body, tenant_name):
+def send_broadcast_email(self, to_email, to_name, subject, body, tenant_name,
+                         logo_url="", primary_color="#4F46E5"):
     try:
-        html = (
-            f'<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">'
-            f'<h2 style="color:#4F46E5">{tenant_name}</h2>'
-            f'<p>Olá <strong>{to_name}</strong>,</p>'
-            f'<p>{body}</p>'
-            f'<hr>'
-            f'<p style="color:#666;font-size:12px">Você recebeu este e-mail pois é aluno da plataforma {tenant_name}.</p>'
+        header = _email_header(tenant_name, logo_url, primary_color)
+        content = (
+            f'<div style="padding:32px;">'
+            f'<p style="margin:0 0 16px;color:#374151;font-size:15px;">Olá <strong>{to_name}</strong>,</p>'
+            f'<div style="color:#4B5563;font-size:15px;line-height:1.6;">{body}</div>'
             f'</div>'
         )
+        footer = _email_footer(tenant_name)
+        html = _email_wrapper(header, content, footer)
         _send_via_resend(to_email=to_email, subject=f"[{tenant_name}] {subject}", html=html)
         return {"status": "sent", "to": to_email}
     except Exception as exc:
@@ -54,20 +100,36 @@ def send_broadcast_email(self, to_email, to_name, subject, body, tenant_name):
 
 
 @celery_app.task(bind=True, max_retries=3, ignore_result=True)
-def send_password_reset_email(self, to_email, to_name, reset_url, tenant_name):
+def send_password_reset_email(self, to_email, to_name, reset_url, tenant_name,
+                               logo_url="", primary_color="#4F46E5"):
     try:
-        html = (
-            f'<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">'
-            f'<h2 style="color:#4F46E5">{tenant_name}</h2>'
-            f'<p>Olá <strong>{to_name}</strong>,</p>'
-            f'<p>Clique no botão abaixo para redefinir sua senha:</p>'
-            f'<a href="{reset_url}" style="display:inline-block;background:#4F46E5;color:white;'
-            f'padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;margin:16px 0">'
-            f'Redefinir senha</a>'
-            f'<p style="color:#666;font-size:12px">Este link expira em 1 hora. Se você não solicitou, ignore este e-mail.</p>'
+        header = _email_header(tenant_name, logo_url, primary_color)
+        content = (
+            f'<div style="padding:32px;">'
+            f'<h2 style="margin:0 0 8px;font-size:22px;color:#111827;">Redefinição de senha</h2>'
+            f'<p style="margin:0 0 24px;color:#6B7280;font-size:14px;">Recebemos uma solicitação para redefinir a senha da sua conta.</p>'
+            f'<p style="margin:0 0 24px;color:#374151;font-size:15px;">Olá <strong>{to_name}</strong>,</p>'
+            f'<p style="margin:0 0 24px;color:#4B5563;font-size:15px;">Clique no botão abaixo para criar uma nova senha:</p>'
+            f'<div style="text-align:center;margin:32px 0;">'
+            f'<a href="{reset_url}" style="display:inline-block;background:{primary_color};color:#FFFFFF;'
+            f'padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;'
+            f'letter-spacing:0.3px;">Redefinir senha</a>'
+            f'</div>'
+            f'<div style="background:#F9FAFB;border-radius:8px;padding:16px;margin-top:24px;">'
+            f'<p style="margin:0;color:#6B7280;font-size:12px;line-height:1.5;">'
+            f'Este link expira em <strong>1 hora</strong>. Se você não solicitou a redefinição, '
+            f'ignore este e-mail — sua senha permanece a mesma.'
+            f'</p>'
+            f'</div>'
             f'</div>'
         )
-        _send_via_resend(to_email=to_email, subject=f"[{tenant_name}] Redefinição de senha", html=html)
+        footer = _email_footer(tenant_name)
+        html = _email_wrapper(header, content, footer)
+        _send_via_resend(
+            to_email=to_email,
+            subject=f"[{tenant_name}] Redefinição de senha",
+            html=html,
+        )
         return {"status": "sent", "to": to_email}
     except Exception as exc:
         logger.error(f"send_password_reset_email falhou para {to_email}: {exc}")
@@ -75,26 +137,52 @@ def send_password_reset_email(self, to_email, to_name, reset_url, tenant_name):
 
 
 @celery_app.task(bind=True, max_retries=3, ignore_result=True)
-def send_welcome_email(self, to_email, to_name, password, tenant_name, platform_url, support_email=""):
+def send_welcome_email(self, to_email, to_name, password, tenant_name, platform_url,
+                       support_email="", logo_url="", primary_color="#4F46E5"):
     try:
-        support_line = f"<br>Dúvidas? Entre em contato: {support_email}" if support_email else ""
-        html = (
-            f'<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#f9fafb;padding:32px">'
-            f'<div style="background:white;border-radius:12px;padding:32px">'
-            f'<h2 style="color:#4F46E5;margin:0 0 8px">Bem-vindo(a) à {tenant_name}! 🎓</h2>'
-            f'<p style="color:#6B7280;margin:0 0 24px">Sua conta foi criada. Confira suas credenciais:</p>'
-            f'<div style="background:#F3F4F6;border-radius:8px;padding:20px;margin-bottom:24px">'
-            f'<p style="margin:0 0 8px;color:#374151;font-size:14px"><strong>E-mail:</strong> {to_email}</p>'
-            f'<p style="margin:0;color:#374151;font-size:14px"><strong>Senha:</strong> '
-            f'<span style="background:#E5E7EB;padding:2px 8px;border-radius:4px;font-family:monospace">{password}</span></p>'
+        header = _email_header(tenant_name, logo_url, primary_color)
+        support_line = (
+            f'<p style="margin:12px 0 0;color:#6B7280;font-size:12px;">'
+            f'Dúvidas? Entre em contato: <a href="mailto:{support_email}" style="color:{primary_color};">'
+            f'{support_email}</a></p>'
+        ) if support_email else ""
+        content = (
+            f'<div style="padding:32px;">'
+            f'<h2 style="margin:0 0 8px;font-size:22px;color:#111827;">Bem-vindo(a)! 🎓</h2>'
+            f'<p style="margin:0 0 24px;color:#6B7280;font-size:14px;">Sua conta foi criada com sucesso.</p>'
+            f'<p style="margin:0 0 24px;color:#374151;font-size:15px;">Olá <strong>{to_name}</strong>,</p>'
+            f'<p style="margin:0 0 20px;color:#4B5563;font-size:15px;">'
+            f'Confira abaixo suas credenciais de acesso à plataforma <strong>{tenant_name}</strong>:</p>'
+            f'<div style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;padding:20px;margin-bottom:28px;">'
+            f'<table width="100%" cellpadding="0" cellspacing="0">'
+            f'<tr><td style="padding:6px 0;color:#6B7280;font-size:13px;width:80px;">E-mail</td>'
+            f'<td style="padding:6px 0;color:#111827;font-size:14px;font-weight:600;">{to_email}</td></tr>'
+            f'<tr><td style="padding:6px 0;color:#6B7280;font-size:13px;">Senha</td>'
+            f'<td style="padding:6px 0;">'
+            f'<code style="background:#E5E7EB;padding:3px 10px;border-radius:4px;font-size:14px;color:#111827;">'
+            f'{password}</code></td></tr>'
+            f'</table>'
             f'</div>'
-            f'<a href="{platform_url}" style="display:inline-block;background:#4F46E5;color:white;'
-            f'padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:15px;margin-bottom:24px">'
+            f'<div style="text-align:center;margin:28px 0;">'
+            f'<a href="{platform_url}" style="display:inline-block;background:{primary_color};color:#FFFFFF;'
+            f'padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;">'
             f'Acessar a plataforma →</a>'
-            f'<p style="color:#9CA3AF;font-size:12px;margin:0">Recomendamos alterar sua senha após o primeiro acesso.{support_line}</p>'
-            f'</div></div>'
+            f'</div>'
+            f'<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:14px;">'
+            f'<p style="margin:0;color:#92400E;font-size:12px;line-height:1.5;">'
+            f'🔐 Recomendamos alterar sua senha após o primeiro acesso.'
+            f'</p>'
+            f'</div>'
+            f'{support_line}'
+            f'</div>'
         )
-        _send_via_resend(to_email=to_email, subject=f"[{tenant_name}] Seu acesso à plataforma", html=html)
+        footer = _email_footer(tenant_name)
+        html = _email_wrapper(header, content, footer)
+        _send_via_resend(
+            to_email=to_email,
+            subject=f"[{tenant_name}] Seu acesso à plataforma",
+            html=html,
+        )
         return {"status": "sent", "to": to_email}
     except Exception as exc:
         logger.error(f"send_welcome_email falhou para {to_email}: {exc}")

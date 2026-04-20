@@ -66,21 +66,11 @@ class ResetPasswordSchema(Schema):
 
 
 def _create_tokens(user: User) -> tuple[str, str]:
-    """
-    Cria access_token e refresh_token para o usuário.
-
-    SEGURANÇA:
-    - Identity é apenas o user_id (string simples — mais compatível)
-    - Dados extras (tenant_id, role) ficam em additional_claims
-    - Esses claims são assinados junto com o token — não podem ser alterados
-    """
     identity = user.id
-
     additional_claims = {
         "tenant_id": user.tenant_id,
         "role": user.role.value,
     }
-
     access_token = create_access_token(
         identity=identity,
         additional_claims=additional_claims,
@@ -93,20 +83,14 @@ def _create_tokens(user: User) -> tuple[str, str]:
 
 
 def _get_current_user_id() -> str:
-    """Retorna o user_id do token JWT atual."""
     return get_jwt_identity()
 
 
 def _get_token_claims() -> dict:
-    """
-    Retorna os claims adicionais do token atual.
-    Use para acessar tenant_id e role sem ir ao banco.
-    """
     return get_jwt()
 
 
 def _hash_token(token: str) -> str:
-    """Hash SHA-256 de tokens de reset/verificação."""
     return hashlib.sha256(token.encode()).hexdigest()
 
 
@@ -148,9 +132,7 @@ def login():
         return jsonify(GENERIC_ERROR), 401
 
     access_token, refresh_token = _create_tokens(user)
-    # FinOps: registra atividade do usuário para auto scaling inteligente
     from app.middleware.activity_tracker import set_activity_user
-
     set_activity_user(user.id)
 
     return (
@@ -307,8 +289,20 @@ def forgot_password():
         f"/reset-password?token={raw_token}&tenant={tenant.slug}"
     )
 
+    # Extrai branding do tenant para personalizar o email
+    branding = tenant.branding or {}
+    logo_url = branding.get("logo_url", "")
+    primary_color = branding.get("primary_color", "#4F46E5")
+
     from app.tasks import send_password_reset_email
-    send_password_reset_email.delay(user.email, user.name, reset_url, tenant.name)
+    send_password_reset_email.delay(
+        user.email,
+        user.name,
+        reset_url,
+        tenant.name,
+        logo_url=logo_url,
+        primary_color=primary_color,
+    )
 
     return jsonify(GENERIC_OK), 200
 
@@ -371,7 +365,6 @@ def change_password():
     if not current_password or not new_password:
         return jsonify({"error": "bad_request", "message": "Campos obrigatórios ausentes."}), 400
 
-    # SEGURANÇA: valida senha atual antes de qualquer alteração
     if not user.check_password(current_password):
         return jsonify({"error": "invalid_password", "message": "Senha atual incorreta."}), 400
 
@@ -394,11 +387,8 @@ def me():
     Retorna dados do usuário autenticado.
     user_id vem do token (identity), claims extras vêm do payload JWT.
     """
-    user_id = get_jwt_identity()  # string: user_id
-    claims = get_jwt()  # dict com tenant_id, role, etc.
+    user_id = get_jwt_identity()
 
-    # SEGURANÇA: Busca sempre no banco — garante dados atualizados
-    # (ex: se admin desativou o usuário após o token ser emitido)
     user = User.query.filter_by(
         id=user_id,
         is_deleted=False,
