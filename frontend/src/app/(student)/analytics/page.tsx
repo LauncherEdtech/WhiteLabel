@@ -42,7 +42,6 @@ export default function AnalyticsPage() {
 
     const strongDisciplines = discipline_performance.filter(d => d.performance_label === "forte");
     const weakDisciplines = discipline_performance.filter(d => d.performance_label === "fraco");
-    const regularDisciplines = discipline_performance.filter(d => d.performance_label === "regular");
 
     return (
         <div data-onboarding="analytics" className="space-y-6 animate-fade-in">
@@ -50,7 +49,6 @@ export default function AnalyticsPage() {
                 <h1 className="font-display text-2xl font-bold text-foreground">Desempenho</h1>
                 <p className="text-sm text-muted-foreground mt-0.5">Análise completa do seu progresso</p>
             </div>
-
 
             {/* ── Cápsula de Estudos ── */}
             <Link href="/study-capsule">
@@ -128,43 +126,6 @@ export default function AnalyticsPage() {
                             </TabsContent>
                         ))}
                     </Tabs>
-                </CardContent>
-            </Card>
-
-            {/* Meta semanal */}
-            <Card>
-                <CardHeader>
-                    <CardTitle className="text-base">Missão semanal</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                    <div className="flex items-center justify-between text-sm">
-                        <span className="text-muted-foreground">
-                            {Math.round(time_studied.week_minutes)}min estudados
-                        </span>
-                        <span className="font-medium text-foreground">
-                            Missão: {time_studied.weekly_goal_minutes}min
-                        </span>
-                    </div>
-                    <ProgressBar
-                        value={time_studied.weekly_progress_percent}
-                        showPercent
-                        color={time_studied.weekly_progress_percent >= 80 ? "success" : "primary"}
-                        size="md"
-                    />
-                    <div className="grid grid-cols-2 gap-3 pt-1">
-                        <div className="p-3 rounded-lg bg-muted text-center">
-                            <p className="text-lg font-display font-bold text-foreground">
-                                {formatStudyTime(time_studied.today_minutes)}
-                            </p>
-                            <p className="text-xs text-muted-foreground">Hoje</p>
-                        </div>
-                        <div className="p-3 rounded-lg bg-muted text-center">
-                            <p className="text-lg font-display font-bold text-foreground">
-                                {time_studied.weekly_goal_hours}h
-                            </p>
-                            <p className="text-xs text-muted-foreground">Missão/semana</p>
-                        </div>
-                    </div>
                 </CardContent>
             </Card>
         </div>

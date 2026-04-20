@@ -1,47 +1,103 @@
 # api/app/tasks.py
+import logging
+import os
+
 from app.extensions import celery_app
-from flask_mail import Message
+
+logger = logging.getLogger(__name__)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HELPER — RESEND
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _send_via_resend(to_email: str, subject: str, html: str) -> dict:
+    """
+    Envia email via Resend API.
+    Usa RESEND_API_KEY e MAIL_DEFAULT_SENDER das env vars.
+    """
+    import resend
+
+    resend.api_key = os.environ.get("RESEND_API_KEY", "")
+    from_address = os.environ.get("MAIL_DEFAULT_SENDER", "noreply@launcheredu.com.br")
+
+    response = resend.Emails.send({
+        "from": from_address,
+        "to": [to_email],
+        "subject": subject,
+        "html": html,
+    })
+    return response
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # E-MAIL TASKS
 # ══════════════════════════════════════════════════════════════════════════════
 
-@celery_app.task(bind=True, max_retries=3)
+@celery_app.task(bind=True, max_retries=3, ignore_result=True)
 def send_broadcast_email(self, to_email, to_name, subject, body, tenant_name):
     try:
-        from app.extensions import mail
-        msg = Message(subject=f"[{tenant_name}] {subject}", recipients=[to_email],
-                      body=f"Olá {to_name},\n\n{body}\n\nAtenciosamente,\n{tenant_name}",
-                      html=f'<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto"><h2 style="color:#4F46E5">{tenant_name}</h2><p>Olá <strong>{to_name}</strong>,</p><p>{body}</p><hr><p style="color:#666;font-size:12px">Você recebeu este e-mail pois é aluno da plataforma {tenant_name}.</p></div>')
-        mail.send(msg)
+        html = (
+            f'<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">'
+            f'<h2 style="color:#4F46E5">{tenant_name}</h2>'
+            f'<p>Olá <strong>{to_name}</strong>,</p>'
+            f'<p>{body}</p>'
+            f'<hr>'
+            f'<p style="color:#666;font-size:12px">Você recebeu este e-mail pois é aluno da plataforma {tenant_name}.</p>'
+            f'</div>'
+        )
+        _send_via_resend(to_email=to_email, subject=f"[{tenant_name}] {subject}", html=html)
         return {"status": "sent", "to": to_email}
     except Exception as exc:
+        logger.error(f"send_broadcast_email falhou para {to_email}: {exc}")
         raise self.retry(exc=exc, countdown=60)
 
 
-@celery_app.task(bind=True, max_retries=3)
+@celery_app.task(bind=True, max_retries=3, ignore_result=True)
 def send_password_reset_email(self, to_email, to_name, reset_url, tenant_name):
     try:
-        from app.extensions import mail
-        msg = Message(subject=f"[{tenant_name}] Redefinição de senha", recipients=[to_email],
-                      html=f'<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto"><h2 style="color:#4F46E5">{tenant_name}</h2><p>Olá <strong>{to_name}</strong>,</p><p>Clique no botão abaixo para redefinir sua senha:</p><a href="{reset_url}" style="display:inline-block;background:#4F46E5;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;margin:16px 0">Redefinir senha</a><p style="color:#666;font-size:12px">Este link expira em 1 hora. Se você não solicitou, ignore este e-mail.</p></div>')
-        mail.send(msg)
+        html = (
+            f'<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">'
+            f'<h2 style="color:#4F46E5">{tenant_name}</h2>'
+            f'<p>Olá <strong>{to_name}</strong>,</p>'
+            f'<p>Clique no botão abaixo para redefinir sua senha:</p>'
+            f'<a href="{reset_url}" style="display:inline-block;background:#4F46E5;color:white;'
+            f'padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;margin:16px 0">'
+            f'Redefinir senha</a>'
+            f'<p style="color:#666;font-size:12px">Este link expira em 1 hora. Se você não solicitou, ignore este e-mail.</p>'
+            f'</div>'
+        )
+        _send_via_resend(to_email=to_email, subject=f"[{tenant_name}] Redefinição de senha", html=html)
         return {"status": "sent", "to": to_email}
     except Exception as exc:
+        logger.error(f"send_password_reset_email falhou para {to_email}: {exc}")
         raise self.retry(exc=exc, countdown=60)
 
 
-@celery_app.task(bind=True, max_retries=3)
+@celery_app.task(bind=True, max_retries=3, ignore_result=True)
 def send_welcome_email(self, to_email, to_name, password, tenant_name, platform_url, support_email=""):
     try:
-        from app.extensions import mail
-        msg = Message(subject=f"[{tenant_name}] Seu acesso à plataforma", recipients=[to_email],
-                      body=f"Olá {to_name},\n\nSeu acesso à plataforma {tenant_name} foi criado!\n\nE-mail: {to_email}\nSenha: {password}\n\nAcesse agora: {platform_url}\n\nAtenciosamente,\n{tenant_name}",
-                      html=f"""<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#f9fafb;padding:32px"><div style="background:white;border-radius:12px;padding:32px"><h2 style="color:#4F46E5;margin:0 0 8px">Bem-vindo(a) à {tenant_name}! 🎓</h2><p style="color:#6B7280;margin:0 0 24px">Sua conta foi criada. Confira suas credenciais:</p><div style="background:#F3F4F6;border-radius:8px;padding:20px;margin-bottom:24px"><p style="margin:0 0 8px;color:#374151;font-size:14px"><strong>E-mail:</strong> {to_email}</p><p style="margin:0;color:#374151;font-size:14px"><strong>Senha:</strong> <span style="background:#E5E7EB;padding:2px 8px;border-radius:4px;font-family:monospace">{password}</span></p></div><a href="{platform_url}" style="display:inline-block;background:#4F46E5;color:white;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:15px;margin-bottom:24px">Acessar a plataforma →</a><p style="color:#9CA3AF;font-size:12px;margin:0">Recomendamos alterar sua senha após o primeiro acesso.{"<br>Dúvidas? Entre em contato: " + support_email if support_email else ""}</p></div></div>""")
-        mail.send(msg)
+        support_line = f"<br>Dúvidas? Entre em contato: {support_email}" if support_email else ""
+        html = (
+            f'<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#f9fafb;padding:32px">'
+            f'<div style="background:white;border-radius:12px;padding:32px">'
+            f'<h2 style="color:#4F46E5;margin:0 0 8px">Bem-vindo(a) à {tenant_name}! 🎓</h2>'
+            f'<p style="color:#6B7280;margin:0 0 24px">Sua conta foi criada. Confira suas credenciais:</p>'
+            f'<div style="background:#F3F4F6;border-radius:8px;padding:20px;margin-bottom:24px">'
+            f'<p style="margin:0 0 8px;color:#374151;font-size:14px"><strong>E-mail:</strong> {to_email}</p>'
+            f'<p style="margin:0;color:#374151;font-size:14px"><strong>Senha:</strong> '
+            f'<span style="background:#E5E7EB;padding:2px 8px;border-radius:4px;font-family:monospace">{password}</span></p>'
+            f'</div>'
+            f'<a href="{platform_url}" style="display:inline-block;background:#4F46E5;color:white;'
+            f'padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:15px;margin-bottom:24px">'
+            f'Acessar a plataforma →</a>'
+            f'<p style="color:#9CA3AF;font-size:12px;margin:0">Recomendamos alterar sua senha após o primeiro acesso.{support_line}</p>'
+            f'</div></div>'
+        )
+        _send_via_resend(to_email=to_email, subject=f"[{tenant_name}] Seu acesso à plataforma", html=html)
         return {"status": "sent", "to": to_email}
     except Exception as exc:
+        logger.error(f"send_welcome_email falhou para {to_email}: {exc}")
         raise self.retry(exc=exc, countdown=60)
 
 

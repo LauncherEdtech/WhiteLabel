@@ -37,3 +37,5 @@ Pillow==12.2.0                # Processamento de imagem (logo dos tenants)
 gunicorn==23.0.0              # WSGI server de produçãopypdf
 pypdf
 
+# ── E-mail ───────────────────────────────────────────────────────────────────
+resend                        # Resend API para envio de emails transacionais
