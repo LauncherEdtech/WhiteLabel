@@ -1,7 +1,11 @@
 # api/app/routes/tenants.py
+from datetime import datetime, timezone, timedelta
+from collections import defaultdict
+
 from flask import Blueprint, request, jsonify, g, current_app
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from marshmallow import Schema, fields, validate, ValidationError, EXCLUDE
+from sqlalchemy import func, distinct, case
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.extensions import db, limiter
@@ -355,7 +359,6 @@ def notify_students(tenant_id):
         return jsonify({"error": "forbidden"}), 403
  
     # SEGURANÇA: producer_admin não pode enviar para um tenant diferente do seu
-    # (igual ao padrão usado em update_branding, update_settings, etc.)
     if role == "producer_admin" and jwt_tenant_id != tenant_id:
         return jsonify({"error": "forbidden"}), 403
  
@@ -364,50 +367,28 @@ def notify_students(tenant_id):
     message = data.get("message", "").strip()
  
     if not title or not message:
-        return jsonify({
-            "error": "bad_request",
-            "message": "title e message são obrigatórios.",
-        }), 400
+        return jsonify({"error": "bad_request", "message": "title e message são obrigatórios."}), 400
  
     if len(title) > 255:
-        return jsonify({
-            "error": "bad_request",
-            "message": "Título deve ter no máximo 255 caracteres.",
-        }), 400
+        return jsonify({"error": "bad_request", "message": "Título deve ter no máximo 255 caracteres."}), 400
  
     if len(message) > 2000:
-        return jsonify({
-            "error": "bad_request",
-            "message": "Mensagem deve ter no máximo 2000 caracteres.",
-        }), 400
+        return jsonify({"error": "bad_request", "message": "Mensagem deve ter no máximo 2000 caracteres."}), 400
  
-    # Usa g.tenant resolvido pelo middleware — nunca o tenant_id da URL diretamente
     tenant = g.tenant
     sender_id = get_jwt_identity()
  
     students = User.query.filter_by(
-        tenant_id=tenant.id,
-        role="student",
-        is_active=True,
-        is_deleted=False,
+        tenant_id=tenant.id, role="student", is_active=True, is_deleted=False,
     ).all()
  
     if not students:
-        return jsonify({
-            "message": "Nenhum aluno ativo encontrado.",
-            "recipients": 0,
-        }), 200
+        return jsonify({"message": "Nenhum aluno ativo encontrado.", "recipients": 0}), 200
  
-    # bulk_save_objects: uma única transaction para N alunos — muito mais eficiente
-    # que N inserts individuais com add/commit em loop
     notifications = [
         Notification(
-            tenant_id=tenant.id,
-            title=title,
-            message=message,
-            notification_type="broadcast",
-            sender_id=sender_id,
-            recipient_id=student.id,
+            tenant_id=tenant.id, title=title, message=message,
+            notification_type="broadcast", sender_id=sender_id, recipient_id=student.id,
         )
         for student in students
     ]
@@ -415,11 +396,9 @@ def notify_students(tenant_id):
     db.session.bulk_save_objects(notifications)
     db.session.commit()
  
-    return jsonify({
-        "message": f"Notificação enviada para {len(students)} aluno(s).",
-        "recipients": len(students),
-    }), 200
-    
+    return jsonify({"message": f"Notificação enviada para {len(students)} aluno(s).", "recipients": len(students)}), 200
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SETTINGS DO TENANT
 # ══════════════════════════════════════════════════════════════════════════════
@@ -458,3 +437,194 @@ def update_settings(tenant_id):
     flag_modified(tenant, "settings")
     db.session.commit()
     return jsonify({"message": "Configurações atualizadas.", "settings": tenant.settings}), 200
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TRACKING DE DADOS DO TENANT (super_admin only)
+# Métricas de engajamento e performance dos alunos de um tenant.
+# Computed on-demand — sem cache, dados sempre frescos.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@tenants_bp.route("/<string:tenant_id>/tracking", methods=["GET"])
+@jwt_required()
+def get_tenant_tracking(tenant_id: str):
+    """
+    Retorna métricas de rastreamento do tenant para o painel super_admin.
+
+    Métricas calculadas:
+    - DAU / MAU / Stickiness
+    - Taxa de Ativação (alunos com ao menos 1 evento-chave)
+    - Retorno D1 / D7
+    - Uso por funcionalidade (questões, cronograma, aulas)
+    - Performance semanal das últimas 4 semanas
+
+    Fontes de dados: QuestionAttempt, ScheduleCheckIn, LessonProgress.
+    Todas as queries filtram por tenant_id para garantir isolamento.
+    """
+    err = _require_super_admin()
+    if err: return err
+
+    tenant = Tenant.query.filter_by(id=tenant_id, is_deleted=False).first()
+    if not tenant:
+        return jsonify({"error": "not_found"}), 404
+
+    from app.models.question import QuestionAttempt
+    from app.models.schedule import ScheduleCheckIn
+    from app.models.course import LessonProgress
+
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    thirty_days_ago = now - timedelta(days=30)
+
+    # ── Alunos do tenant ───────────────────────────────────────────────────────
+    students = (
+        User.query
+        .filter_by(tenant_id=tenant_id, role=UserRole.STUDENT.value, is_deleted=False)
+        .with_entities(User.id, User.created_at)
+        .all()
+    )
+    total_students = len(students)
+    student_ids: set[str] = {str(s.id) for s in students}
+
+    # Map id -> created_at — garante timezone-aware
+    student_created: dict[str, datetime] = {}
+    for s in students:
+        ca = s.created_at
+        if ca and ca.tzinfo is None:
+            ca = ca.replace(tzinfo=timezone.utc)
+        student_created[str(s.id)] = ca
+
+    # ── Helper: usuários ativos em um período (union das 3 tabelas) ────────────
+    def _active_user_ids(start: datetime, end: datetime | None = None) -> set[str]:
+        """Retorna set de user_ids (students) com atividade no tenant entre start e end."""
+        def _q(model, date_col):
+            q = db.session.query(distinct(model.user_id)).filter(
+                model.tenant_id == tenant_id,
+                date_col >= start,
+            )
+            if end:
+                q = q.filter(date_col < end)
+            return {str(r[0]) for r in q.all()}
+
+        return (
+            _q(QuestionAttempt, QuestionAttempt.created_at)
+            | _q(ScheduleCheckIn, ScheduleCheckIn.created_at)
+            | _q(LessonProgress,  LessonProgress.updated_at)
+        ) & student_ids
+
+    # ── DAU / MAU / Stickiness ─────────────────────────────────────────────────
+    dau = len(_active_user_ids(today_start))
+    mau = len(_active_user_ids(thirty_days_ago))
+    stickiness = round(dau / mau * 100, 1) if mau > 0 else 0.0
+
+    # ── Taxa de Ativação ───────────────────────────────────────────────────────
+    epoch = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    activated = len(_active_user_ids(epoch))
+    taxa_ativacao = round(activated / total_students * 100, 1) if total_students > 0 else 0.0
+
+    # ── Retorno D1 / D7 ────────────────────────────────────────────────────────
+    # Constrói mapa user_id -> set de datas ativas (uma query por tabela, sem IN clause)
+    activity_by_user: dict[str, set] = defaultdict(set)
+    for model, date_col in [
+        (QuestionAttempt, QuestionAttempt.created_at),
+        (ScheduleCheckIn, ScheduleCheckIn.created_at),
+        (LessonProgress,  LessonProgress.updated_at),
+    ]:
+        rows = (
+            db.session.query(model.user_id, func.date(date_col))
+            .filter(model.tenant_id == tenant_id)
+            .distinct()
+            .all()
+        )
+        for uid, day in rows:
+            uid_str = str(uid)
+            if uid_str in student_ids:
+                activity_by_user[uid_str].add(day)
+
+    d1_eligible = [uid for uid, ca in student_created.items() if ca and (now - ca).days >= 1]
+    d7_eligible = [uid for uid, ca in student_created.items() if ca and (now - ca).days >= 7]
+
+    d1_returned = sum(
+        1 for uid in d1_eligible
+        if (student_created[uid] + timedelta(days=1)).date() in activity_by_user.get(uid, set())
+    )
+    d7_returned = sum(
+        1 for uid in d7_eligible
+        if {(student_created[uid] + timedelta(days=i)).date() for i in range(1, 8)} & activity_by_user.get(uid, set())
+    )
+
+    retorno_d1 = round(d1_returned / len(d1_eligible) * 100, 1) if d1_eligible else 0.0
+    retorno_d7 = round(d7_returned / len(d7_eligible) * 100, 1) if d7_eligible else 0.0
+
+    # ── Uso por funcionalidade ─────────────────────────────────────────────────
+    qa_total = db.session.query(func.count(QuestionAttempt.id)).filter(
+        QuestionAttempt.tenant_id == tenant_id
+    ).scalar() or 0
+
+    ci_total = db.session.query(func.count(ScheduleCheckIn.id)).filter(
+        ScheduleCheckIn.tenant_id == tenant_id
+    ).scalar() or 0
+
+    lp_total = db.session.query(func.count(LessonProgress.id)).filter(
+        LessonProgress.tenant_id == tenant_id,
+        LessonProgress.status.in_(["watched", "partial"]),
+    ).scalar() or 0
+
+    total_events = qa_total + ci_total + lp_total
+
+    def _pct(val: int) -> float:
+        return round(val / total_events * 100, 1) if total_events > 0 else 0.0
+
+    uso_funcionalidades = {
+        "questoes":   {"label": "Questões",   "count": qa_total, "pct": _pct(qa_total)},
+        "cronograma": {"label": "Cronograma", "count": ci_total, "pct": _pct(ci_total)},
+        "aulas":      {"label": "Aulas",      "count": lp_total, "pct": _pct(lp_total)},
+    }
+
+    # ── Performance semanal — últimas 4 semanas ────────────────────────────────
+    performance_semanal = []
+    for week_i in range(3, -1, -1):   # 3 = mais antiga → 0 = semana atual
+        week_end   = now - timedelta(days=7 * week_i)
+        week_start = week_end - timedelta(days=7)
+
+        row = db.session.query(
+            func.count(QuestionAttempt.id).label("total"),
+            func.sum(case((QuestionAttempt.is_correct == True, 1), else_=0)).label("correct"),
+        ).filter(
+            QuestionAttempt.tenant_id == tenant_id,
+            QuestionAttempt.created_at >= week_start,
+            QuestionAttempt.created_at < week_end,
+        ).first()
+
+        total_q   = row.total   or 0
+        correct_q = int(row.correct or 0)
+        accuracy  = round(correct_q / total_q * 100, 1) if total_q > 0 else 0.0
+        label = "Semana atual" if week_i == 0 else f"Semana -{week_i}"
+
+        performance_semanal.append({
+            "label":           label,
+            "week_start":      week_start.date().isoformat(),
+            "week_end":        week_end.date().isoformat(),
+            "total_questions": total_q,
+            "correct":         correct_q,
+            "accuracy_pct":    accuracy,
+        })
+
+    return jsonify({
+        "tenant_id":           tenant_id,
+        "tenant_name":         tenant.name,
+        "computed_at":         now.isoformat(),
+        "total_students":      total_students,
+        # Engajamento
+        "dau":                 dau,
+        "mau":                 mau,
+        "stickiness":          stickiness,
+        "taxa_ativacao":       taxa_ativacao,
+        "retorno_d1":          retorno_d1,
+        "retorno_d7":          retorno_d7,
+        # Uso
+        "uso_funcionalidades": uso_funcionalidades,
+        "total_events":        total_events,
+        # Performance
+        "performance_semanal": performance_semanal,
+    }), 200

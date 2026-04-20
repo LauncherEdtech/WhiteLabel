@@ -25,7 +25,7 @@ const RESERVED_SLUGS = new Set([
   "favicon.ico", "login", "register", "dashboard",
   "producer", "courses", "questions", "simulados", "schedule",
   "analytics", "profile", "settings", "hall-of-fame", "desempenho",
-  "sharing", "study-capsule", "landing", "notifications",
+  "sharing", "study-capsule", "landing", "notifications", "privacidade", "termos",
 ]);
 
 // Headers de segurança adicionados em todas as respostas HTTPS
@@ -70,7 +70,8 @@ export function proxy(request: NextRequest) {
       return addSecurityHeaders(NextResponse.next());
     }
     // Qualquer outra rota no apex → landing page
-    if (pathname !== "/landing") {
+    const APEX_PUBLIC_PATHS = ["/landing", "/privacidade", "/termos"];
+    if (!APEX_PUBLIC_PATHS.includes(pathname)) {
       return NextResponse.redirect(new URL("/landing", request.url));
     }
     return addSecurityHeaders(NextResponse.next());

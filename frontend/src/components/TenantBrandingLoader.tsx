@@ -1,10 +1,13 @@
 // frontend/src/components/TenantBrandingLoader.tsx
 // ATUALIZADO: importa COLOR_PALETTES de @/lib/theme/palettes (sem "use client")
 // em vez de definir localmente — permite import em Server Components.
+// FIX: usePathname garante que o document.title do tenant é reaplicado após
+// cada navegação client-side do Next.js (que reseta o título via metadata estático).
 
 "use client";
 
 import { useEffect } from "react";
+import { usePathname } from "next/navigation";
 import { useTenantStore } from "@/lib/stores/tenantStore";
 import Cookies from "js-cookie";
 import { COLOR_PALETTES, getPaletteVars, isPaletteDark } from "@/lib/theme/palettes";
@@ -69,7 +72,9 @@ export async function reloadBranding(setTenant: (t: any) => void): Promise<void>
 // ── TenantBrandingLoader ──────────────────────────────────────────────────────
 export function TenantBrandingLoader() {
     const { setTenant, tenant } = useTenantStore();
+    const pathname = usePathname();
 
+    // Aplica branding inicial + faz fetch fresco do servidor
     useEffect(() => {
         if (tenant?.branding) {
             applyBrandingCssVars(tenant.branding as any);
@@ -77,6 +82,14 @@ export function TenantBrandingLoader() {
         reloadBranding(setTenant);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    // Re-aplica o título do tenant a cada navegação client-side.
+    // O Next.js App Router reseta document.title baseado no metadata estático
+    // ("Plataforma de Estudos") após cada rota — este efeito corrige isso.
+    useEffect(() => {
+        const name = (tenant?.branding as any)?.platform_name;
+        if (name) document.title = name;
+    }, [pathname, tenant?.branding]);
 
     return null;
 }

@@ -76,7 +76,7 @@ export default function ImportQuestionsPage() {
     onError: () => {
       // Fallback: se o endpoint não existir ainda, mostra mensagem informativa
       toast.info(
-        "Pipeline Gemini não configurado",
+        "Pipeline Mentor Inteligente não configurado",
         "Configure GEMINI_API_KEY no .env e implemente o endpoint /questions/extract."
       );
     },

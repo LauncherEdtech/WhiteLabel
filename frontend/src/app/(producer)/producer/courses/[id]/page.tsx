@@ -1023,7 +1023,7 @@ function LessonQuestionsModal({
             </div>
           )}
           <p className="text-xs text-muted-foreground">
-            O Gemini analisa o conteúdo da aula e cria questões no padrão concurso público.
+            O Mentor Inteligente analisa o conteúdo da aula e cria questões no padrão concurso público.
             As questões ficam pendentes para sua revisão antes de ficarem visíveis aos alunos.
           </p>
         </div>
