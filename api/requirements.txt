@@ -39,3 +39,5 @@ pypdf
 
 # ── E-mail ───────────────────────────────────────────────────────────────────
 resend                        # Resend API para envio de emails transacionais
+
+openpyxl==3.1.5               # Leitura/escrita de arquivos .xlsx

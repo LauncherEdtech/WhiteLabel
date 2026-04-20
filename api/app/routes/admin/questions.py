@@ -4,11 +4,16 @@
 # Restrito a super_admin via JWT.
 # ─────────────────────────────────────────────────────────────────────────────
 
+import hashlib
+import io
+import zipfile
 from datetime import datetime
 from uuid import uuid4
 
-from flask import Blueprint, jsonify, request
-from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity
+import boto3
+from botocore.exceptions import ClientError
+from flask import Blueprint, current_app, jsonify, request
+from flask_jwt_extended import get_jwt, get_jwt_identity, jwt_required
 from sqlalchemy import func
 
 from app.extensions import db
@@ -44,8 +49,11 @@ _DIFFICULTY_MAP = {
     "medium": DifficultyLevel.MEDIUM,
     "hard": DifficultyLevel.HARD,
     "facil": DifficultyLevel.EASY,
+    "fácil": DifficultyLevel.EASY,
     "medio": DifficultyLevel.MEDIUM,
+    "médio": DifficultyLevel.MEDIUM,
     "dificil": DifficultyLevel.HARD,
+    "difícil": DifficultyLevel.HARD,
 }
 
 _QTYPE_MAP = {
@@ -59,6 +67,39 @@ _QTYPE_MAP = {
     "memorização": QuestionType.MEMORIZACAO,
     "definicao": QuestionType.MEMORIZACAO,
     "definição": QuestionType.MEMORIZACAO,
+}
+
+# Mapeamento normalizado de cabeçalhos xlsx → campo interno
+# Aceita variações de maiúsculo/minúsculo e acentuação
+_XLSX_COL_MAP = {
+    "disciplina": "discipline",
+    "enunciado": "statement",
+    "imagem": "image_file",
+    "fonte": "context",
+    "alternativa a": "alt_a",
+    "alternativa b": "alt_b",
+    "alternativa c": "alt_c",
+    "alternativa d": "alt_d",
+    "alternativa e": "alt_e",
+    "gabarito": "correct_alternative_key",
+    # Campos opcionais
+    "topico": "topic",
+    "tópico": "topic",
+    "subtopico": "subtopic",
+    "subtópico": "subtopic",
+    "dificuldade": "difficulty",
+    "banca": "exam_board",
+    "ano": "exam_year",
+    "concurso": "exam_name",
+    "dica": "tip",
+    "justificativa": "correct_justification",
+    "justificativa gabarito": "correct_justification",
+    "justificativa_gabarito": "correct_justification",
+    "justificativa a": "just_a",
+    "justificativa b": "just_b",
+    "justificativa c": "just_c",
+    "justificativa d": "just_d",
+    "justificativa e": "just_e",
 }
 
 
@@ -76,6 +117,7 @@ def _serialize_admin(q: Question) -> dict:
         "id": q.id,
         "external_id": q.external_id,
         "statement": q.statement,
+        "image_url": q.image_url,
         "discipline": q.discipline,
         "topic": q.topic,
         "subtopic": q.subtopic,
@@ -107,7 +149,232 @@ def _serialize_admin(q: Question) -> dict:
     }
 
 
-# ── Bulk Import ───────────────────────────────────────────────────────────────
+# ── Helpers xlsx ──────────────────────────────────────────────────────────────
+
+
+def _make_external_id(sheet_name: str, row_idx: int, statement: str) -> str:
+    """Gera external_id estável para idempotência entre importações."""
+    raw = f"{sheet_name}::{row_idx}::{statement[:80]}"
+    return "xlsx_" + hashlib.md5(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _cell_str(value) -> str | None:
+    """Converte valor de célula para string, retorna None se vazio."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s if s and s.lower() not in ("nan", "none", "") else None
+
+
+def _get_s3_client():
+    region = current_app.config.get("AWS_REGION", "us-east-1")
+    return boto3.client(
+        "s3",
+        region_name=region,
+        endpoint_url=f"https://s3.{region}.amazonaws.com",
+    )
+
+
+def _upload_image_to_s3(image_bytes: bytes, filename: str, question_id: str) -> str | None:
+    """Upload de imagem para S3. Retorna URL pública ou None em caso de erro."""
+    bucket = current_app.config.get("AWS_S3_BUCKET", "")
+    region = current_app.config.get("AWS_REGION", "us-east-1")
+    if not bucket:
+        return None
+
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "jpg"
+    content_type = {
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "gif": "image/gif",
+        "webp": "image/webp",
+    }.get(ext, "image/jpeg")
+
+    safe_name = filename.replace(" ", "_").lower()
+    key = f"questions/images/{question_id}/{safe_name}"
+
+    try:
+        s3 = _get_s3_client()
+        s3.put_object(Bucket=bucket, Key=key, Body=image_bytes, ContentType=content_type)
+        return f"https://{bucket}.s3.{region}.amazonaws.com/{key}"
+    except ClientError as e:
+        current_app.logger.error(f"S3 image upload error [{filename}]: {e}")
+        return None
+
+
+def _parse_xlsx_sheets(xlsx_bytes: bytes) -> list[dict]:
+    """
+    Lê todas as abas do xlsx.
+    Retorna lista de dicts normalizados (um por questão).
+    """
+    import openpyxl
+
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), data_only=True)
+    rows = []
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        if ws.max_row < 2:
+            continue
+
+        # Lê cabeçalhos da primeira linha
+        headers_raw = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
+
+        # Mapeia coluna (0-indexed) → campo interno
+        col_map: dict[int, str] = {}
+        for col_idx, raw_header in enumerate(headers_raw):
+            normalized = str(raw_header or "").strip().lower()
+            if normalized in _XLSX_COL_MAP:
+                col_map[col_idx] = _XLSX_COL_MAP[normalized]
+
+        if not col_map:
+            continue  # Aba sem cabeçalho reconhecível — ignora
+
+        for row_idx in range(2, ws.max_row + 1):
+            cells: dict[str, str | None] = {}
+            for col_idx, field_name in col_map.items():
+                cells[field_name] = _cell_str(ws.cell(row=row_idx, column=col_idx + 1).value)
+
+            # Pula linha completamente vazia
+            if not cells.get("statement"):
+                continue
+
+            cells["_sheet"] = sheet_name
+            cells["_row"] = row_idx  # type: ignore
+            rows.append(cells)
+
+    return rows
+
+
+def _extract_zip(file_bytes: bytes) -> tuple[bytes | None, dict[str, bytes]]:
+    """
+    Extrai zip e retorna (xlsx_bytes, image_map).
+    image_map: {nome_do_arquivo_em_minúsculo: bytes}
+    """
+    xlsx_bytes: bytes | None = None
+    image_map: dict[str, bytes] = {}
+    image_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
+    with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
+        for name in zf.namelist():
+            basename = name.rsplit("/", 1)[-1]
+            lower = basename.lower()
+
+            if lower.endswith(".xlsx") and not lower.startswith("~$"):
+                if xlsx_bytes is None:  # Pega apenas o primeiro xlsx encontrado
+                    xlsx_bytes = zf.read(name)
+            elif any(lower.endswith(ext) for ext in image_exts):
+                image_map[lower] = zf.read(name)
+
+    return xlsx_bytes, image_map
+
+
+def _insert_or_update_question(
+    row: dict,
+    image_map: dict[str, bytes],
+    enrich_ai: bool,
+) -> tuple[str, bool]:
+    """
+    Insere ou atualiza questão a partir de um row normalizado.
+    Retorna (status, image_uploaded).
+    status: "inserted" | "updated" | "skipped"
+    """
+    statement = row.get("statement", "")
+    sheet_name = row.get("_sheet", "")
+    row_idx = int(row.get("_row", 0))  # type: ignore
+
+    ext_id = _make_external_id(sheet_name, row_idx, statement)
+
+    # Verifica existência por external_id (idempotência)
+    q = db.session.query(Question).filter_by(external_id=ext_id).first()
+
+    if q is None:
+        # Verifica duplicata por hash do enunciado
+        if Question.find_duplicate(statement):
+            return "skipped", False
+
+    is_new = q is None
+
+    if is_new:
+        q = Question()
+        q.id = str(uuid4())
+        q.external_id = ext_id
+        q.tenant_id = None
+        q.source_type = QuestionSourceType.BANK
+        q.review_status = ReviewStatus.APPROVED
+        q.submitted_by_tenant_id = None
+        q.submitted_by_user_id = None
+
+    # Campos principais
+    q.statement = statement
+    q.context = row.get("context")  # coluna "fonte" → texto de apoio/atribuição
+    q.discipline = (row.get("discipline") or sheet_name or "").strip().upper()
+    q.topic = row.get("topic")
+    q.subtopic = row.get("subtopic")
+    q.tip = row.get("tip")
+    q.correct_alternative_key = (row.get("correct_alternative_key") or "").strip().upper()
+    q.correct_justification = row.get("correct_justification")
+    q.is_active = True
+
+    # Dificuldade
+    diff_raw = (row.get("difficulty") or "medium").lower().strip()
+    q.difficulty = _DIFFICULTY_MAP.get(diff_raw, DifficultyLevel.MEDIUM)
+
+    # Metadados de prova
+    q.exam_board = row.get("exam_board")
+    q.exam_name = row.get("exam_name")
+    if row.get("exam_year"):
+        try:
+            q.exam_year = int(str(row["exam_year"]).split(".")[0])
+        except (ValueError, TypeError):
+            pass
+
+    # Imagem: procura no image_map (vem do zip)
+    image_uploaded = False
+    image_filename = row.get("image_file")
+    if image_filename:
+        img_bytes = image_map.get(image_filename.lower())
+        if img_bytes:
+            url = _upload_image_to_s3(img_bytes, image_filename, q.id)
+            if url:
+                q.image_url = url
+                image_uploaded = True
+
+    if is_new:
+        db.session.add(q)
+        db.session.flush()
+
+        # Cria alternativas (A–E; E pode ser vazia = questão de 4 alternativas)
+        for key in ("a", "b", "c", "d", "e"):
+            text = row.get(f"alt_{key}")
+            if not text:
+                continue
+            is_correct = key.upper() == q.correct_alternative_key
+            justification = row.get(f"just_{key}") if not is_correct else None
+            db.session.add(
+                Alternative(
+                    id=str(uuid4()),
+                    tenant_id=None,
+                    question_id=q.id,
+                    key=key.upper(),
+                    text=text,
+                    distractor_justification=justification,
+                )
+            )
+
+    # Dispara enriquecimento Gemini se campos faltantes ou solicitado
+    if enrich_ai or not q.topic or not q.tip:
+        try:
+            from app.tasks import analyze_question_task
+            analyze_question_task.delay(q.id, None)
+        except Exception:
+            pass
+
+    return ("inserted" if is_new else "updated"), image_uploaded
+
+
+# ── Bulk Import (JSON) ────────────────────────────────────────────────────────
 
 
 @admin_questions_bp.route("/questions/bulk-import", methods=["POST"])
@@ -189,9 +456,7 @@ def bulk_import():
                             key=alt["key"].upper(),
                             text=alt["text"],
                             distractor_justification=(
-                                alt.get("explanation")
-                                if not alt.get("is_correct")
-                                else None
+                                alt.get("explanation") if not alt.get("is_correct") else None
                             ),
                         )
                     )
@@ -233,6 +498,195 @@ def bulk_import():
         ),
         200,
     )
+
+
+# ── XLSX Preview ──────────────────────────────────────────────────────────────
+
+
+@admin_questions_bp.route("/questions/xlsx-preview", methods=["POST"])
+@jwt_required()
+def xlsx_preview():
+    """
+    Recebe .xlsx ou .zip e retorna resumo sem importar nada.
+    Usado pelo frontend para mostrar preview antes de confirmar.
+    """
+    err = _require_super_admin()
+    if err:
+        return err
+
+    if "file" not in request.files:
+        return jsonify(error="Campo 'file' ausente."), 400
+
+    uploaded = request.files["file"]
+    filename = (uploaded.filename or "").lower()
+
+    if not filename.endswith((".xlsx", ".zip")):
+        return jsonify(error="Formato inválido. Envie um .xlsx ou .zip."), 400
+
+    file_bytes = uploaded.read()
+    image_map: dict[str, bytes] = {}
+
+    if filename.endswith(".zip"):
+        try:
+            xlsx_bytes, image_map = _extract_zip(file_bytes)
+        except zipfile.BadZipFile:
+            return jsonify(error="Arquivo zip corrompido."), 400
+        if not xlsx_bytes:
+            return jsonify(error="Nenhum xlsx encontrado no zip."), 400
+    else:
+        xlsx_bytes = file_bytes
+
+    try:
+        rows = _parse_xlsx_sheets(xlsx_bytes)
+    except Exception as e:
+        return jsonify(error=f"Erro ao ler xlsx: {str(e)}"), 400
+
+    if not rows:
+        return jsonify(error="Nenhuma questão encontrada no arquivo."), 400
+
+    # Agrega por aba/disciplina
+    by_sheet: dict[str, int] = {}
+    disciplines: set[str] = set()
+    questions_with_image = 0
+
+    for row in rows:
+        sheet = row.get("_sheet", "?")
+        by_sheet[sheet] = by_sheet.get(sheet, 0) + 1
+        if row.get("image_file"):
+            questions_with_image += 1
+        disc = (row.get("discipline") or sheet).strip().upper()
+        if disc:
+            disciplines.add(disc)
+
+    # Amostra de duplicatas (limitada para não travar)
+    sample_rows = rows[:100]
+    estimated_duplicates = sum(
+        1 for r in sample_rows if Question.find_duplicate(r.get("statement", ""))
+    )
+    # Extrapola proporcionalmente
+    if len(rows) > 100:
+        estimated_duplicates = int(estimated_duplicates * len(rows) / 100)
+
+    return jsonify(
+        total_questions=len(rows),
+        by_sheet=[{"sheet": k, "count": v} for k, v in by_sheet.items()],
+        disciplines=sorted(disciplines),
+        questions_with_image=questions_with_image,
+        images_in_zip=len(image_map),
+        estimated_duplicates=estimated_duplicates,
+    ), 200
+
+
+# ── XLSX Import ───────────────────────────────────────────────────────────────
+
+
+@admin_questions_bp.route("/questions/xlsx-import", methods=["POST"])
+@jwt_required()
+def xlsx_import():
+    """
+    Importa questões a partir de .xlsx ou .zip.
+
+    Multipart form-data:
+      file       — arquivo .xlsx  OU  .zip (xlsx + pasta images/)
+      enrich_ai  — "true"|"false"  (default: true)
+                   Dispara análise Gemini para preencher campos faltantes
+                   (tópico, dica, justificativas dos distratores).
+
+    Formato xlsx esperado (qualquer ordem, case-insensitive):
+      Disciplina | Enunciado | Imagem | fonte |
+      Alternativa A-E | Gabarito
+
+    Campos opcionais (aproveitados se presentes):
+      Tópico | Subtópico | Dificuldade | Banca | Ano | Concurso |
+      Dica | Justificativa | Justificativa A-E
+
+    Quando arquivo é .zip:
+      - Deve conter exatamente 1 arquivo .xlsx (qualquer subpasta)
+      - Imagens em qualquer pasta dentro do zip
+      - Coluna "Imagem" no xlsx contém o nome do arquivo (ex: q001.png)
+      - Upload automático para S3 → questions/images/{question_id}/{filename}
+    """
+    err = _require_super_admin()
+    if err:
+        return err
+
+    if "file" not in request.files:
+        return jsonify(error="Campo 'file' ausente no form-data."), 400
+
+    uploaded = request.files["file"]
+    filename = (uploaded.filename or "").lower()
+    enrich_ai = request.form.get("enrich_ai", "true").lower() == "true"
+
+    if not filename.endswith((".xlsx", ".zip")):
+        return jsonify(error="Formato inválido. Envie um .xlsx ou .zip."), 400
+
+    file_bytes = uploaded.read()
+    image_map: dict[str, bytes] = {}
+
+    if filename.endswith(".zip"):
+        try:
+            xlsx_bytes, image_map = _extract_zip(file_bytes)
+        except zipfile.BadZipFile:
+            return jsonify(error="Arquivo zip corrompido."), 400
+        if not xlsx_bytes:
+            return jsonify(error="Nenhum xlsx encontrado no zip."), 400
+    else:
+        xlsx_bytes = file_bytes
+
+    try:
+        rows = _parse_xlsx_sheets(xlsx_bytes)
+    except Exception as e:
+        current_app.logger.error(f"xlsx parse error: {e}")
+        return jsonify(error=f"Erro ao ler o xlsx: {str(e)}"), 400
+
+    if not rows:
+        return jsonify(error="Nenhuma questão encontrada no arquivo."), 400
+
+    inserted = updated = skipped = errors = 0
+    images_uploaded = 0
+    error_details = []
+
+    for row in rows:
+        try:
+            status, img_uploaded = _insert_or_update_question(row, image_map, enrich_ai)
+            if status == "inserted":
+                inserted += 1
+            elif status == "updated":
+                updated += 1
+            elif status == "skipped":
+                skipped += 1
+            if img_uploaded:
+                images_uploaded += 1
+
+            if (inserted + updated) % 50 == 0:
+                db.session.commit()
+
+        except Exception as e:
+            db.session.rollback()
+            errors += 1
+            error_details.append({
+                "row": row.get("_row"),
+                "sheet": row.get("_sheet"),
+                "statement_preview": (row.get("statement") or "")[:60],
+                "error": str(e),
+            })
+
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify(error=f"Erro ao salvar no banco: {str(e)}"), 500
+
+    return jsonify(
+        inserted=inserted,
+        updated=updated,
+        skipped=skipped,
+        errors=errors,
+        images_uploaded=images_uploaded,
+        total_rows=len(rows),
+        enrich_ai=enrich_ai,
+        error_details=error_details[:20],
+    ), 200
 
 
 # ── Listagem ──────────────────────────────────────────────────────────────────
