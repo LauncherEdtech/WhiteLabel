@@ -126,6 +126,7 @@ export default function TenantDetailPage() {
   const {
     data: tracking,
     isLoading: trackingLoading,
+    isError: trackingError,
     refetch: refetchTracking,
     isFetching: trackingFetching,
   } = useQuery<TrackingData>({
@@ -311,6 +312,20 @@ export default function TenantDetailPage() {
               {[...Array(3)].map((_, i) => (
                 <Skeleton key={i} className="h-16 rounded-xl animate-pulse" />
               ))}
+            </div>
+          )}
+
+          {/* Estado: erro */}
+          {trackingEnabled && !trackingLoading && trackingError && (
+            <div className="flex flex-col items-center gap-3 py-8 text-center">
+              <XCircle className="h-8 w-8 text-destructive/50" />
+              <p className="text-sm text-muted-foreground">
+                Erro ao carregar métricas. Verifique se a API foi deployada.
+              </p>
+              <Button variant="outline" size="sm" onClick={() => refetchTracking()}>
+                <RefreshCw className="h-4 w-4" />
+                Tentar novamente
+              </Button>
             </div>
           )}
 

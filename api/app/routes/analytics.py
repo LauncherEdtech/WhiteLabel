@@ -461,6 +461,7 @@ def _get_weekly_mission(user_id: str, tenant_id: str, discipline_stats: list) ->
 
     return {
         "has_schedule": has_schedule,
+        "schedule_source_type": (schedule.source_type if schedule else None),
         "week_start": week_start_str,
         "week_end": week_end_str,
         "items": items,

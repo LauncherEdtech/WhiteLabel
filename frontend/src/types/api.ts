@@ -191,6 +191,7 @@ export interface WeeklyMission {
     items: WeeklyMissionItem[];
     total_items: number;
     completed_items: number;
+    schedule_source_type: "ai" | "producer_template" | null;
 }
 
 // ── Student Dashboard ─────────────────────────────────────────────────────────
