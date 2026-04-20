@@ -449,17 +449,9 @@ def update_settings(tenant_id):
 @jwt_required()
 def get_tenant_tracking(tenant_id: str):
     """
-    Retorna métricas de rastreamento do tenant para o painel super_admin.
-
-    Métricas calculadas:
-    - DAU / MAU / Stickiness
-    - Taxa de Ativação (alunos com ao menos 1 evento-chave)
-    - Retorno D1 / D7
-    - Uso por funcionalidade (questões, cronograma, aulas)
-    - Performance semanal das últimas 4 semanas
-
-    Fontes de dados: QuestionAttempt, ScheduleCheckIn, LessonProgress.
-    Todas as queries filtram por tenant_id para garantir isolamento.
+    MACRO: métricas agregadas do tenant.
+    D1/D7 baseados no primeiro evento real (não created_at).
+    DAU/MAU calculados em BRT (UTC-3).
     """
     err = _require_super_admin()
     if err: return err
@@ -472,58 +464,22 @@ def get_tenant_tracking(tenant_id: str):
     from app.models.schedule import ScheduleCheckIn
     from app.models.course import LessonProgress
 
-    now = datetime.now(timezone.utc)
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    thirty_days_ago = now - timedelta(days=30)
+    BRT = timezone(timedelta(hours=-3))
+    now = datetime.now(BRT)
+    today_date = now.date()
+    cutoff_30 = (now - timedelta(days=30)).date()
+    warnings: list[str] = []
 
-    # ── Alunos do tenant ───────────────────────────────────────────────────────
     students = (
         User.query
         .filter_by(tenant_id=tenant_id, role=UserRole.STUDENT.value, is_deleted=False)
-        .with_entities(User.id, User.created_at)
+        .with_entities(User.id)
         .all()
     )
     total_students = len(students)
     student_ids: set[str] = {str(s.id) for s in students}
 
-    # Map id -> created_at — garante timezone-aware
-    student_created: dict[str, datetime] = {}
-    for s in students:
-        ca = s.created_at
-        if ca and ca.tzinfo is None:
-            ca = ca.replace(tzinfo=timezone.utc)
-        student_created[str(s.id)] = ca
-
-    # ── Helper: usuários ativos em um período (union das 3 tabelas) ────────────
-    def _active_user_ids(start: datetime, end: datetime | None = None) -> set[str]:
-        """Retorna set de user_ids (students) com atividade no tenant entre start e end."""
-        def _q(model, date_col):
-            q = db.session.query(distinct(model.user_id)).filter(
-                model.tenant_id == tenant_id,
-                date_col >= start,
-            )
-            if end:
-                q = q.filter(date_col < end)
-            return {str(r[0]) for r in q.all()}
-
-        return (
-            _q(QuestionAttempt, QuestionAttempt.created_at)
-            | _q(ScheduleCheckIn, ScheduleCheckIn.created_at)
-            | _q(LessonProgress,  LessonProgress.updated_at)
-        ) & student_ids
-
-    # ── DAU / MAU / Stickiness ─────────────────────────────────────────────────
-    dau = len(_active_user_ids(today_start))
-    mau = len(_active_user_ids(thirty_days_ago))
-    stickiness = round(dau / mau * 100, 1) if mau > 0 else 0.0
-
-    # ── Taxa de Ativação ───────────────────────────────────────────────────────
-    epoch = datetime(2020, 1, 1, tzinfo=timezone.utc)
-    activated = len(_active_user_ids(epoch))
-    taxa_ativacao = round(activated / total_students * 100, 1) if total_students > 0 else 0.0
-
-    # ── Retorno D1 / D7 ────────────────────────────────────────────────────────
-    # Constrói mapa user_id -> set de datas ativas (uma query por tabela, sem IN clause)
+    # Mapa user_id → set de dates com atividade (3 queries, sem IN clause)
     activity_by_user: dict[str, set] = defaultdict(set)
     for model, date_col in [
         (QuestionAttempt, QuestionAttempt.created_at),
@@ -533,47 +489,48 @@ def get_tenant_tracking(tenant_id: str):
         rows = (
             db.session.query(model.user_id, func.date(date_col))
             .filter(model.tenant_id == tenant_id)
-            .distinct()
-            .all()
+            .distinct().all()
         )
         for uid, day in rows:
             uid_str = str(uid)
             if uid_str in student_ids:
                 activity_by_user[uid_str].add(day)
 
-    d1_eligible = [uid for uid, ca in student_created.items() if ca and (now - ca).days >= 1]
-    d7_eligible = [uid for uid, ca in student_created.items() if ca and (now - ca).days >= 7]
+    dau = sum(1 for days in activity_by_user.values() if today_date in days)
+    mau = sum(1 for days in activity_by_user.values() if any(d >= cutoff_30 for d in days))
+    stickiness = round(dau / mau * 100, 1) if mau > 0 else 0.0
+    activated = sum(1 for days in activity_by_user.values() if days)
+    taxa_ativacao = round(activated / total_students * 100, 1) if total_students > 0 else 0.0
 
-    d1_returned = sum(
-        1 for uid in d1_eligible
-        if (student_created[uid] + timedelta(days=1)).date() in activity_by_user.get(uid, set())
-    )
-    d7_returned = sum(
-        1 for uid in d7_eligible
-        if {(student_created[uid] + timedelta(days=i)).date() for i in range(1, 8)} & activity_by_user.get(uid, set())
-    )
+    d1_eligible_count = 0; d1_returned = 0
+    d7_eligible_count = 0; d7_returned = 0
+    for uid, days in activity_by_user.items():
+        if not days: continue
+        first_day = min(days)
+        days_since = (today_date - first_day).days
+        if days_since >= 1:
+            d1_eligible_count += 1
+            if (first_day + timedelta(days=1)) in days: d1_returned += 1
+        if days_since >= 7:
+            d7_eligible_count += 1
+            if {first_day + timedelta(days=i) for i in range(1, 8)} & days: d7_returned += 1
 
-    retorno_d1 = round(d1_returned / len(d1_eligible) * 100, 1) if d1_eligible else 0.0
-    retorno_d7 = round(d7_returned / len(d7_eligible) * 100, 1) if d7_eligible else 0.0
+    retorno_d1 = round(d1_returned / d1_eligible_count * 100, 1) if d1_eligible_count > 0 else 0.0
+    retorno_d7 = round(d7_returned / d7_eligible_count * 100, 1) if d7_eligible_count > 0 else 0.0
 
-    # ── Uso por funcionalidade ─────────────────────────────────────────────────
-    qa_total = db.session.query(func.count(QuestionAttempt.id)).filter(
-        QuestionAttempt.tenant_id == tenant_id
-    ).scalar() or 0
+    if 0 < d1_eligible_count < 5:
+        warnings.append(f"Retorno D1 calculado com apenas {d1_eligible_count} aluno(s) — base amostral pequena.")
+    if 0 < d7_eligible_count < 5:
+        warnings.append(f"Retorno D7 calculado com apenas {d7_eligible_count} aluno(s) — base amostral pequena.")
 
-    ci_total = db.session.query(func.count(ScheduleCheckIn.id)).filter(
-        ScheduleCheckIn.tenant_id == tenant_id
-    ).scalar() or 0
-
+    qa_total = db.session.query(func.count(QuestionAttempt.id)).filter(QuestionAttempt.tenant_id == tenant_id).scalar() or 0
+    ci_total = db.session.query(func.count(ScheduleCheckIn.id)).filter(ScheduleCheckIn.tenant_id == tenant_id).scalar() or 0
     lp_total = db.session.query(func.count(LessonProgress.id)).filter(
-        LessonProgress.tenant_id == tenant_id,
-        LessonProgress.status.in_(["watched", "partial"]),
+        LessonProgress.tenant_id == tenant_id, LessonProgress.status.in_(["watched", "partial"])
     ).scalar() or 0
-
     total_events = qa_total + ci_total + lp_total
 
-    def _pct(val: int) -> float:
-        return round(val / total_events * 100, 1) if total_events > 0 else 0.0
+    def _pct(val): return round(val / total_events * 100, 1) if total_events > 0 else 0.0
 
     uso_funcionalidades = {
         "questoes":   {"label": "Questões",   "count": qa_total, "pct": _pct(qa_total)},
@@ -581,12 +538,10 @@ def get_tenant_tracking(tenant_id: str):
         "aulas":      {"label": "Aulas",      "count": lp_total, "pct": _pct(lp_total)},
     }
 
-    # ── Performance semanal — últimas 4 semanas ────────────────────────────────
     performance_semanal = []
-    for week_i in range(3, -1, -1):   # 3 = mais antiga → 0 = semana atual
+    for week_i in range(3, -1, -1):
         week_end   = now - timedelta(days=7 * week_i)
         week_start = week_end - timedelta(days=7)
-
         row = db.session.query(
             func.count(QuestionAttempt.id).label("total"),
             func.sum(case((QuestionAttempt.is_correct == True, 1), else_=0)).label("correct"),
@@ -595,36 +550,240 @@ def get_tenant_tracking(tenant_id: str):
             QuestionAttempt.created_at >= week_start,
             QuestionAttempt.created_at < week_end,
         ).first()
-
-        total_q   = row.total   or 0
+        total_q = row.total or 0
         correct_q = int(row.correct or 0)
-        accuracy  = round(correct_q / total_q * 100, 1) if total_q > 0 else 0.0
-        label = "Semana atual" if week_i == 0 else f"Semana -{week_i}"
-
         performance_semanal.append({
-            "label":           label,
+            "label":           "Semana atual" if week_i == 0 else f"Semana -{week_i}",
             "week_start":      week_start.date().isoformat(),
             "week_end":        week_end.date().isoformat(),
             "total_questions": total_q,
             "correct":         correct_q,
-            "accuracy_pct":    accuracy,
+            "accuracy_pct":    round(correct_q / total_q * 100, 1) if total_q > 0 else 0.0,
         })
 
     return jsonify({
-        "tenant_id":           tenant_id,
-        "tenant_name":         tenant.name,
-        "computed_at":         now.isoformat(),
-        "total_students":      total_students,
-        # Engajamento
-        "dau":                 dau,
-        "mau":                 mau,
-        "stickiness":          stickiness,
-        "taxa_ativacao":       taxa_ativacao,
-        "retorno_d1":          retorno_d1,
-        "retorno_d7":          retorno_d7,
-        # Uso
-        "uso_funcionalidades": uso_funcionalidades,
-        "total_events":        total_events,
-        # Performance
-        "performance_semanal": performance_semanal,
+        "tenant_id": tenant_id, "tenant_name": tenant.name,
+        "computed_at": now.isoformat(), "total_students": total_students,
+        "dau": dau, "mau": mau, "stickiness": stickiness,
+        "taxa_ativacao": taxa_ativacao, "retorno_d1": retorno_d1, "retorno_d7": retorno_d7,
+        "d1_eligible": d1_eligible_count, "d7_eligible": d7_eligible_count,
+        "uso_funcionalidades": uso_funcionalidades, "total_events": total_events,
+        "performance_semanal": performance_semanal, "warnings": warnings,
+    }), 200
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TRACKING MICRO — por aluno (super_admin only)
+#
+# Retorna dados individuais de cada aluno do tenant:
+# ativação, retorno D1/D7, questões respondidas, % acerto,
+# dias ativos, último acesso, evolução semanal.
+#
+# 6 queries SQL totais (sem N+1) — eficiente para até ~5k alunos.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@tenants_bp.route("/<string:tenant_id>/tracking/students", methods=["GET"])
+@jwt_required()
+def get_tenant_tracking_students(tenant_id: str):
+    err = _require_super_admin()
+    if err: return err
+
+    tenant = Tenant.query.filter_by(id=tenant_id, is_deleted=False).first()
+    if not tenant:
+        return jsonify({"error": "not_found"}), 404
+
+    from app.models.question import QuestionAttempt
+    from app.models.schedule import ScheduleCheckIn
+    from app.models.course import LessonProgress
+
+    BRT = timezone(timedelta(hours=-3))
+    now = datetime.now(BRT)
+    today_date = now.date()
+
+    # ── 1. Alunos ──────────────────────────────────────────────────────────────
+    students_rows = (
+        User.query
+        .filter_by(tenant_id=tenant_id, role=UserRole.STUDENT.value, is_deleted=False)
+        .with_entities(User.id, User.name, User.email, User.created_at, User.is_active)
+        .order_by(User.created_at.asc())
+        .all()
+    )
+    student_ids: set[str] = {str(s.id) for s in students_rows}
+    student_map = {
+        str(s.id): {
+            "id": str(s.id), "name": s.name, "email": s.email,
+            "is_active": s.is_active,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+        }
+        for s in students_rows
+    }
+
+    # ── 2. Stats de questões por aluno (1 query com GROUP BY) ─────────────────
+    qa_rows = (
+        db.session.query(
+            QuestionAttempt.user_id,
+            func.count(QuestionAttempt.id).label("total"),
+            func.sum(case((QuestionAttempt.is_correct == True, 1), else_=0)).label("correct"),
+        )
+        .filter(QuestionAttempt.tenant_id == tenant_id)
+        .group_by(QuestionAttempt.user_id)
+        .all()
+    )
+    qa_stats: dict[str, dict] = {
+        str(r.user_id): {"total": r.total, "correct": int(r.correct or 0)}
+        for r in qa_rows
+    }
+
+    # ── 3. Check-ins de cronograma por aluno ───────────────────────────────────
+    ci_rows = (
+        db.session.query(ScheduleCheckIn.user_id, func.count(ScheduleCheckIn.id).label("total"))
+        .filter(ScheduleCheckIn.tenant_id == tenant_id)
+        .group_by(ScheduleCheckIn.user_id)
+        .all()
+    )
+    ci_stats: dict[str, int] = {str(r.user_id): r.total for r in ci_rows}
+
+    # ── 4. Progresso de aulas por aluno ────────────────────────────────────────
+    lp_rows = (
+        db.session.query(LessonProgress.user_id, func.count(LessonProgress.id).label("total"))
+        .filter(LessonProgress.tenant_id == tenant_id, LessonProgress.status.in_(["watched", "partial"]))
+        .group_by(LessonProgress.user_id)
+        .all()
+    )
+    lp_stats: dict[str, int] = {str(r.user_id): r.total for r in lp_rows}
+
+    # ── 5. Datas de atividade por aluno (para D1, D7, first/last access) ───────
+    activity_by_user: dict[str, set] = defaultdict(set)
+    for model, date_col in [
+        (QuestionAttempt, QuestionAttempt.created_at),
+        (ScheduleCheckIn, ScheduleCheckIn.created_at),
+        (LessonProgress,  LessonProgress.updated_at),
+    ]:
+        rows = (
+            db.session.query(model.user_id, func.date(date_col))
+            .filter(model.tenant_id == tenant_id)
+            .distinct().all()
+        )
+        for uid, day in rows:
+            uid_str = str(uid)
+            if uid_str in student_ids:
+                activity_by_user[uid_str].add(day)
+
+    # ── 6. Performance semanal por aluno — últimas 4 semanas ──────────────────
+    # Calcula janelas uma vez para todos os alunos
+    semanas = []
+    for week_i in range(3, -1, -1):
+        wend   = now - timedelta(days=7 * week_i)
+        wstart = wend - timedelta(days=7)
+        semanas.append({
+            "label":     "Semana atual" if week_i == 0 else f"Semana -{week_i}",
+            "week_start": wstart.date().isoformat(),
+            "week_end":   wend.date().isoformat(),
+            "start_dt":   wstart,
+            "end_dt":     wend,
+        })
+
+    # Query de questões por aluno por semana (1 query, GROUP BY user + semana)
+    # Usa CASE WHEN para cada semana — mais eficiente que 4 queries separadas
+    weekly_rows = (
+        db.session.query(
+            QuestionAttempt.user_id,
+            func.count(QuestionAttempt.id).label("total"),
+            func.sum(case((QuestionAttempt.is_correct == True, 1), else_=0)).label("correct"),
+            # Identifica a semana pelo offset de dias
+            case(
+                (QuestionAttempt.created_at >= semanas[3]["start_dt"], 3),  # semana atual
+                (QuestionAttempt.created_at >= semanas[2]["start_dt"], 2),
+                (QuestionAttempt.created_at >= semanas[1]["start_dt"], 1),
+                else_=0,
+            ).label("week_idx"),
+        )
+        .filter(
+            QuestionAttempt.tenant_id == tenant_id,
+            QuestionAttempt.created_at >= semanas[0]["start_dt"],
+        )
+        .group_by(QuestionAttempt.user_id, "week_idx")
+        .all()
+    )
+
+    # Organiza: { user_id: { week_idx: {total, correct} } }
+    weekly_by_user: dict[str, dict] = defaultdict(lambda: {0: {}, 1: {}, 2: {}, 3: {}})
+    for r in weekly_rows:
+        uid_str = str(r.user_id)
+        if uid_str in student_ids:
+            weekly_by_user[uid_str][r.week_idx] = {
+                "total": r.total, "correct": int(r.correct or 0)
+            }
+
+    # ── Monta resultado por aluno ──────────────────────────────────────────────
+    result = []
+    for uid, info in student_map.items():
+        days = activity_by_user.get(uid, set())
+        activated = bool(days)
+        first_activity = min(days).isoformat() if days else None
+        last_activity  = max(days).isoformat() if days else None
+        days_active    = len(days)
+
+        # D1 / D7
+        retornou_d1 = False
+        retornou_d7 = False
+        if days:
+            first_day = min(days)
+            days_since = (today_date - first_day).days
+            if days_since >= 1:
+                retornou_d1 = (first_day + timedelta(days=1)) in days
+            if days_since >= 7:
+                retornou_d7 = bool({first_day + timedelta(days=i) for i in range(1, 8)} & days)
+
+        # Questões
+        qa = qa_stats.get(uid, {"total": 0, "correct": 0})
+        accuracy = round(qa["correct"] / qa["total"] * 100, 1) if qa["total"] > 0 else 0.0
+
+        # Performance semanal
+        perf_semanal = []
+        for s_idx, s_info in enumerate(semanas):
+            w = weekly_by_user.get(uid, {}).get(s_idx, {})
+            total_q   = w.get("total", 0)
+            correct_q = w.get("correct", 0)
+            perf_semanal.append({
+                "label":           s_info["label"],
+                "week_start":      s_info["week_start"],
+                "week_end":        s_info["week_end"],
+                "total_questions": total_q,
+                "correct":         correct_q,
+                "accuracy_pct":    round(correct_q / total_q * 100, 1) if total_q > 0 else 0.0,
+            })
+
+        result.append({
+            **info,
+            "activated":          activated,
+            "first_activity":     first_activity,
+            "last_activity":      last_activity,
+            "days_active":        days_active,
+            "retornou_d1":        retornou_d1,
+            "retornou_d7":        retornou_d7,
+            # Funcionalidades
+            "total_questions":    qa["total"],
+            "correct_questions":  qa["correct"],
+            "accuracy_pct":       accuracy,
+            "schedule_checkins":  ci_stats.get(uid, 0),
+            "lessons_watched":    lp_stats.get(uid, 0),
+            # Performance semanal individual
+            "performance_semanal": perf_semanal,
+        })
+
+    # Ordena: alunos ativos primeiro, depois por último acesso desc
+    result.sort(key=lambda x: (
+        not x["activated"],
+        x["last_activity"] or "" ,
+    ), reverse=False)
+    result.sort(key=lambda x: x["last_activity"] or "", reverse=True)
+    result.sort(key=lambda x: not x["activated"])
+
+    return jsonify({
+        "tenant_id":   tenant_id,
+        "tenant_name": tenant.name,
+        "computed_at": now.isoformat(),
+        "total":       len(result),
+        "students":    result,
     }), 200
