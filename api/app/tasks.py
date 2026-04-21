@@ -463,12 +463,29 @@ def process_xlsx_import_job(self, job_id: str):
 
     logger = logging.getLogger(__name__)
 
+    from app.extensions import db, redis_client
+    # Importa apenas helpers de S3/xlsx — não importa toda a rota (evita quebra de contexto)
     from app.routes.admin.questions import (
-        _job_get, _job_set, _job_is_cancelled,
         _download_file_from_s3_temp, _delete_s3_temp,
         _extract_zip, _parse_xlsx_sheets, _insert_or_update_question,
     )
-    from app.extensions import db
+
+    _JOB_TTL_XLSX = 86400
+    import json as _json
+
+    def _job_key_x(jid): return f"import_job:{jid}"
+    def _job_cancel_key_x(jid): return f"import_job:{jid}:cancel"
+    def _job_get(jid):
+        try:
+            raw = redis_client.get(_job_key_x(jid))
+            return _json.loads(raw) if raw else None
+        except Exception: return None
+    def _job_set(jid, data):
+        try: redis_client.setex(_job_key_x(jid), _JOB_TTL_XLSX, _json.dumps(data))
+        except Exception: pass
+    def _job_is_cancelled(jid):
+        try: return bool(redis_client.exists(_job_cancel_key_x(jid)))
+        except Exception: return False
 
     logger.info(f"[xlsx_import_job] Iniciando job {job_id}")
 
@@ -602,27 +619,46 @@ def process_xlsx_import_job(self, job_id: str):
 def run_reprocess_gemini_job(self, job_id: str, limit: int = 9999):
     """
     Processa questões pendentes de enriquecimento Gemini uma a uma.
-
-    Fluxo:
-      1. Lê job_id do Redis
-      2. Busca questões com tip=NULL no banco
-      3. Para cada questão: chama analyze_question_task de forma síncrona
-         (não dispara subtask — controla o progresso diretamente)
-      4. Atualiza Redis a cada 5 questões
-      5. Checa cancelamento a cada 5 questões
+    Usa Redis diretamente (sem importar rotas) para evitar quebra de contexto Flask.
     """
+    import json
     import logging
     from datetime import datetime
-    from sqlalchemy import and_
 
     logger = logging.getLogger(__name__)
 
-    from app.routes.admin.questions import (
-        _reprocess_job_get, _reprocess_job_set, _reprocess_job_is_cancelled,
-    )
-    from app.extensions import db
+    from app.extensions import db, redis_client
     from app.models.question import Question, QuestionSourceType, ReviewStatus
     from app.services.gemini_service import GeminiService
+
+    _JOB_TTL = 86400  # 24h
+
+    # ── Helpers Redis inline (evita importar rotas que quebram app context) ──
+
+    def _job_key(jid):
+        return f"reprocess_job:{jid}"
+
+    def _job_cancel_key(jid):
+        return f"reprocess_job:{jid}:cancel"
+
+    def _job_get(jid):
+        try:
+            raw = redis_client.get(_job_key(jid))
+            return json.loads(raw) if raw else None
+        except Exception:
+            return None
+
+    def _job_set(jid, data):
+        try:
+            redis_client.setex(_job_key(jid), _JOB_TTL, json.dumps(data))
+        except Exception:
+            pass
+
+    def _job_is_cancelled(jid):
+        try:
+            return bool(redis_client.exists(_job_cancel_key(jid)))
+        except Exception:
+            return False
 
     logger.info(f"[reprocess_gemini_job] Iniciando job {job_id}")
 
