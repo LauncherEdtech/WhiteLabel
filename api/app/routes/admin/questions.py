@@ -6,6 +6,7 @@
 
 import hashlib
 import io
+import json
 import zipfile
 from datetime import datetime
 from uuid import uuid4
@@ -16,7 +17,7 @@ from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import get_jwt, get_jwt_identity, jwt_required
 from sqlalchemy import func
 
-from app.extensions import db
+from app.extensions import db, redis_client
 from app.models.question import (
     Alternative,
     DifficultyLevel,
@@ -30,6 +31,9 @@ from app.models.tenant import Tenant
 from app.models.user import UserRole
 
 admin_questions_bp = Blueprint("admin_questions", __name__)
+
+# TTL dos jobs no Redis: 24 horas
+_JOB_TTL = 86_400
 
 
 # ── Helper de autorização ─────────────────────────────────────────────────────
@@ -69,7 +73,6 @@ _QTYPE_MAP = {
     "definição": QuestionType.MEMORIZACAO,
 }
 
-# Mapeamento normalizado de cabeçalhos xlsx → campo interno
 _XLSX_COL_MAP = {
     "disciplina": "discipline",
     "enunciado": "statement",
@@ -81,7 +84,6 @@ _XLSX_COL_MAP = {
     "alternativa d": "alt_d",
     "alternativa e": "alt_e",
     "gabarito": "correct_alternative_key",
-    # Campos opcionais
     "topico": "topic",
     "tópico": "topic",
     "subtopico": "subtopic",
@@ -148,17 +150,55 @@ def _serialize_admin(q: Question) -> dict:
     }
 
 
+# ── Redis helpers para jobs ───────────────────────────────────────────────────
+
+
+def _job_key(job_id: str) -> str:
+    return f"import_job:{job_id}"
+
+
+def _job_cancel_key(job_id: str) -> str:
+    return f"import_job:{job_id}:cancel"
+
+
+def _job_get(job_id: str) -> dict | None:
+    try:
+        raw = redis_client.get(_job_key(job_id))
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+def _job_set(job_id: str, data: dict):
+    try:
+        redis_client.setex(_job_key(job_id), _JOB_TTL, json.dumps(data))
+    except Exception:
+        pass
+
+
+def _job_is_cancelled(job_id: str) -> bool:
+    try:
+        return bool(redis_client.exists(_job_cancel_key(job_id)))
+    except Exception:
+        return False
+
+
+def _job_set_cancel(job_id: str):
+    try:
+        redis_client.setex(_job_cancel_key(job_id), _JOB_TTL, "1")
+    except Exception:
+        pass
+
+
 # ── Helpers xlsx ──────────────────────────────────────────────────────────────
 
 
 def _make_external_id(sheet_name: str, row_idx: int, statement: str) -> str:
-    """Gera external_id estável para idempotência entre importações."""
     raw = f"{sheet_name}::{row_idx}::{statement[:80]}"
     return "xlsx_" + hashlib.md5(raw.encode("utf-8")).hexdigest()[:20]
 
 
 def _cell_str(value) -> str | None:
-    """Converte valor de célula para string, retorna None se vazio."""
     if value is None:
         return None
     s = str(value).strip()
@@ -175,7 +215,6 @@ def _get_s3_client():
 
 
 def _upload_image_to_s3(image_bytes: bytes, filename: str, question_id: str) -> str | None:
-    """Upload de imagem para S3. Retorna URL pública ou None em caso de erro."""
     bucket = current_app.config.get("AWS_S3_BUCKET", "")
     region = current_app.config.get("AWS_REGION", "us-east-1")
     if not bucket:
@@ -183,11 +222,8 @@ def _upload_image_to_s3(image_bytes: bytes, filename: str, question_id: str) -> 
 
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "png"
     content_type = {
-        "jpg": "image/jpeg",
-        "jpeg": "image/jpeg",
-        "png": "image/png",
-        "gif": "image/gif",
-        "webp": "image/webp",
+        "jpg": "image/jpeg", "jpeg": "image/jpeg",
+        "png": "image/png", "gif": "image/gif", "webp": "image/webp",
     }.get(ext, "image/png")
 
     safe_name = filename.replace(" ", "_").lower()
@@ -202,52 +238,75 @@ def _upload_image_to_s3(image_bytes: bytes, filename: str, question_id: str) -> 
         return None
 
 
+def _upload_file_to_s3_temp(file_bytes: bytes, job_id: str, ext: str) -> str | None:
+    """Salva o arquivo xlsx/zip no S3 temporariamente para o Celery processar."""
+    bucket = current_app.config.get("AWS_S3_BUCKET", "")
+    region = current_app.config.get("AWS_REGION", "us-east-1")
+    if not bucket:
+        return None
+    key = f"imports/temp/{job_id}.{ext}"
+    try:
+        s3 = _get_s3_client()
+        s3.put_object(Bucket=bucket, Key=key, Body=file_bytes,
+                      ContentType="application/octet-stream")
+        return key
+    except ClientError as e:
+        current_app.logger.error(f"S3 temp upload error: {e}")
+        return None
+
+
+def _download_file_from_s3_temp(key: str) -> bytes | None:
+    """Baixa o arquivo temporário do S3."""
+    bucket = current_app.config.get("AWS_S3_BUCKET", "")
+    region = current_app.config.get("AWS_REGION", "us-east-1")
+    try:
+        s3 = boto3.client("s3", region_name=region,
+                          endpoint_url=f"https://s3.{region}.amazonaws.com")
+        resp = s3.get_object(Bucket=bucket, Key=key)
+        return resp["Body"].read()
+    except ClientError:
+        return None
+
+
+def _delete_s3_temp(key: str):
+    """Remove o arquivo temporário do S3 após processamento."""
+    bucket = current_app.config.get("AWS_S3_BUCKET", "")
+    region = current_app.config.get("AWS_REGION", "us-east-1")
+    try:
+        s3 = boto3.client("s3", region_name=region,
+                          endpoint_url=f"https://s3.{region}.amazonaws.com")
+        s3.delete_object(Bucket=bucket, Key=key)
+    except Exception:
+        pass
+
+
 def _build_embedded_image_map(ws) -> dict[int, tuple[bytes, str]]:
     """
-    Escaneia imagens embutidas em uma aba do xlsx.
-
-    Retorna {excel_row_number: (image_bytes, format_extension)}
-
-    Suporta dois casos:
-      1. Imagem embutida diretamente na célula (openpyxl Image com OneCellAnchor)
-      2. Coluna "Imagem" preenchida com nome de arquivo → tratada separadamente
-
-    A âncora openpyxl usa row 0-indexed, então:
-        excel_row = anchor._from.row + 1
+    Escaneia imagens embutidas em uma aba.
+    Retorna {excel_row: (bytes, fmt)}.
+    anchor._from.row é 0-indexed → excel_row = row + 1.
     """
     image_map: dict[int, tuple[bytes, str]] = {}
-
     for img in getattr(ws, "_images", []):
         try:
             anch = img.anchor
             if not hasattr(anch, "_from"):
                 continue
-            excel_row = anch._from.row + 1  # 0-indexed → 1-based Excel row
+            excel_row = anch._from.row + 1
             img_bytes = img._data()
             fmt = (getattr(img, "format", None) or "png").lower().strip(".")
             if fmt not in ("png", "jpg", "jpeg", "gif", "webp"):
                 fmt = "png"
             image_map[excel_row] = (img_bytes, fmt)
         except Exception:
-            continue  # Nunca deixar uma imagem problemática travar toda a importação
-
+            continue
     return image_map
 
 
 def _parse_xlsx_sheets(xlsx_bytes: bytes) -> list[dict]:
     """
-    Lê todas as abas do xlsx.
-
-    Para cada questão detecta:
-      - Dados das colunas (statement, alternativas, gabarito, etc.)
-      - Imagem embutida na célula (detectada por âncora, sem precisar de coluna preenchida)
-      - Imagem referenciada por nome na coluna "Imagem" (tratada em _insert_or_update_question)
-
-    Chaves internas no dict retornado:
-      _sheet                  — nome da aba
-      _row                    — número da linha Excel (1-based)
-      _embedded_image_bytes   — bytes da imagem embutida (se houver)
-      _embedded_image_fmt     — extensão do formato ("png", "jpg", etc.)
+    Lê todas as abas do xlsx e retorna lista de dicts normalizados.
+    Detecta imagens embutidas automaticamente pela âncora de célula.
     """
     import openpyxl
 
@@ -259,13 +318,9 @@ def _parse_xlsx_sheets(xlsx_bytes: bytes) -> list[dict]:
         if ws.max_row < 2:
             continue
 
-        # Mapa de imagens embutidas nesta aba: {excel_row: (bytes, fmt)}
         embedded_images = _build_embedded_image_map(ws)
 
-        # Lê cabeçalhos da primeira linha
         headers_raw = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
-
-        # Mapeia coluna (0-indexed) → campo interno
         col_map: dict[int, str] = {}
         for col_idx, raw_header in enumerate(headers_raw):
             normalized = str(raw_header or "").strip().lower()
@@ -273,21 +328,19 @@ def _parse_xlsx_sheets(xlsx_bytes: bytes) -> list[dict]:
                 col_map[col_idx] = _XLSX_COL_MAP[normalized]
 
         if not col_map:
-            continue  # Aba sem cabeçalho reconhecível — ignora
+            continue
 
         for row_idx in range(2, ws.max_row + 1):
             cells: dict = {}
             for col_idx, field_name in col_map.items():
                 cells[field_name] = _cell_str(ws.cell(row=row_idx, column=col_idx + 1).value)
 
-            # Pula linha completamente vazia
             if not cells.get("statement"):
                 continue
 
             cells["_sheet"] = sheet_name
             cells["_row"] = row_idx
 
-            # Injeta imagem embutida se existir para esta linha
             if row_idx in embedded_images:
                 img_bytes, img_fmt = embedded_images[row_idx]
                 cells["_embedded_image_bytes"] = img_bytes
@@ -299,10 +352,6 @@ def _parse_xlsx_sheets(xlsx_bytes: bytes) -> list[dict]:
 
 
 def _extract_zip(file_bytes: bytes) -> tuple[bytes | None, dict[str, bytes]]:
-    """
-    Extrai zip e retorna (xlsx_bytes, image_map).
-    image_map: {nome_do_arquivo_em_minúsculo: bytes}
-    """
     xlsx_bytes: bytes | None = None
     image_map: dict[str, bytes] = {}
     image_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
@@ -326,21 +375,15 @@ def _insert_or_update_question(
     enrich_ai: bool,
 ) -> tuple[str, bool]:
     """
-    Insere ou atualiza questão a partir de um row normalizado.
-
-    Ordem de prioridade para imagem:
-      1. Imagem embutida diretamente na célula (_embedded_image_bytes)
-      2. Nome de arquivo na coluna "Imagem" + imagem no zip (image_map)
-
+    Insere ou atualiza questão.
     Retorna (status, image_uploaded).
-    status: "inserted" | "updated" | "skipped"
+    status: "inserted" | "updated" | "skipped" | "error:mensagem"
     """
     statement = row.get("statement", "")
     sheet_name = row.get("_sheet", "")
     row_idx = int(row.get("_row", 0))
 
     ext_id = _make_external_id(sheet_name, row_idx, statement)
-
     q = db.session.query(Question).filter_by(external_id=ext_id).first()
 
     if q is None:
@@ -350,7 +393,6 @@ def _insert_or_update_question(
     # ── Validações obrigatórias ───────────────────────────────────────────────
     correct_key = (row.get("correct_alternative_key") or "").strip().upper()
 
-    # Gabarito deve ser A, B, C, D ou E
     if correct_key not in ("A", "B", "C", "D", "E"):
         return (
             f"error:Gabarito inválido ou ausente: '{correct_key}' "
@@ -358,12 +400,10 @@ def _insert_or_update_question(
             False,
         )
 
-    # Alternativas presentes
     alts_present = [k for k in ("a", "b", "c", "d", "e") if row.get(f"alt_{k}")]
     if len(alts_present) < 2:
         return "error:Menos de 2 alternativas preenchidas", False
 
-    # A alternativa correta deve existir de fato
     if correct_key.lower() not in alts_present:
         return (
             f"error:Gabarito '{correct_key}' não possui alternativa preenchida",
@@ -382,7 +422,6 @@ def _insert_or_update_question(
         q.submitted_by_tenant_id = None
         q.submitted_by_user_id = None
 
-    # Campos principais
     q.statement = statement
     q.context = row.get("context")
     q.discipline = (row.get("discipline") or sheet_name or "").strip().upper()
@@ -404,11 +443,8 @@ def _insert_or_update_question(
         except (ValueError, TypeError):
             pass
 
-    # ── Upload de imagem ──────────────────────────────────────────────────────
-    # Prioridade 1: imagem embutida diretamente na célula do xlsx
-    # Prioridade 2: nome de arquivo na coluna "Imagem" + imagem no zip
+    # ── Imagem: embutida na célula (prioridade) ou via zip ───────────────────
     image_uploaded = False
-
     if row.get("_embedded_image_bytes"):
         fmt = row.get("_embedded_image_fmt", "png")
         filename = f"questao_{q.id[:8]}.{fmt}"
@@ -416,7 +452,6 @@ def _insert_or_update_question(
         if url:
             q.image_url = url
             image_uploaded = True
-
     elif row.get("image_file") and image_map:
         img_bytes = image_map.get(row["image_file"].lower())
         if img_bytes:
@@ -456,7 +491,274 @@ def _insert_or_update_question(
     return ("inserted" if is_new else "updated"), image_uploaded
 
 
-# ── Bulk Import (JSON) ────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# XLSX PREVIEW
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@admin_questions_bp.route("/questions/xlsx-preview", methods=["POST"])
+@jwt_required()
+def xlsx_preview():
+    """Analisa o arquivo e retorna resumo sem importar nada."""
+    err = _require_super_admin()
+    if err:
+        return err
+
+    if "file" not in request.files:
+        return jsonify(error="Campo 'file' ausente."), 400
+
+    uploaded = request.files["file"]
+    filename = (uploaded.filename or "").lower()
+
+    if not filename.endswith((".xlsx", ".zip")):
+        return jsonify(error="Formato inválido. Envie um .xlsx ou .zip."), 400
+
+    file_bytes = uploaded.read()
+    image_map: dict[str, bytes] = {}
+
+    if filename.endswith(".zip"):
+        try:
+            xlsx_bytes, image_map = _extract_zip(file_bytes)
+        except zipfile.BadZipFile:
+            return jsonify(error="Arquivo zip corrompido."), 400
+        if not xlsx_bytes:
+            return jsonify(error="Nenhum xlsx encontrado no zip."), 400
+    else:
+        xlsx_bytes = file_bytes
+
+    try:
+        rows = _parse_xlsx_sheets(xlsx_bytes)
+    except Exception as e:
+        return jsonify(error=f"Erro ao ler xlsx: {str(e)}"), 400
+
+    if not rows:
+        return jsonify(error="Nenhuma questão encontrada no arquivo."), 400
+
+    by_sheet: dict[str, int] = {}
+    disciplines: set[str] = set()
+    questions_with_image = 0
+    questions_invalid = 0
+
+    for row in rows:
+        sheet = row.get("_sheet", "?")
+        by_sheet[sheet] = by_sheet.get(sheet, 0) + 1
+
+        has_img = bool(row.get("_embedded_image_bytes")) or bool(row.get("image_file"))
+        if has_img:
+            questions_with_image += 1
+
+        disc = (row.get("discipline") or sheet).strip().upper()
+        if disc:
+            disciplines.add(disc)
+
+        correct_key = (row.get("correct_alternative_key") or "").strip().upper()
+        alts_present = [k for k in ("a", "b", "c", "d", "e") if row.get(f"alt_{k}")]
+        if (
+            correct_key not in ("A", "B", "C", "D", "E")
+            or len(alts_present) < 2
+            or correct_key.lower() not in alts_present
+        ):
+            questions_invalid += 1
+
+    sample_rows = rows[:100]
+    estimated_duplicates = sum(
+        1 for r in sample_rows if Question.find_duplicate(r.get("statement", ""))
+    )
+    if len(rows) > 100:
+        estimated_duplicates = int(estimated_duplicates * len(rows) / 100)
+
+    return jsonify(
+        total_questions=len(rows),
+        by_sheet=[{"sheet": k, "count": v} for k, v in by_sheet.items()],
+        disciplines=sorted(disciplines),
+        questions_with_image=questions_with_image,
+        images_in_zip=len(image_map),
+        estimated_duplicates=estimated_duplicates,
+        questions_invalid=questions_invalid,
+    ), 200
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# XLSX IMPORT — inicia job assíncrono
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@admin_questions_bp.route("/questions/xlsx-import", methods=["POST"])
+@jwt_required()
+def xlsx_import():
+    """
+    Inicia importação assíncrona via Celery.
+
+    1. Salva o arquivo no S3 (temp)
+    2. Cria job no Redis com status "queued"
+    3. Dispara Celery task
+    4. Retorna job_id imediatamente
+
+    Use GET /questions/import-jobs/<job_id> para acompanhar.
+    """
+    err = _require_super_admin()
+    if err:
+        return err
+
+    if "file" not in request.files:
+        return jsonify(error="Campo 'file' ausente no form-data."), 400
+
+    uploaded = request.files["file"]
+    filename = (uploaded.filename or "").lower()
+    enrich_ai = request.form.get("enrich_ai", "true").lower() == "true"
+
+    if not filename.endswith((".xlsx", ".zip")):
+        return jsonify(error="Formato inválido. Envie um .xlsx ou .zip."), 400
+
+    file_bytes = uploaded.read()
+    ext = "zip" if filename.endswith(".zip") else "xlsx"
+
+    # Valida o arquivo antes de enfileirar
+    if ext == "zip":
+        try:
+            xlsx_bytes, _ = _extract_zip(file_bytes)
+        except zipfile.BadZipFile:
+            return jsonify(error="Arquivo zip corrompido."), 400
+        if not xlsx_bytes:
+            return jsonify(error="Nenhum xlsx encontrado no zip."), 400
+    else:
+        xlsx_bytes = file_bytes
+
+    try:
+        rows = _parse_xlsx_sheets(xlsx_bytes)
+    except Exception as e:
+        return jsonify(error=f"Erro ao ler o xlsx: {str(e)}"), 400
+
+    if not rows:
+        return jsonify(error="Nenhuma questão encontrada no arquivo."), 400
+
+    # Salva arquivo no S3 para o Celery processar
+    job_id = str(uuid4())
+    s3_key = _upload_file_to_s3_temp(file_bytes, job_id, ext)
+    if not s3_key:
+        return jsonify(error="Erro ao salvar arquivo para processamento."), 500
+
+    # Cria estado inicial do job no Redis
+    job_data = {
+        "job_id": job_id,
+        "status": "queued",          # queued | running | done | cancelled | error
+        "filename": uploaded.filename,
+        "total": len(rows),
+        "processed": 0,
+        "inserted": 0,
+        "updated": 0,
+        "skipped": 0,
+        "errors": 0,
+        "images_uploaded": 0,
+        "enrich_ai": enrich_ai,
+        "s3_key": s3_key,
+        "s3_ext": ext,
+        "error_details": [],
+        "started_at": datetime.utcnow().isoformat(),
+        "finished_at": None,
+    }
+    _job_set(job_id, job_data)
+
+    # Dispara task Celery
+    try:
+        from app.tasks import process_xlsx_import_job
+        process_xlsx_import_job.delay(job_id)
+    except Exception as e:
+        current_app.logger.error(f"Celery dispatch error: {e}")
+        return jsonify(error="Erro ao enfileirar processamento."), 500
+
+    return jsonify(job_id=job_id, total=len(rows), status="queued"), 202
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# JOB STATUS E CONTROLE
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@admin_questions_bp.route("/questions/import-jobs/<job_id>", methods=["GET"])
+@jwt_required()
+def get_import_job(job_id: str):
+    """Retorna o estado atual de um job de importação."""
+    err = _require_super_admin()
+    if err:
+        return err
+
+    job = _job_get(job_id)
+    if not job:
+        return jsonify(error="Job não encontrado ou expirado."), 404
+
+    # Calcula percentual
+    total = job.get("total", 0)
+    processed = job.get("processed", 0)
+    job["progress_pct"] = round((processed / total * 100), 1) if total else 0
+
+    return jsonify(job), 200
+
+
+@admin_questions_bp.route("/questions/import-jobs/<job_id>/cancel", methods=["POST"])
+@jwt_required()
+def cancel_import_job(job_id: str):
+    """Solicita cancelamento de um job em execução."""
+    err = _require_super_admin()
+    if err:
+        return err
+
+    job = _job_get(job_id)
+    if not job:
+        return jsonify(error="Job não encontrado ou expirado."), 404
+
+    if job.get("status") not in ("queued", "running"):
+        return jsonify(error=f"Job já finalizado com status '{job.get('status')}'."), 400
+
+    # Seta flag de cancelamento — o Celery checa a cada 10 linhas
+    _job_set_cancel(job_id)
+
+    job["status"] = "cancelling"
+    _job_set(job_id, job)
+
+    return jsonify(message="Cancelamento solicitado.", job_id=job_id), 200
+
+
+@admin_questions_bp.route("/questions/import-jobs", methods=["GET"])
+@jwt_required()
+def list_import_jobs():
+    """
+    Lista os últimos jobs de importação (busca por padrão de chave no Redis).
+    Retorna até 20 jobs ordenados do mais recente.
+    """
+    err = _require_super_admin()
+    if err:
+        return err
+
+    try:
+        keys = redis_client.keys("import_job:*")
+        # Filtra apenas as chaves de job (não as de cancelamento)
+        job_keys = [k for k in keys if not k.endswith(b":cancel")]
+    except Exception:
+        return jsonify(jobs=[]), 200
+
+    jobs = []
+    for key in job_keys:
+        try:
+            raw = redis_client.get(key)
+            if raw:
+                job = json.loads(raw)
+                total = job.get("total", 0)
+                processed = job.get("processed", 0)
+                job["progress_pct"] = round((processed / total * 100), 1) if total else 0
+                jobs.append(job)
+        except Exception:
+            continue
+
+    # Ordena por data de início, mais recente primeiro
+    jobs.sort(key=lambda j: j.get("started_at", ""), reverse=True)
+
+    return jsonify(jobs=jobs[:20]), 200
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BULK IMPORT (JSON — mantido para compatibilidade)
+# ══════════════════════════════════════════════════════════════════════════════
 
 
 @admin_questions_bp.route("/questions/bulk-import", methods=["POST"])
@@ -582,205 +884,9 @@ def bulk_import():
     )
 
 
-# ── XLSX Preview ──────────────────────────────────────────────────────────────
-
-
-@admin_questions_bp.route("/questions/xlsx-preview", methods=["POST"])
-@jwt_required()
-def xlsx_preview():
-    """
-    Recebe .xlsx ou .zip e retorna resumo sem importar nada.
-    Detecta imagens embutidas nas células automaticamente.
-    """
-    err = _require_super_admin()
-    if err:
-        return err
-
-    if "file" not in request.files:
-        return jsonify(error="Campo 'file' ausente."), 400
-
-    uploaded = request.files["file"]
-    filename = (uploaded.filename or "").lower()
-
-    if not filename.endswith((".xlsx", ".zip")):
-        return jsonify(error="Formato inválido. Envie um .xlsx ou .zip."), 400
-
-    file_bytes = uploaded.read()
-    image_map: dict[str, bytes] = {}
-
-    if filename.endswith(".zip"):
-        try:
-            xlsx_bytes, image_map = _extract_zip(file_bytes)
-        except zipfile.BadZipFile:
-            return jsonify(error="Arquivo zip corrompido."), 400
-        if not xlsx_bytes:
-            return jsonify(error="Nenhum xlsx encontrado no zip."), 400
-    else:
-        xlsx_bytes = file_bytes
-
-    try:
-        rows = _parse_xlsx_sheets(xlsx_bytes)
-    except Exception as e:
-        return jsonify(error=f"Erro ao ler xlsx: {str(e)}"), 400
-
-    if not rows:
-        return jsonify(error="Nenhuma questão encontrada no arquivo."), 400
-
-    by_sheet: dict[str, int] = {}
-    disciplines: set[str] = set()
-    questions_with_image = 0
-    questions_invalid = 0
-
-    for row in rows:
-        sheet = row.get("_sheet", "?")
-        by_sheet[sheet] = by_sheet.get(sheet, 0) + 1
-
-        # Conta imagens: embutidas na célula OU referenciadas por nome
-        has_img = bool(row.get("_embedded_image_bytes")) or bool(row.get("image_file"))
-        if has_img:
-            questions_with_image += 1
-
-        disc = (row.get("discipline") or sheet).strip().upper()
-        if disc:
-            disciplines.add(disc)
-
-        # Conta questões que falhariam na validação do gabarito/alternativas
-        correct_key = (row.get("correct_alternative_key") or "").strip().upper()
-        alts_present = [k for k in ("a", "b", "c", "d", "e") if row.get(f"alt_{k}")]
-        if (
-            correct_key not in ("A", "B", "C", "D", "E")
-            or len(alts_present) < 2
-            or correct_key.lower() not in alts_present
-        ):
-            questions_invalid += 1
-
-    sample_rows = rows[:100]
-    estimated_duplicates = sum(
-        1 for r in sample_rows if Question.find_duplicate(r.get("statement", ""))
-    )
-    if len(rows) > 100:
-        estimated_duplicates = int(estimated_duplicates * len(rows) / 100)
-
-    return jsonify(
-        total_questions=len(rows),
-        by_sheet=[{"sheet": k, "count": v} for k, v in by_sheet.items()],
-        disciplines=sorted(disciplines),
-        questions_with_image=questions_with_image,
-        images_in_zip=len(image_map),
-        estimated_duplicates=estimated_duplicates,
-        questions_invalid=questions_invalid,  # quantas serão rejeitadas na importação
-    ), 200
-
-
-# ── XLSX Import ───────────────────────────────────────────────────────────────
-
-
-@admin_questions_bp.route("/questions/xlsx-import", methods=["POST"])
-@jwt_required()
-def xlsx_import():
-    """
-    Importa questões a partir de .xlsx ou .zip.
-
-    Detecta imagens automaticamente de duas formas:
-      1. Imagem embutida diretamente na célula (mais comum — basta subir o .xlsx)
-      2. Nome de arquivo na coluna "Imagem" + imagem no .zip
-
-    Multipart form-data:
-      file       — .xlsx  OU  .zip (xlsx + pasta images/)
-      enrich_ai  — "true"|"false"  (default: true)
-    """
-    err = _require_super_admin()
-    if err:
-        return err
-
-    if "file" not in request.files:
-        return jsonify(error="Campo 'file' ausente no form-data."), 400
-
-    uploaded = request.files["file"]
-    filename = (uploaded.filename or "").lower()
-    enrich_ai = request.form.get("enrich_ai", "true").lower() == "true"
-
-    if not filename.endswith((".xlsx", ".zip")):
-        return jsonify(error="Formato inválido. Envie um .xlsx ou .zip."), 400
-
-    file_bytes = uploaded.read()
-    image_map: dict[str, bytes] = {}
-
-    if filename.endswith(".zip"):
-        try:
-            xlsx_bytes, image_map = _extract_zip(file_bytes)
-        except zipfile.BadZipFile:
-            return jsonify(error="Arquivo zip corrompido."), 400
-        if not xlsx_bytes:
-            return jsonify(error="Nenhum xlsx encontrado no zip."), 400
-    else:
-        xlsx_bytes = file_bytes
-
-    try:
-        rows = _parse_xlsx_sheets(xlsx_bytes)
-    except Exception as e:
-        current_app.logger.error(f"xlsx parse error: {e}")
-        return jsonify(error=f"Erro ao ler o xlsx: {str(e)}"), 400
-
-    if not rows:
-        return jsonify(error="Nenhuma questão encontrada no arquivo."), 400
-
-    inserted = updated = skipped = errors = 0
-    images_uploaded = 0
-    error_details = []
-
-    for row in rows:
-        try:
-            status, img_uploaded = _insert_or_update_question(row, image_map, enrich_ai)
-            if status == "inserted":
-                inserted += 1
-            elif status == "updated":
-                updated += 1
-            elif status == "skipped":
-                skipped += 1
-            elif status.startswith("error:"):
-                errors += 1
-                error_details.append({
-                    "row": row.get("_row"),
-                    "sheet": row.get("_sheet"),
-                    "statement_preview": (row.get("statement") or "")[:60],
-                    "error": status[6:],
-                })
-            if img_uploaded:
-                images_uploaded += 1
-
-            if (inserted + updated) % 50 == 0:
-                db.session.commit()
-
-        except Exception as e:
-            db.session.rollback()
-            errors += 1
-            error_details.append({
-                "row": row.get("_row"),
-                "sheet": row.get("_sheet"),
-                "statement_preview": (row.get("statement") or "")[:60],
-                "error": str(e),
-            })
-
-    try:
-        db.session.commit()
-    except Exception as e:
-        db.session.rollback()
-        return jsonify(error=f"Erro ao salvar no banco: {str(e)}"), 500
-
-    return jsonify(
-        inserted=inserted,
-        updated=updated,
-        skipped=skipped,
-        errors=errors,
-        images_uploaded=images_uploaded,
-        total_rows=len(rows),
-        enrich_ai=enrich_ai,
-        error_details=error_details[:20],
-    ), 200
-
-
-# ── Listagem ──────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# LISTAGEM, REVISÃO E STATS (inalterados)
+# ══════════════════════════════════════════════════════════════════════════════
 
 
 @admin_questions_bp.route("/questions", methods=["GET"])
@@ -887,9 +993,6 @@ def list_pending():
     )
 
 
-# ── Ações de revisão ──────────────────────────────────────────────────────────
-
-
 @admin_questions_bp.route("/questions/<question_id>/approve", methods=["POST"])
 @jwt_required()
 def approve_question(question_id):
@@ -955,9 +1058,6 @@ def delete_question(question_id):
     q.is_active = False
     db.session.commit()
     return jsonify(message="Questão desativada.")
-
-
-# ── Stats ─────────────────────────────────────────────────────────────────────
 
 
 @admin_questions_bp.route("/questions/stats", methods=["GET"])
@@ -1026,3 +1126,82 @@ def bank_stats():
         by_difficulty=by_difficulty,
         top_submitters=top_submitters_named,
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# REPROCESSAMENTO GEMINI — re-enfileira questões não processadas
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@admin_questions_bp.route("/questions/reprocess-gemini", methods=["POST"])
+@jwt_required()
+def reprocess_gemini():
+    """
+    Re-enfileira todas as questões do banco global que ainda não foram
+    processadas pelo Gemini (gemini_enriched=False ou tip=NULL).
+
+    Útil para recuperar questões importadas antes do fix do tenant_id=None.
+
+    Body (opcional):
+      { "limit": 500 }   — máximo de questões a enfileirar (default: todas)
+
+    Retorna: { queued: N, already_enriched: M, total: T }
+    """
+    err = _require_super_admin()
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    limit = int(data.get("limit", 9999))
+
+    # Busca questões do banco global ainda não processadas
+    pending = (
+        db.session.query(Question)
+        .filter(
+            Question.source_type == QuestionSourceType.BANK,
+            Question.tenant_id.is_(None),
+            Question.review_status == ReviewStatus.APPROVED,
+            Question.is_active == True,
+            # gemini_enriched=False OU coluna ainda não existe (tip=NULL como proxy)
+            db.or_(
+                Question.gemini_enriched == False,
+                Question.tip.is_(None),
+            )
+        )
+        .limit(limit)
+        .all()
+    )
+
+    already_enriched = (
+        db.session.query(func.count(Question.id))
+        .filter(
+            Question.source_type == QuestionSourceType.BANK,
+            Question.tenant_id.is_(None),
+            Question.review_status == ReviewStatus.APPROVED,
+            Question.gemini_enriched == True,
+        )
+        .scalar()
+    ) or 0
+
+    queued = 0
+    errors = 0
+
+    try:
+        from app.tasks import analyze_question_task
+        for q in pending:
+            try:
+                analyze_question_task.delay(q.id, None)
+                queued += 1
+            except Exception as e:
+                current_app.logger.error(f"reprocess_gemini: falha ao enfileirar {q.id}: {e}")
+                errors += 1
+    except ImportError:
+        return jsonify(error="Celery não disponível."), 500
+
+    return jsonify(
+        queued=queued,
+        already_enriched=already_enriched,
+        errors=errors,
+        total=queued + already_enriched,
+        message=f"{queued} questões enfileiradas para processamento Gemini.",
+    ), 200

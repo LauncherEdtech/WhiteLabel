@@ -836,6 +836,7 @@ def _serialize_question(
         "topic": question.topic,
         "subtopic": question.subtopic,
         "tip": question.tip,
+        "image_url": question.image_url,
         "difficulty": question.difficulty.value if question.difficulty else None,
         "exam_board": question.exam_board,
         "exam_year": question.exam_year,

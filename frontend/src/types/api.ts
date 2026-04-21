@@ -100,6 +100,7 @@ export interface Question {
     exam_name: string | null;
     competency: string | null;
     tip: string | null;
+    image_url: string | null;
     alternatives: Alternative[];
     correct_alternative_key?: string;
     correct_justification?: string | null;

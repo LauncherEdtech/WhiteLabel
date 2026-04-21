@@ -589,6 +589,16 @@ function QuestionCard({ question, result, onSelect, isLoading, onShowTip, tipVis
                     </div>
                 )}
 
+                {(question as any).image_url && (
+                    <div className="rounded-lg overflow-hidden border border-border bg-muted/30">
+                        <img
+                            src={(question as any).image_url}
+                            alt="Imagem da questão"
+                            className="w-full max-h-80 object-contain"
+                        />
+                    </div>
+                )}
+
                 <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">
                     {question.statement}
                 </p>
@@ -716,6 +726,16 @@ function ListQuestionCard({ question, index, result, onSelect, isLoading, tipVis
                 {question.context && (
                     <div className="p-3 rounded-lg bg-muted text-xs text-muted-foreground leading-relaxed border-l-2 border-primary/30 whitespace-pre-wrap">
                         {question.context}
+                    </div>
+                )}
+
+                {(question as any).image_url && (
+                    <div className="rounded-lg overflow-hidden border border-border bg-muted/30">
+                        <img
+                            src={(question as any).image_url}
+                            alt="Imagem da questão"
+                            className="w-full max-h-64 object-contain"
+                        />
                     </div>
                 )}
 

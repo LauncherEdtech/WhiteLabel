@@ -247,8 +247,24 @@ def analyze_question_task(self, question_id, tenant_id):
     try:
         from app.extensions import db
         from app.models.question import Question, QuestionSourceType
-        question = Question.query.filter_by(id=question_id, tenant_id=tenant_id, is_deleted=False, source_type=QuestionSourceType.BANK).first()
+        question = (
+            Question.query
+            .filter(
+                Question.id == question_id,
+                # filter_by(tenant_id=None) gera "= NULL" — nunca funciona
+                # .is_(None) gera corretamente "IS NULL"
+                Question.tenant_id.is_(None) if tenant_id is None
+                else (Question.tenant_id == tenant_id),
+                Question.is_deleted == False,
+                Question.source_type == QuestionSourceType.BANK,
+            )
+            .first()
+        )
         if not question:
+            logger.warning(
+                f"analyze_question_task: questão {question_id} não encontrada "
+                f"(tenant_id={'NULL' if tenant_id is None else tenant_id})"
+            )
             return {"status": "skipped", "reason": "not_found_or_wrong_type"}
         from app.services.gemini_service import GeminiService
         svc = GeminiService()

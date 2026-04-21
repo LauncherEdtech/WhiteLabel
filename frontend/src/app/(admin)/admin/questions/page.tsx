@@ -1,7 +1,7 @@
 // frontend/src/app/(admin)/admin/questions/page.tsx
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
 import { Card, CardContent } from "@/components/ui/card";
@@ -14,8 +14,8 @@ import { useForm } from "react-hook-form";
 import { cn } from "@/lib/utils/cn";
 import {
     BookOpen, Upload, Clock, CheckCircle2, XCircle, AlertCircle,
-    ChevronDown, ChevronUp, Search, Filter, FileJson, FileSpreadsheet,
-    BarChart3, Building2, Loader2, Plus, Sparkles, Image, Download,
+    ChevronDown, ChevronUp, FileJson, FileSpreadsheet,
+    BarChart3, Building2, Loader2, Plus, Sparkles, Image,
     FolderOpen, Layers,
 } from "lucide-react";
 import { QUERY_KEYS } from "@/lib/constants/queryKeys";
@@ -64,6 +64,25 @@ interface XlsxPreview {
     questions_with_image: number;
     images_in_zip: number;
     estimated_duplicates: number;
+    questions_invalid?: number;
+}
+
+interface ImportJob {
+    job_id: string;
+    status: "queued" | "running" | "done" | "cancelled" | "cancelling" | "error";
+    filename: string;
+    total: number;
+    processed: number;
+    inserted: number;
+    updated: number;
+    skipped: number;
+    errors: number;
+    images_uploaded: number;
+    enrich_ai: boolean;
+    progress_pct: number;
+    started_at: string;
+    finished_at: string | null;
+    error_details: { row?: number; sheet?: string; statement_preview?: string; error: string }[];
 }
 
 const DIFFICULTY_LABEL: Record<string, string> = {
@@ -164,6 +183,22 @@ export default function AdminQuestionsPage() {
 // ── Stats Panel ───────────────────────────────────────────────────────────────
 
 function StatsPanel({ stats, isLoading }: { stats?: BankStats; isLoading: boolean }) {
+    const toast = useToast();
+    const queryClient = useQueryClient();
+
+    const reprocessMutation = useMutation({
+        mutationFn: () =>
+            apiClient.post("/admin/questions/reprocess-gemini").then(r => r.data),
+        onSuccess: (data: any) => {
+            toast.success(
+                `${data.queued} questões enfileiradas`,
+                "Processamento Gemini iniciado em background"
+            );
+            queryClient.invalidateQueries({ queryKey: QUERY_KEYS.QUESTION_BANK_STATS });
+        },
+        onError: () => toast.error("Erro ao enfileirar reprocessamento"),
+    });
+
     if (isLoading) {
         return (
             <div className="grid grid-cols-4 gap-4">
@@ -196,6 +231,33 @@ function StatsPanel({ stats, isLoading }: { stats?: BankStats; isLoading: boolea
                     </Card>
                 ))}
             </div>
+
+            {/* Ação de reprocessamento Gemini */}
+            <Card className="border-primary/20 bg-primary/5">
+                <CardContent className="p-4 flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-3">
+                        <Sparkles className="h-5 w-5 text-primary shrink-0" />
+                        <div>
+                            <p className="text-sm font-medium text-foreground">
+                                Reprocessar com Gemini
+                            </p>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                                Re-enfileira questões sem tópico, dica ou distratores para o Gemini processar
+                            </p>
+                        </div>
+                    </div>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        loading={reprocessMutation.isPending}
+                        onClick={() => reprocessMutation.mutate()}
+                        className="shrink-0"
+                    >
+                        <Sparkles className="h-3.5 w-3.5" />
+                        Reprocessar
+                    </Button>
+                </CardContent>
+            </Card>
 
             {Object.keys(stats.by_discipline ?? {}).length > 0 && (
                 <Card>
@@ -230,7 +292,6 @@ function ImportPanel() {
 
     return (
         <div className="space-y-4">
-            {/* Header */}
             <div className="flex items-center justify-between">
                 <p className="text-sm text-muted-foreground">
                     Importe questões via planilha Excel (.xlsx / .zip com imagens) ou JSON gerado pelo notebook Gemini.
@@ -279,34 +340,30 @@ function XlsxImportPanel() {
     const [preview, setPreview] = useState<XlsxPreview | null>(null);
     const [previewLoading, setPreviewLoading] = useState(false);
     const [enrichAi, setEnrichAi] = useState(true);
-    const [result, setResult] = useState<ImportResult | null>(null);
+    const [activeJobId, setActiveJobId] = useState<string | null>(null);
     const [showSingle, setShowSingle] = useState(false);
 
-    const importMutation = useMutation({
+    const startJobMutation = useMutation({
         mutationFn: (formData: FormData) =>
             apiClient.post("/admin/questions/xlsx-import", formData, {
                 headers: { "Content-Type": "multipart/form-data" },
             }).then(r => r.data),
-        onSuccess: (data: ImportResult) => {
-            setResult(data);
-            queryClient.invalidateQueries({ queryKey: QUERY_KEYS.QUESTION_BANK_STATS });
-            if (data.errors > 0) {
-                toast.error(`Import concluído com ${data.errors} erro(s)`);
-            } else {
-                const imgMsg = data.images_uploaded ? ` · ${data.images_uploaded} imagem(ns) no S3` : "";
-                toast.success(
-                    `${data.inserted} questões importadas`,
-                    `${data.skipped} duplicatas ignoradas${imgMsg}`
-                );
-            }
+        onSuccess: (data: { job_id: string; total: number }) => {
+            setActiveJobId(data.job_id);
+            setFile(null);
+            setPreview(null);
+            if (fileRef.current) fileRef.current.value = "";
+            toast.success("Importação iniciada!", `${data.total} questões enfileiradas`);
         },
-        onError: () => toast.error("Erro ao processar o arquivo"),
+        onError: (e: any) => {
+            const msg = e?.response?.data?.error ?? "Erro ao iniciar importação";
+            toast.error("Erro", msg);
+        },
     });
 
     async function loadPreview(f: File) {
         setPreviewLoading(true);
         setPreview(null);
-        setResult(null);
         const fd = new FormData();
         fd.append("file", f);
         try {
@@ -324,12 +381,12 @@ function XlsxImportPanel() {
     }
 
     function handleFile(f: File) {
-        const valid = f.name.endsWith(".xlsx") || f.name.endsWith(".zip");
-        if (!valid) {
+        if (!f.name.endsWith(".xlsx") && !f.name.endsWith(".zip")) {
             toast.error("Formato inválido", "Aceito: .xlsx ou .zip contendo xlsx + imagens");
             return;
         }
         setFile(f);
+        setActiveJobId(null);
         loadPreview(f);
     }
 
@@ -343,7 +400,7 @@ function XlsxImportPanel() {
     function reset() {
         setFile(null);
         setPreview(null);
-        setResult(null);
+        setActiveJobId(null);
         if (fileRef.current) fileRef.current.value = "";
     }
 
@@ -352,7 +409,7 @@ function XlsxImportPanel() {
         const fd = new FormData();
         fd.append("file", file);
         fd.append("enrich_ai", enrichAi ? "true" : "false");
-        importMutation.mutate(fd);
+        startJobMutation.mutate(fd);
     }
 
     const isZip = file?.name.endsWith(".zip") ?? false;
@@ -367,15 +424,14 @@ function XlsxImportPanel() {
                         <div className="space-y-2 text-sm">
                             <p className="font-semibold text-foreground">Formato esperado da planilha</p>
                             <p className="text-muted-foreground text-xs leading-relaxed">
-                                Cada aba do Excel vira uma disciplina. Colunas reconhecidas (case-insensitive):
+                                Cada aba do Excel vira uma disciplina. Imagens embutidas nas células são detectadas automaticamente.
                             </p>
                             <div className="flex flex-wrap gap-1.5">
                                 {[
                                     "Disciplina", "Enunciado", "Imagem*", "fonte",
                                     "Alternativa A", "Alternativa B", "Alternativa C", "Alternativa D", "Alternativa E*",
                                     "Gabarito",
-                                    "Tópico*", "Subtópico*", "Dificuldade*", "Banca*", "Ano*", "Concurso*",
-                                    "Dica*", "Justificativa*", "Justificativa A…E*",
+                                    "Tópico*", "Dificuldade*", "Banca*", "Ano*", "Dica*", "Justificativa A…E*",
                                 ].map(col => (
                                     <span
                                         key={col}
@@ -391,21 +447,11 @@ function XlsxImportPanel() {
                                     </span>
                                 ))}
                             </div>
-                            <div className="flex items-start gap-2 pt-1">
-                                <Image className="h-3.5 w-3.5 text-muted-foreground mt-0.5 shrink-0" />
-                                <p className="text-xs text-muted-foreground">
-                                    Para questões com imagem: coloque o nome do arquivo na coluna{" "}
-                                    <code className="font-mono">Imagem</code> (ex: <code>q001.png</code>) e envie tudo
-                                    compactado em um <strong>.zip</strong> contendo o xlsx + pasta com as imagens.
-                                    O sistema faz o upload automático para o S3.
-                                </p>
-                            </div>
                         </div>
                     </div>
                 </CardContent>
             </Card>
 
-            {/* Questão única */}
             <div className="flex justify-end">
                 <Button variant="outline" size="sm" onClick={() => setShowSingle(true)}>
                     <Plus className="h-4 w-4" />
@@ -413,8 +459,19 @@ function XlsxImportPanel() {
                 </Button>
             </div>
 
-            {/* Dropzone */}
-            {!file && (
+            {/* Job em andamento */}
+            {activeJobId && (
+                <ImportJobMonitor
+                    jobId={activeJobId}
+                    onDone={() => {
+                        queryClient.invalidateQueries({ queryKey: QUERY_KEYS.QUESTION_BANK_STATS });
+                    }}
+                    onNewImport={reset}
+                />
+            )}
+
+            {/* Dropzone — esconde quando há job ativo ou arquivo selecionado */}
+            {!activeJobId && !file && (
                 <div
                     onDragOver={e => { e.preventDefault(); setDragging(true); }}
                     onDragLeave={() => setDragging(false)}
@@ -448,7 +505,6 @@ function XlsxImportPanel() {
                 </div>
             )}
 
-            {/* Loading preview */}
             {previewLoading && (
                 <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
                     <Loader2 className="h-5 w-5 animate-spin" />
@@ -456,8 +512,8 @@ function XlsxImportPanel() {
                 </div>
             )}
 
-            {/* Preview card */}
-            {preview && file && !previewLoading && (
+            {/* Preview */}
+            {preview && file && !previewLoading && !activeJobId && (
                 <div className="space-y-3">
                     <div className="flex items-center justify-between p-4 rounded-xl bg-success/5 border border-success/20">
                         <div className="flex items-center gap-3">
@@ -466,20 +522,13 @@ function XlsxImportPanel() {
                                 : <FileSpreadsheet className="h-5 w-5 text-success" />
                             }
                             <div>
-                                <p className="text-sm font-semibold text-foreground">
-                                    {file.name}
-                                </p>
-                                <p className="text-xs text-muted-foreground">
-                                    {(file.size / 1024).toFixed(0)} KB
-                                </p>
+                                <p className="text-sm font-semibold text-foreground">{file.name}</p>
+                                <p className="text-xs text-muted-foreground">{(file.size / 1024).toFixed(0)} KB</p>
                             </div>
                         </div>
-                        <Button variant="ghost" size="sm" onClick={reset}>
-                            Trocar arquivo
-                        </Button>
+                        <Button variant="ghost" size="sm" onClick={reset}>Trocar arquivo</Button>
                     </div>
 
-                    {/* Stats do preview */}
                     <div className="grid grid-cols-2 gap-3">
                         <Card>
                             <CardContent className="p-4">
@@ -501,37 +550,29 @@ function XlsxImportPanel() {
                         </Card>
                     </div>
 
-                    {/* Abas */}
                     <div className="p-3 rounded-lg bg-muted/40 border border-border space-y-1.5">
-                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                            Abas encontradas
-                        </p>
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Abas encontradas</p>
                         <div className="space-y-1">
                             {preview.by_sheet.map(({ sheet, count }) => (
                                 <div key={sheet} className="flex items-center justify-between">
                                     <span className="text-xs text-foreground truncate mr-2">{sheet}</span>
-                                    <span className="text-xs font-mono text-muted-foreground shrink-0">
-                                        {count} questões
-                                    </span>
+                                    <span className="text-xs font-mono text-muted-foreground shrink-0">{count} questões</span>
                                 </div>
                             ))}
                         </div>
                     </div>
 
-                    {/* Avisos */}
                     <div className="space-y-2">
+                        {(preview.questions_invalid ?? 0) > 0 && (
+                            <div className="flex items-center gap-2 p-2.5 rounded-lg text-xs bg-destructive/10 border border-destructive/20 text-destructive">
+                                <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                                {preview.questions_invalid} questão(ões) com gabarito inválido — serão rejeitadas na importação
+                            </div>
+                        )}
                         {preview.questions_with_image > 0 && (
-                            <div className={cn(
-                                "flex items-center gap-2 p-2.5 rounded-lg text-xs",
-                                preview.images_in_zip > 0
-                                    ? "bg-success/10 border border-success/20 text-success"
-                                    : "bg-warning/10 border border-warning/20 text-warning"
-                            )}>
+                            <div className="flex items-center gap-2 p-2.5 rounded-lg text-xs bg-success/10 border border-success/20 text-success">
                                 <Image className="h-3.5 w-3.5 shrink-0" />
-                                {preview.images_in_zip > 0
-                                    ? `${preview.questions_with_image} questão(ões) com imagem — ${preview.images_in_zip} imagem(ns) encontrada(s) no zip, prontas para upload S3`
-                                    : `${preview.questions_with_image} questão(ões) com imagem — envie um .zip com o xlsx + pasta de imagens para fazer upload automático`
-                                }
+                                {preview.questions_with_image} questão(ões) com imagem detectada(s) — upload automático para S3
                             </div>
                         )}
                         {preview.estimated_duplicates > 0 && (
@@ -542,14 +583,11 @@ function XlsxImportPanel() {
                         )}
                     </div>
 
-                    {/* Opção AI */}
                     <div
                         onClick={() => setEnrichAi(!enrichAi)}
                         className={cn(
                             "flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all select-none",
-                            enrichAi
-                                ? "border-primary/30 bg-primary/5"
-                                : "border-border hover:border-border/80"
+                            enrichAi ? "border-primary/30 bg-primary/5" : "border-border hover:border-border/80"
                         )}
                     >
                         <div className={cn(
@@ -559,46 +597,355 @@ function XlsxImportPanel() {
                             <Sparkles className={cn("h-4 w-4", enrichAi ? "text-primary" : "text-muted-foreground")} />
                         </div>
                         <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-foreground">
-                                Enriquecer com IA (Gemini)
-                            </p>
+                            <p className="text-sm font-medium text-foreground">Enriquecer com IA (Gemini)</p>
                             <p className="text-xs text-muted-foreground mt-0.5">
-                                Preenche automaticamente tópico, dica e justificativas dos distratores quando ausentes
+                                Preenche tópico, dica e justificativas dos distratores em background
                             </p>
                         </div>
-                        <div className={cn(
-                            "h-5 w-9 rounded-full transition-colors shrink-0",
-                            enrichAi ? "bg-primary" : "bg-muted-foreground/30"
-                        )}>
-                            <div className={cn(
-                                "h-4 w-4 bg-white rounded-full shadow-sm mt-0.5 transition-transform",
-                                enrichAi ? "translate-x-4 ml-0.5" : "translate-x-0.5"
-                            )} />
+                        <div className={cn("h-5 w-9 rounded-full transition-colors shrink-0", enrichAi ? "bg-primary" : "bg-muted-foreground/30")}>
+                            <div className={cn("h-4 w-4 bg-white rounded-full shadow-sm mt-0.5 transition-transform", enrichAi ? "translate-x-4 ml-0.5" : "translate-x-0.5")} />
                         </div>
                     </div>
 
-                    {/* Botão importar */}
                     <Button
                         className="w-full"
                         size="lg"
-                        disabled={importMutation.isPending}
-                        loading={importMutation.isPending}
+                        disabled={startJobMutation.isPending}
+                        loading={startJobMutation.isPending}
                         onClick={handleImport}
                     >
-                        {importMutation.isPending
-                            ? `Importando ${preview.total_questions.toLocaleString("pt-BR")} questões...`
+                        {startJobMutation.isPending
+                            ? "Enviando arquivo..."
                             : `Importar ${preview.total_questions.toLocaleString("pt-BR")} questões`
                         }
                     </Button>
                 </div>
             )}
 
-            {/* Resultado */}
-            {result && (
-                <ImportResultCard result={result} onReset={reset} />
-            )}
-
             <SingleQuestionModal open={showSingle} onClose={() => setShowSingle(false)} />
+            <ImportJobHistory activeJobId={activeJobId} />
+        </div>
+    );
+}
+
+// ── Import Job Monitor ────────────────────────────────────────────────────────
+
+function ImportJobMonitor({
+    jobId,
+    onDone,
+    onNewImport,
+}: {
+    jobId: string;
+    onDone: () => void;
+    onNewImport: () => void;
+}) {
+    const toast = useToast();
+    const [job, setJob] = useState<ImportJob | null>(null);
+    const [showErrors, setShowErrors] = useState(false);
+    const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+    const isFinished = (status: string) =>
+        ["done", "cancelled", "error"].includes(status);
+
+    useEffect(() => {
+        async function poll() {
+            try {
+                const res = await apiClient.get(`/admin/questions/import-jobs/${jobId}`);
+                const data: ImportJob = res.data;
+                setJob(data);
+                if (isFinished(data.status)) {
+                    if (intervalRef.current) clearInterval(intervalRef.current);
+                    if (data.status === "done") onDone();
+                }
+            } catch {
+                // silencia erros de polling
+            }
+        }
+
+        poll();
+        intervalRef.current = setInterval(poll, 2000);
+        return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+    }, [jobId]);
+
+    const cancelMutation = useMutation({
+        mutationFn: () =>
+            apiClient.post(`/admin/questions/import-jobs/${jobId}/cancel`).then(r => r.data),
+        onSuccess: () => toast.success("Cancelamento solicitado"),
+        onError: () => toast.error("Erro ao cancelar"),
+    });
+
+    if (!job) {
+        return (
+            <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin" />
+                <p className="text-sm">Conectando ao job...</p>
+            </div>
+        );
+    }
+
+    const statusConfig = {
+        queued: { label: "Na fila", color: "text-muted-foreground", bg: "bg-muted/50", icon: Clock },
+        running: { label: "Processando", color: "text-primary", bg: "bg-primary/5", icon: Loader2 },
+        cancelling: { label: "Cancelando...", color: "text-warning", bg: "bg-warning/5", icon: Loader2 },
+        done: { label: "Concluído", color: "text-success", bg: "bg-success/5", icon: CheckCircle2 },
+        cancelled: { label: "Cancelado", color: "text-warning", bg: "bg-warning/5", icon: XCircle },
+        error: { label: "Erro", color: "text-destructive", bg: "bg-destructive/5", icon: AlertCircle },
+    };
+
+    const cfg = statusConfig[job.status] ?? statusConfig.queued;
+    const StatusIcon = cfg.icon;
+    const finished = isFinished(job.status);
+    const pct = job.progress_pct ?? 0;
+
+    const elapsed = job.started_at
+        ? Math.floor((Date.now() - new Date(job.started_at).getTime()) / 1000)
+        : 0;
+    const elapsedStr = elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
+
+    return (
+        <Card className={cn("border", cfg.bg)}>
+            <CardContent className="p-5 space-y-4">
+                <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-center gap-2 min-w-0">
+                        <StatusIcon className={cn(
+                            "h-5 w-5 shrink-0",
+                            cfg.color,
+                            (job.status === "running" || job.status === "cancelling") && "animate-spin"
+                        )} />
+                        <div className="min-w-0">
+                            <p className={cn("text-sm font-semibold", cfg.color)}>{cfg.label}</p>
+                            <p className="text-xs text-muted-foreground truncate mt-0.5">{job.filename}</p>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                        {!finished && job.status !== "cancelling" && (
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                className="text-destructive border-destructive/30 hover:bg-destructive/10"
+                                loading={cancelMutation.isPending}
+                                onClick={() => cancelMutation.mutate()}
+                            >
+                                <XCircle className="h-3.5 w-3.5" />
+                                Cancelar
+                            </Button>
+                        )}
+                        {finished && (
+                            <Button variant="outline" size="sm" onClick={onNewImport}>
+                                Nova importação
+                            </Button>
+                        )}
+                    </div>
+                </div>
+
+                <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                        <span>{job.processed.toLocaleString("pt-BR")} / {job.total.toLocaleString("pt-BR")} questões</span>
+                        <span className="font-mono">{pct}% · {elapsedStr}</span>
+                    </div>
+                    <div className="h-2 rounded-full bg-muted overflow-hidden">
+                        <div
+                            className={cn(
+                                "h-full rounded-full transition-all duration-500",
+                                job.status === "done" && "bg-success",
+                                job.status === "cancelled" && "bg-warning",
+                                job.status === "error" && "bg-destructive",
+                                (job.status === "running" || job.status === "queued" || job.status === "cancelling") && "bg-primary",
+                            )}
+                            style={{ width: `${Math.max(pct, job.status === "queued" ? 2 : 0)}%` }}
+                        />
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-4 gap-2 text-center">
+                    {[
+                        { label: "Inseridas", value: job.inserted, color: "text-success" },
+                        { label: "Atualizadas", value: job.updated, color: "text-primary" },
+                        { label: "Ignoradas", value: job.skipped, color: "text-warning" },
+                        { label: "Erros", value: job.errors, color: "text-destructive" },
+                    ].map(({ label, value, color }) => (
+                        <div key={label} className="p-2 rounded-lg bg-background/60">
+                            <p className={cn("text-lg font-bold font-display", color)}>
+                                {value.toLocaleString("pt-BR")}
+                            </p>
+                            <p className="text-xs text-muted-foreground">{label}</p>
+                        </div>
+                    ))}
+                </div>
+
+                {job.images_uploaded > 0 && (
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-success/10 border border-success/20">
+                        <Image className="h-3.5 w-3.5 text-success shrink-0" />
+                        <p className="text-xs text-success font-medium">
+                            {job.images_uploaded} imagem(ns) salva(s) no S3
+                        </p>
+                    </div>
+                )}
+
+                {job.enrich_ai && job.status === "done" && (
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/5 border border-primary/20">
+                        <Sparkles className="h-3.5 w-3.5 text-primary shrink-0" />
+                        <p className="text-xs text-primary">
+                            Enriquecimento IA em processamento em background
+                        </p>
+                    </div>
+                )}
+
+                {job.error_details.length > 0 && (
+                    <div className="space-y-1">
+                        <button
+                            onClick={() => setShowErrors(!showErrors)}
+                            className="flex items-center gap-1.5 text-xs text-destructive font-medium hover:underline"
+                        >
+                            <AlertCircle className="h-3.5 w-3.5" />
+                            {job.errors} erro{job.errors !== 1 ? "s" : ""} — clique para {showErrors ? "ocultar" : "ver detalhes"}
+                        </button>
+                        {showErrors && (
+                            <div className="p-3 rounded-lg bg-destructive/5 border border-destructive/20 space-y-1.5 max-h-48 overflow-y-auto">
+                                {job.error_details.map((e, i) => (
+                                    <div key={i} className="text-xs">
+                                        {e.sheet && (
+                                            <span className="font-mono text-muted-foreground">[{e.sheet} L{e.row}]{" "}</span>
+                                        )}
+                                        {e.statement_preview && (
+                                            <span className="text-foreground">{e.statement_preview}... </span>
+                                        )}
+                                        <span className="text-destructive">{e.error}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                )}
+            </CardContent>
+        </Card>
+    );
+}
+
+// ── Import Job History ────────────────────────────────────────────────────────
+
+function ImportJobHistory({ activeJobId }: { activeJobId: string | null }) {
+    const [open, setOpen] = useState(false);
+
+    const { data, isLoading, refetch } = useQuery<{ jobs: ImportJob[] }>({
+        queryKey: ["import-jobs-history"],
+        queryFn: () => apiClient.get("/admin/questions/import-jobs").then(r => r.data),
+        enabled: open,
+        refetchInterval: open ? 5000 : false,
+        staleTime: 0,
+    });
+
+    const jobs = (data?.jobs ?? []).filter(j => j.job_id !== activeJobId);
+
+    const statusConfig: Record<string, { label: string; color: string; dot: string }> = {
+        queued: { label: "Na fila", color: "text-muted-foreground", dot: "bg-muted-foreground" },
+        running: { label: "Processando", color: "text-primary", dot: "bg-primary animate-pulse" },
+        cancelling: { label: "Cancelando", color: "text-warning", dot: "bg-warning animate-pulse" },
+        done: { label: "Concluído", color: "text-success", dot: "bg-success" },
+        cancelled: { label: "Cancelado", color: "text-warning", dot: "bg-warning" },
+        error: { label: "Erro", color: "text-destructive", dot: "bg-destructive" },
+    };
+
+    function formatDate(iso: string) {
+        return new Date(iso).toLocaleString("pt-BR", {
+            day: "2-digit", month: "2-digit",
+            hour: "2-digit", minute: "2-digit",
+        });
+    }
+
+    function formatDuration(started: string, finished: string | null) {
+        const end = finished ? new Date(finished) : new Date();
+        const secs = Math.floor((end.getTime() - new Date(started).getTime()) / 1000);
+        if (secs < 60) return `${secs}s`;
+        return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+    }
+
+    return (
+        <div className="border-t border-border pt-3">
+            <button
+                onClick={() => { setOpen(!open); if (!open) refetch(); }}
+                className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors w-full"
+            >
+                <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-180")} />
+                <span className="font-medium">Histórico de importações</span>
+                {jobs.length > 0 && !open && (
+                    <span className="ml-auto font-mono">{jobs.length} job{jobs.length !== 1 ? "s" : ""}</span>
+                )}
+            </button>
+
+            {open && (
+                <div className="mt-3 space-y-2">
+                    {isLoading && (
+                        <div className="flex items-center gap-2 py-4 text-muted-foreground justify-center">
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            <p className="text-xs">Carregando histórico...</p>
+                        </div>
+                    )}
+
+                    {!isLoading && jobs.length === 0 && (
+                        <p className="text-xs text-muted-foreground text-center py-4">
+                            Nenhum histórico encontrado (jobs expiram após 24h)
+                        </p>
+                    )}
+
+                    {jobs.map(job => {
+                        const cfg = statusConfig[job.status] ?? statusConfig.queued;
+                        return (
+                            <div key={job.job_id} className="p-3 rounded-lg border border-border bg-muted/20 space-y-2">
+                                <div className="flex items-start gap-2 justify-between">
+                                    <div className="flex items-center gap-2 min-w-0">
+                                        <span className={cn("h-2 w-2 rounded-full shrink-0 mt-0.5", cfg.dot)} />
+                                        <div className="min-w-0">
+                                            <p className="text-xs font-medium text-foreground truncate">{job.filename}</p>
+                                            <p className="text-xs text-muted-foreground mt-0.5">
+                                                {formatDate(job.started_at)}
+                                                {" · "}
+                                                {formatDuration(job.started_at, job.finished_at)}
+                                                {" · "}
+                                                <span className={cfg.color}>{cfg.label}</span>
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <span className="text-xs font-mono text-muted-foreground shrink-0">
+                                        {job.total.toLocaleString("pt-BR")} questões
+                                    </span>
+                                </div>
+
+                                <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                                    <div
+                                        className={cn(
+                                            "h-full rounded-full transition-all",
+                                            job.status === "done" && "bg-success",
+                                            job.status === "cancelled" && "bg-warning",
+                                            job.status === "error" && "bg-destructive",
+                                            ["running", "queued", "cancelling"].includes(job.status) && "bg-primary",
+                                        )}
+                                        style={{ width: `${job.progress_pct}%` }}
+                                    />
+                                </div>
+
+                                <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
+                                    {job.inserted > 0 && (
+                                        <span className="text-success font-medium">+{job.inserted.toLocaleString("pt-BR")} inseridas</span>
+                                    )}
+                                    {job.updated > 0 && (
+                                        <span className="text-primary font-medium">{job.updated.toLocaleString("pt-BR")} atualizadas</span>
+                                    )}
+                                    {job.skipped > 0 && (
+                                        <span>{job.skipped.toLocaleString("pt-BR")} ignoradas</span>
+                                    )}
+                                    {job.errors > 0 && (
+                                        <span className="text-destructive font-medium">{job.errors.toLocaleString("pt-BR")} erros</span>
+                                    )}
+                                    {job.images_uploaded > 0 && (
+                                        <span className="text-success">{job.images_uploaded} imagem(ns) S3</span>
+                                    )}
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
         </div>
     );
 }

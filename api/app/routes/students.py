@@ -9,11 +9,16 @@ from flask_jwt_extended import get_jwt, jwt_required
 from marshmallow import Schema, ValidationError, fields, validate, EXCLUDE
 
 from app.extensions import db, limiter
-from app.middleware.tenant import get_current_tenant, require_tenant
+from app.middleware.tenant import get_current_tenant, require_tenant, resolve_tenant
 from app.models.course import Course, CourseEnrollment
 from app.models.user import User, UserRole
 
 students_bp = Blueprint("students", __name__)
+
+
+@students_bp.before_request
+def before_request():
+    resolve_tenant()
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -67,11 +72,7 @@ def _require_producer(claims: dict):
 
 
 def _generate_student_password(name: str, phone: str | None) -> str:
-    """
-    Gera senha inicial: PrimeiroNome + 4 últimos dígitos do telefone.
-    Se não houver telefone, usa 4 dígitos aleatórios.
-    Exemplo: "Maria Silva" + "(61) 99999-1234" → "Maria1234"
-    """
+    """PrimeiroNome + 4 últimos dígitos do telefone (ou 4 aleatórios)."""
     first_name = name.strip().split()[0].capitalize()
     if phone:
         digits = re.sub(r"\D", "", phone)
@@ -79,6 +80,79 @@ def _generate_student_password(name: str, phone: str | None) -> str:
     else:
         suffix = f"{secrets.randbelow(10000):04d}"
     return f"{first_name}{suffix}"
+
+
+# ── Exportar template de importação ──────────────────────────────────────────
+
+
+@students_bp.route("/export-template", methods=["GET"])
+@jwt_required()
+@require_tenant
+def export_template():
+    claims = get_jwt()
+    err = _require_producer(claims)
+    if err:
+        return err
+
+    fmt = request.args.get("format", "csv").lower()
+    headers = ["Nome", "Email", "Telefone", "Matricular em (nome do curso)"]
+    sample = [["Maria Silva", "maria@email.com", "(61) 99999-1234", "Curso de Direito"]]
+
+    if fmt == "json":
+        import json as _json
+        from flask import Response
+        data = [dict(zip(["nome", "email", "telefone", "matricular_em"], row)) for row in sample]
+        return Response(
+            _json.dumps(data, ensure_ascii=False, indent=2),
+            mimetype="application/json",
+            headers={"Content-Disposition": "attachment; filename=modelo_alunos.json"},
+        )
+
+    if fmt == "xlsx":
+        import io
+        from flask import Response
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, PatternFill, Alignment
+            from openpyxl.utils import get_column_letter
+        except ImportError:
+            return jsonify({"error": "openpyxl não instalado"}), 500
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Alunos"
+        col_widths = [25, 30, 18, 35]
+        for col, h in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col, value=h)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", start_color="4F46E5")
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            ws.column_dimensions[get_column_letter(col)].width = col_widths[col - 1]
+        ws.row_dimensions[1].height = 22
+        for row in sample:
+            ws.append(row)
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return Response(
+            buf.read(),
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=modelo_alunos.xlsx"},
+        )
+
+    # Default: CSV com BOM
+    import io as _io
+    import csv as _csv
+    from flask import Response
+    buf = _io.StringIO()
+    writer = _csv.writer(buf)
+    writer.writerow(headers)
+    writer.writerows(sample)
+    return Response(
+        "\ufeff" + buf.getvalue(),
+        mimetype="text/csv; charset=utf-8-sig",
+        headers={"Content-Disposition": "attachment; filename=modelo_alunos.csv"},
+    )
 
 
 # ── Listar alunos ─────────────────────────────────────────────────────────────
@@ -94,7 +168,6 @@ def list_students():
         return err
 
     tenant = get_current_tenant()
-
     page = int(request.args.get("page", 1))
     per_page = min(int(request.args.get("per_page", 20)), 100)
     search = request.args.get("search", "").strip()
@@ -124,11 +197,9 @@ def list_students():
         query = query.filter(User.id.in_(enrolled_ids))
 
     total = query.count()
-    students = query.order_by(User.name).paginate(
-        page=page, per_page=per_page, error_out=False
-    )
-
+    students = query.order_by(User.name).paginate(page=page, per_page=per_page, error_out=False)
     student_ids = [s.id for s in students.items]
+
     enrollments = CourseEnrollment.query.filter(
         CourseEnrollment.user_id.in_(student_ids),
         CourseEnrollment.tenant_id == tenant.id,
@@ -143,33 +214,26 @@ def list_students():
     result = []
     for s in students.items:
         prefs = s.preferences or {}
-        result.append(
-            {
-                "id": s.id,
-                "name": s.name,
-                "email": s.email,
-                "phone": prefs.get("phone"),
-                "is_active": s.is_active,
-                "email_verified": s.email_verified,
-                "created_at": s.created_at.isoformat() if s.created_at else None,
-                "enrolled_course_ids": enrollment_map.get(s.id, []),
-            }
-        )
+        result.append({
+            "id": s.id,
+            "name": s.name,
+            "email": s.email,
+            "phone": prefs.get("phone"),
+            "is_active": s.is_active,
+            "email_verified": s.email_verified,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+            "enrolled_course_ids": enrollment_map.get(s.id, []),
+        })
 
-    return (
-        jsonify(
-            {
-                "students": result,
-                "pagination": {
-                    "page": page,
-                    "per_page": per_page,
-                    "total": total,
-                    "pages": students.pages,
-                },
-            }
-        ),
-        200,
-    )
+    return jsonify({
+        "students": result,
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "pages": students.pages,
+        },
+    }), 200
 
 
 # ── Criar aluno (individual) ──────────────────────────────────────────────────
@@ -180,39 +244,20 @@ def list_students():
 @require_tenant
 @limiter.limit("50 per hour")
 def create_student():
-    """
-    Produtor cria um novo aluno.
-    - Gera senha aleatória se não fornecida.
-    - Matricula automaticamente nos cursos indicados.
-    - Envia email de boas-vindas via Celery + Resend.
-    """
     claims = get_jwt()
     err = _require_producer(claims)
     if err:
         return err
 
     tenant = get_current_tenant()
-
     schema = CreateStudentSchema()
     try:
         data = schema.load(request.get_json(force=True) or {})
     except ValidationError as e:
         return jsonify({"error": "validation_error", "details": e.messages}), 400
 
-    if User.query.filter_by(
-        email=data["email"].lower().strip(),
-        tenant_id=tenant.id,
-        is_deleted=False,
-    ).first():
-        return (
-            jsonify(
-                {
-                    "error": "email_taken",
-                    "message": "Já existe um aluno com este e-mail.",
-                }
-            ),
-            409,
-        )
+    if User.query.filter_by(email=data["email"].lower().strip(), tenant_id=tenant.id, is_deleted=False).first():
+        return jsonify({"error": "email_taken", "message": "Já existe um aluno com este e-mail."}), 409
 
     plain_password = data["password"]
     if not plain_password:
@@ -243,35 +288,23 @@ def create_student():
 
     enrolled_courses = []
     for course_id in data.get("course_ids", []):
-        course = Course.query.filter_by(
-            id=course_id,
-            tenant_id=tenant.id,
-            is_deleted=False,
-        ).first()
+        course = Course.query.filter_by(id=course_id, tenant_id=tenant.id, is_deleted=False).first()
         if course:
-            enrollment = CourseEnrollment(
-                tenant_id=tenant.id,
-                course_id=course.id,
-                user_id=student.id,
-                is_active=True,
-            )
-            db.session.add(enrollment)
+            db.session.add(CourseEnrollment(
+                tenant_id=tenant.id, course_id=course.id, user_id=student.id, is_active=True,
+            ))
             enrolled_courses.append(course.name)
 
     db.session.commit()
 
-    # Envia email de boas-vindas
     try:
         from app.tasks import send_welcome_email
-        platform_domain = __import__("flask").current_app.config.get("PLATFORM_DOMAIN", "launcheredu.com.br")
+        import flask
+        platform_domain = flask.current_app.config.get("PLATFORM_DOMAIN", "launcheredu.com.br")
         platform_url = f"https://{tenant.slug}.{platform_domain}/login"
         branding = tenant.branding or {}
         send_welcome_email.delay(
-            student.email,
-            student.name,
-            plain_password,
-            tenant.name,
-            platform_url,
+            student.email, student.name, plain_password, tenant.name, platform_url,
             course_names=enrolled_courses,
             logo_url=branding.get("logo_url", ""),
             primary_color=branding.get("primary_color", "#4F46E5"),
@@ -280,26 +313,21 @@ def create_student():
         import logging
         logging.getLogger(__name__).error(f"send_welcome_email dispatch falhou: {e}")
 
-    return (
-        jsonify(
-            {
-                "message": "Aluno criado com sucesso.",
-                "student": {
-                    "id": student.id,
-                    "name": student.name,
-                    "email": student.email,
-                    "phone": data.get("phone"),
-                    "is_active": student.is_active,
-                    "enrolled_courses": enrolled_courses,
-                },
-                "temp_password": plain_password if not data["password"] else None,
-            }
-        ),
-        201,
-    )
+    return jsonify({
+        "message": "Aluno criado com sucesso.",
+        "student": {
+            "id": student.id,
+            "name": student.name,
+            "email": student.email,
+            "phone": data.get("phone"),
+            "is_active": student.is_active,
+            "enrolled_courses": enrolled_courses,
+        },
+        "temp_password": plain_password if not data["password"] else None,
+    }), 201
 
 
-# ── Importar lista de alunos (bulk) ───────────────────────────────────────────
+# ── Importar lista de alunos (bulk JSON) ─────────────────────────────────────
 
 
 @students_bp.route("/bulk", methods=["POST"])
@@ -308,10 +336,36 @@ def create_student():
 @limiter.limit("10 per hour")
 def bulk_import_students():
     """
-    Importa uma lista de alunos de uma vez.
+    Importa lista de alunos via JSON.
     Processa cada aluno individualmente — erros não bloqueiam os demais.
-    Gera senha: PrimeiroNome + 4 últimos dígitos do telefone (ou 4 dígitos aleatórios).
-    Retorna resultado detalhado por linha.
+    """
+    claims = get_jwt()
+    err = _require_producer(claims)
+    if err:
+        return err
+
+    tenant = get_current_tenant()
+    schema = BulkImportSchema()
+    try:
+        data = schema.load(request.get_json(force=True) or {})
+    except ValidationError as e:
+        return jsonify({"error": "validation_error", "details": e.messages}), 400
+
+    return _process_bulk(tenant, data["students"], data.get("course_ids", []))
+
+
+# ── Importar arquivo (CSV / XLSX / JSON) ─────────────────────────────────────
+
+
+@students_bp.route("/bulk-upload", methods=["POST"])
+@jwt_required()
+@require_tenant
+@limiter.limit("10 per hour")
+def bulk_upload_students():
+    """
+    Importa alunos via upload de arquivo (CSV, XLSX ou JSON).
+    O arquivo deve ter colunas: Nome, Email, Telefone (opcional).
+    course_ids enviados como form field separado (JSON string).
     """
     claims = get_jwt()
     err = _require_producer(claims)
@@ -320,40 +374,102 @@ def bulk_import_students():
 
     tenant = get_current_tenant()
 
-    schema = BulkImportSchema()
-    try:
-        data = schema.load(request.get_json(force=True) or {})
-    except ValidationError as e:
-        return jsonify({"error": "validation_error", "details": e.messages}), 400
+    if "file" not in request.files:
+        return jsonify({"error": "bad_request", "message": "Nenhum arquivo enviado."}), 400
 
-    students_input = data["students"]
-    course_ids = data.get("course_ids", [])
+    file = request.files["file"]
+    filename = (file.filename or "").lower()
+
+    import json as _json
+    course_ids = []
+    raw_ids = request.form.get("course_ids", "[]")
+    try:
+        course_ids = _json.loads(raw_ids)
+    except Exception:
+        pass
+
+    students_input = []
+
+    try:
+        if filename.endswith(".json"):
+            import json as _json2
+            content = file.read().decode("utf-8")
+            rows = _json2.loads(content)
+            for row in rows:
+                name = row.get("nome") or row.get("name") or row.get("Nome") or ""
+                email = row.get("email") or row.get("Email") or ""
+                phone = row.get("telefone") or row.get("phone") or row.get("Telefone") or None
+                if name and email:
+                    students_input.append({"name": name.strip(), "email": email.strip(), "phone": phone})
+
+        elif filename.endswith(".csv"):
+            import io as _io
+            import csv as _csv
+            content = file.read().decode("utf-8-sig")  # remove BOM se presente
+            reader = _csv.DictReader(_io.StringIO(content))
+            for row in reader:
+                name = row.get("Nome") or row.get("nome") or row.get("name") or ""
+                email = row.get("Email") or row.get("email") or ""
+                phone = row.get("Telefone") or row.get("telefone") or row.get("phone") or None
+                if name and email:
+                    students_input.append({"name": name.strip(), "email": email.strip(), "phone": phone or None})
+
+        elif filename.endswith(".xlsx") or filename.endswith(".xls"):
+            import io as _io
+            try:
+                import openpyxl
+            except ImportError:
+                return jsonify({"error": "openpyxl não instalado"}), 500
+            wb = openpyxl.load_workbook(_io.BytesIO(file.read()), read_only=True)
+            ws = wb.active
+            headers = []
+            for i, row in enumerate(ws.iter_rows(values_only=True)):
+                if i == 0:
+                    headers = [str(c).strip() if c else "" for c in row]
+                    continue
+                if not any(row):
+                    continue
+                row_dict = dict(zip(headers, row))
+                name = str(row_dict.get("Nome") or row_dict.get("nome") or row_dict.get("name") or "").strip()
+                email = str(row_dict.get("Email") or row_dict.get("email") or "").strip()
+                phone = str(row_dict.get("Telefone") or row_dict.get("telefone") or row_dict.get("phone") or "").strip() or None
+                if name and email and email != "None":
+                    students_input.append({"name": name, "email": email, "phone": phone})
+        else:
+            return jsonify({"error": "bad_request", "message": "Formato inválido. Use CSV, XLSX ou JSON."}), 400
+
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"bulk_upload parse error: {e}")
+        return jsonify({"error": "parse_error", "message": f"Erro ao processar arquivo: {str(e)}"}), 400
 
     if not students_input:
-        return jsonify({"error": "bad_request", "message": "Nenhum aluno informado."}), 400
+        return jsonify({"error": "bad_request", "message": "Nenhum aluno encontrado no arquivo."}), 400
 
     if len(students_input) > 500:
         return jsonify({"error": "bad_request", "message": "Máximo de 500 alunos por importação."}), 400
 
-    # Busca cursos válidos uma vez só
+    return _process_bulk(tenant, students_input, course_ids)
+
+
+# ── Helper de processamento bulk ──────────────────────────────────────────────
+
+
+def _process_bulk(tenant, students_input: list, course_ids: list):
+    """Processa lista de alunos, criando cada um individualmente."""
+    import flask
+
     valid_courses = []
     course_names = []
     for course_id in course_ids:
-        course = Course.query.filter_by(
-            id=course_id,
-            tenant_id=tenant.id,
-            is_deleted=False,
-        ).first()
+        course = Course.query.filter_by(id=course_id, tenant_id=tenant.id, is_deleted=False).first()
         if course:
             valid_courses.append(course)
             course_names.append(course.name)
 
-    # Busca branding uma vez
     branding = tenant.branding or {}
     logo_url = branding.get("logo_url", "")
     primary_color = branding.get("primary_color", "#4F46E5")
-
-    import flask
     platform_domain = flask.current_app.config.get("PLATFORM_DOMAIN", "launcheredu.com.br")
     platform_url = f"https://{tenant.slug}.{platform_domain}/login"
 
@@ -370,7 +486,6 @@ def bulk_import_students():
             "error": None,
         }
 
-        # Verifica duplicata
         existing = User.query.filter_by(
             email=item["email"].lower().strip(),
             tenant_id=tenant.id,
@@ -384,10 +499,8 @@ def bulk_import_students():
             results.append(row_result)
             continue
 
-        # Gera senha
         plain_password = _generate_student_password(item["name"], item.get("phone"))
 
-        # Cria aluno
         preferences = {
             "timezone": "America/Sao_Paulo",
             "notifications_email": True,
@@ -411,33 +524,24 @@ def bulk_import_students():
             db.session.add(student)
             db.session.flush()
 
-            # Matricula nos cursos
             for course in valid_courses:
-                enrollment = CourseEnrollment(
+                db.session.add(CourseEnrollment(
                     tenant_id=tenant.id,
                     course_id=course.id,
                     user_id=student.id,
                     is_active=True,
-                )
-                db.session.add(enrollment)
+                ))
 
             db.session.commit()
 
-            # Dispara email de boas-vindas
             try:
                 from app.tasks import send_welcome_email
                 send_welcome_email.delay(
-                    student.email,
-                    student.name,
-                    plain_password,
-                    tenant.name,
-                    platform_url,
-                    course_names=course_names,
-                    logo_url=logo_url,
-                    primary_color=primary_color,
+                    student.email, student.name, plain_password, tenant.name, platform_url,
+                    course_names=course_names, logo_url=logo_url, primary_color=primary_color,
                 )
             except Exception:
-                pass  # Email falha silenciosamente — aluno foi criado
+                pass
 
             row_result["status"] = "success"
             success_count += 1
@@ -477,17 +581,11 @@ def get_student(student_id: str):
 
     tenant = get_current_tenant()
     student = User.query.filter_by(
-        id=student_id,
-        tenant_id=tenant.id,
-        role=UserRole.STUDENT.value,
-        is_deleted=False,
+        id=student_id, tenant_id=tenant.id, role=UserRole.STUDENT.value, is_deleted=False,
     ).first_or_404()
 
     enrollments = CourseEnrollment.query.filter_by(
-        user_id=student.id,
-        tenant_id=tenant.id,
-        is_active=True,
-        is_deleted=False,
+        user_id=student.id, tenant_id=tenant.id, is_active=True, is_deleted=False,
     ).all()
 
     enrolled_courses = []
@@ -497,25 +595,18 @@ def get_student(student_id: str):
             enrolled_courses.append({"id": course.id, "name": course.name})
 
     prefs = student.preferences or {}
-    return (
-        jsonify(
-            {
-                "student": {
-                    "id": student.id,
-                    "name": student.name,
-                    "email": student.email,
-                    "phone": prefs.get("phone"),
-                    "is_active": student.is_active,
-                    "email_verified": student.email_verified,
-                    "created_at": (
-                        student.created_at.isoformat() if student.created_at else None
-                    ),
-                    "enrolled_courses": enrolled_courses,
-                }
-            }
-        ),
-        200,
-    )
+    return jsonify({
+        "student": {
+            "id": student.id,
+            "name": student.name,
+            "email": student.email,
+            "phone": prefs.get("phone"),
+            "is_active": student.is_active,
+            "email_verified": student.email_verified,
+            "created_at": student.created_at.isoformat() if student.created_at else None,
+            "enrolled_courses": enrolled_courses,
+        }
+    }), 200
 
 
 # ── Editar aluno ──────────────────────────────────────────────────────────────
@@ -532,10 +623,7 @@ def update_student(student_id: str):
 
     tenant = get_current_tenant()
     student = User.query.filter_by(
-        id=student_id,
-        tenant_id=tenant.id,
-        role=UserRole.STUDENT.value,
-        is_deleted=False,
+        id=student_id, tenant_id=tenant.id, role=UserRole.STUDENT.value, is_deleted=False,
     ).first_or_404()
 
     schema = UpdateStudentSchema()
@@ -559,23 +647,17 @@ def update_student(student_id: str):
         flag_modified(student, "preferences")
 
     db.session.commit()
-
     prefs = student.preferences or {}
-    return (
-        jsonify(
-            {
-                "message": "Aluno atualizado.",
-                "student": {
-                    "id": student.id,
-                    "name": student.name,
-                    "email": student.email,
-                    "phone": prefs.get("phone"),
-                    "is_active": student.is_active,
-                },
-            }
-        ),
-        200,
-    )
+    return jsonify({
+        "message": "Aluno atualizado.",
+        "student": {
+            "id": student.id,
+            "name": student.name,
+            "email": student.email,
+            "phone": prefs.get("phone"),
+            "is_active": student.is_active,
+        },
+    }), 200
 
 
 # ── Gerenciar matrículas de um aluno ──────────────────────────────────────────
@@ -585,11 +667,6 @@ def update_student(student_id: str):
 @jwt_required()
 @require_tenant
 def manage_student_enrollments(student_id: str):
-    """
-    Substitui as matrículas do aluno.
-    Body: { "course_ids": ["id1", "id2"] }
-    Cursos ausentes na lista têm matrícula desativada.
-    """
     claims = get_jwt()
     err = _require_producer(claims)
     if err:
@@ -597,19 +674,14 @@ def manage_student_enrollments(student_id: str):
 
     tenant = get_current_tenant()
     student = User.query.filter_by(
-        id=student_id,
-        tenant_id=tenant.id,
-        role=UserRole.STUDENT.value,
-        is_deleted=False,
+        id=student_id, tenant_id=tenant.id, role=UserRole.STUDENT.value, is_deleted=False,
     ).first_or_404()
 
     data = request.get_json(force=True) or {}
     new_course_ids = set(data.get("course_ids", []))
 
     existing_enrollments = CourseEnrollment.query.filter_by(
-        user_id=student.id,
-        tenant_id=tenant.id,
-        is_deleted=False,
+        user_id=student.id, tenant_id=tenant.id, is_deleted=False,
     ).all()
 
     existing_map = {e.course_id: e for e in existing_enrollments}
@@ -618,17 +690,10 @@ def manage_student_enrollments(student_id: str):
         if course_id in existing_map:
             existing_map[course_id].is_active = True
         else:
-            course = Course.query.filter_by(
-                id=course_id,
-                tenant_id=tenant.id,
-                is_deleted=False,
-            ).first()
+            course = Course.query.filter_by(id=course_id, tenant_id=tenant.id, is_deleted=False).first()
             if course:
                 db.session.add(CourseEnrollment(
-                    tenant_id=tenant.id,
-                    course_id=course_id,
-                    user_id=student.id,
-                    is_active=True,
+                    tenant_id=tenant.id, course_id=course_id, user_id=student.id, is_active=True,
                 ))
 
     for course_id, enrollment in existing_map.items():
