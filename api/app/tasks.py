@@ -618,45 +618,40 @@ def process_xlsx_import_job(self, job_id: str):
 )
 def run_reprocess_gemini_job(self, job_id: str, limit: int = 9999):
     """
-    Processa questões pendentes de enriquecimento Gemini uma a uma.
-    Usa Redis diretamente (sem importar rotas) para evitar quebra de contexto Flask.
+    Processa questões pendentes de enriquecimento Gemini.
+
+    Usa celery_app.flask_app (guardado pelo celery_worker.py) para garantir
+    contexto Flask — solução robusta que não depende do ContextTask.
     """
     import json
     import logging
     from datetime import datetime
 
     logger = logging.getLogger(__name__)
+    flask_app = getattr(celery_app, "flask_app", None)
 
-    from app.extensions import db, redis_client
-    from app.models.question import Question, QuestionSourceType, ReviewStatus
-    from app.services.gemini_service import GeminiService
+    from app.extensions import redis_client
+    _JOB_TTL = 86400
 
-    _JOB_TTL = 86400  # 24h
-
-    # ── Helpers Redis inline (evita importar rotas que quebram app context) ──
-
-    def _job_key(jid):
-        return f"reprocess_job:{jid}"
-
-    def _job_cancel_key(jid):
-        return f"reprocess_job:{jid}:cancel"
+    def _jk(jid): return f"reprocess_job:{jid}"
+    def _jck(jid): return f"reprocess_job:{jid}:cancel"
 
     def _job_get(jid):
         try:
-            raw = redis_client.get(_job_key(jid))
+            raw = redis_client.get(_jk(jid))
             return json.loads(raw) if raw else None
         except Exception:
             return None
 
     def _job_set(jid, data):
         try:
-            redis_client.setex(_job_key(jid), _JOB_TTL, json.dumps(data))
+            redis_client.setex(_jk(jid), _JOB_TTL, json.dumps(data))
         except Exception:
             pass
 
     def _job_is_cancelled(jid):
         try:
-            return bool(redis_client.exists(_job_cancel_key(jid)))
+            return bool(redis_client.exists(_jck(jid)))
         except Exception:
             return False
 
@@ -670,114 +665,124 @@ def run_reprocess_gemini_job(self, job_id: str, limit: int = 9999):
     job["status"] = "running"
     _job_set(job_id, job)
 
-    # Busca todas as questões pendentes de uma vez (IDs apenas para não travar memória)
-    pending_ids = [
-        r[0] for r in db.session.query(Question.id)
-        .filter(
-            Question.source_type == QuestionSourceType.BANK,
-            Question.tenant_id.is_(None),
-            Question.review_status == ReviewStatus.APPROVED,
-            Question.is_active == True,
-            Question.tip.is_(None),
-        )
-        .limit(limit)
-        .all()
-    ]
+    def _run_with_context():
+        """Lógica principal — sempre executada dentro de um app_context."""
+        from app.extensions import db
+        from app.models.question import Question, QuestionSourceType, ReviewStatus
+        from app.services.gemini_service import GeminiService
 
-    job["total"] = len(pending_ids)
-    _job_set(job_id, job)
-
-    svc = GeminiService()
-
-    for i, question_id in enumerate(pending_ids):
-        # Checa cancelamento a cada 5 questões
-        if i % 5 == 0 and _job_is_cancelled(job_id):
-            logger.info(f"[reprocess_gemini_job] Cancelado na questão {i}")
-            job["status"] = "cancelled"
-            job["finished_at"] = datetime.utcnow().isoformat()
-            _job_set(job_id, job)
-            return
-
-        try:
-            question = db.session.get(Question, question_id)
-            if not question:
-                job["skipped"] += 1
-                continue
-
-            # Chama Gemini diretamente (síncrono para controlar progresso)
-            alternatives_text = "\n".join(
-                f"{alt.key}) {alt.text}"
-                for alt in sorted(question.alternatives, key=lambda a: a.key)
+        pending_ids = [
+            r[0] for r in db.session.query(Question.id)
+            .filter(
+                Question.source_type == QuestionSourceType.BANK,
+                Question.tenant_id.is_(None),
+                Question.review_status == ReviewStatus.APPROVED,
+                Question.is_active == True,
+                Question.tip.is_(None),
             )
-            analysis = svc.analyze_question_metadata(
-                statement=question.statement,
-                alternatives_text=alternatives_text,
-                correct_key=question.correct_alternative_key,
-                exam_board=question.exam_board or "",
-            )
+            .limit(limit)
+            .all()
+        ]
 
-            if not analysis:
+        job["total"] = len(pending_ids)
+        _job_set(job_id, job)
+
+        svc = GeminiService()
+
+        for i, question_id in enumerate(pending_ids):
+            if i % 5 == 0 and _job_is_cancelled(job_id):
+                logger.info(f"[reprocess_gemini_job] Cancelado na questão {i}")
+                job["status"] = "cancelled"
+                job["finished_at"] = datetime.utcnow().isoformat()
+                _job_set(job_id, job)
+                return
+
+            try:
+                question = db.session.get(Question, question_id)
+                if not question:
+                    job["skipped"] += 1
+                    continue
+
+                alternatives_text = "\n".join(
+                    f"{alt.key}) {alt.text}"
+                    for alt in sorted(question.alternatives, key=lambda a: a.key)
+                )
+                analysis = svc.analyze_question_metadata(
+                    statement=question.statement,
+                    alternatives_text=alternatives_text,
+                    correct_key=question.correct_alternative_key,
+                    exam_board=question.exam_board or "",
+                )
+
+                if not analysis:
+                    job["errors"] += 1
+                    if len(job["error_details"]) < 30:
+                        job["error_details"].append({
+                            "question_id": question_id,
+                            "error": "Gemini não retornou análise",
+                        })
+                    continue
+
+                if not question.discipline and analysis.get("discipline"):
+                    question.discipline = analysis["discipline"]
+                if not question.topic and analysis.get("topic"):
+                    question.topic = analysis["topic"]
+                if not question.subtopic and analysis.get("subtopic"):
+                    question.subtopic = analysis["subtopic"]
+                if not question.tip and analysis.get("tip"):
+                    question.tip = analysis["tip"]
+                if not question.correct_justification and analysis.get("correct_justification"):
+                    question.correct_justification = analysis["correct_justification"]
+                if analysis.get("distractor_justifications"):
+                    justifications = analysis["distractor_justifications"]
+                    for alt in question.alternatives:
+                        if not alt.distractor_justification and alt.key != question.correct_alternative_key:
+                            alt.distractor_justification = (
+                                justifications.get(alt.key) or
+                                justifications.get(alt.key.upper())
+                            )
+
+                try:
+                    question.gemini_enriched = True
+                except Exception:
+                    pass
+
+                db.session.commit()
+                job["enriched"] += 1
+
+            except Exception as e:
+                db.session.rollback()
                 job["errors"] += 1
                 if len(job["error_details"]) < 30:
                     job["error_details"].append({
                         "question_id": question_id,
-                        "error": "Gemini não retornou análise",
+                        "error": str(e)[:120],
                     })
-                continue
+                logger.warning(f"[reprocess_gemini_job] Erro na questão {question_id}: {e}")
 
-            # Aplica análise
-            if not question.discipline and analysis.get("discipline"):
-                question.discipline = analysis["discipline"]
-            if not question.topic and analysis.get("topic"):
-                question.topic = analysis["topic"]
-            if not question.subtopic and analysis.get("subtopic"):
-                question.subtopic = analysis["subtopic"]
-            if not question.tip and analysis.get("tip"):
-                question.tip = analysis["tip"]
-            if not question.correct_justification and analysis.get("correct_justification"):
-                question.correct_justification = analysis["correct_justification"]
-            if analysis.get("distractor_justifications"):
-                justifications = analysis["distractor_justifications"]
-                for alt in question.alternatives:
-                    if not alt.distractor_justification and alt.key != question.correct_alternative_key:
-                        alt.distractor_justification = justifications.get(alt.key) or justifications.get(alt.key.upper())
+            job["processed"] = i + 1
+            if i % 5 == 0:
+                _job_set(job_id, job)
 
-            # Marca como enriquecida (se a coluna existir)
-            try:
-                question.gemini_enriched = True
-            except Exception:
-                pass  # Coluna ainda não migrada — ignora
+        job["status"] = "done"
+        job["finished_at"] = datetime.utcnow().isoformat()
+        _job_set(job_id, job)
 
-            db.session.commit()
-            job["enriched"] += 1
+        logger.info(
+            f"[reprocess_gemini_job] Job {job_id} concluído: "
+            f"enriched={job['enriched']} skipped={job['skipped']} errors={job['errors']}"
+        )
+        return {
+            "status": "done",
+            "enriched": job["enriched"],
+            "skipped": job["skipped"],
+            "errors": job["errors"],
+        }
 
-        except Exception as e:
-            db.session.rollback()
-            job["errors"] += 1
-            if len(job["error_details"]) < 30:
-                job["error_details"].append({
-                    "question_id": question_id,
-                    "error": str(e)[:120],
-                })
-            logger.warning(f"[reprocess_gemini_job] Erro na questão {question_id}: {e}")
-
-        job["processed"] = i + 1
-
-        # Atualiza Redis a cada 5 questões
-        if i % 5 == 0:
-            _job_set(job_id, job)
-
-    job["status"] = "done"
-    job["finished_at"] = datetime.utcnow().isoformat()
-    _job_set(job_id, job)
-
-    logger.info(
-        f"[reprocess_gemini_job] Job {job_id} concluído: "
-        f"enriched={job['enriched']} skipped={job['skipped']} errors={job['errors']}"
-    )
-    return {
-        "status": "done",
-        "enriched": job["enriched"],
-        "skipped": job["skipped"],
-        "errors": job["errors"],
-    }
+    # Executa com contexto Flask garantido
+    if flask_app:
+        with flask_app.app_context():
+            return _run_with_context()
+    else:
+        # Fallback: ContextTask deve ter provido o contexto
+        return _run_with_context()
