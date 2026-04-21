@@ -50,12 +50,14 @@ def _question_access_filter(tenant):
     """
     Filtro de acesso a questões levando em conta o banco global.
     Retorna condição SQLAlchemy que inclui questões próprias do tenant
-    e, se a feature estiver ativa, as questões do banco global aprovadas.
+    e, se a feature estiver ativa, as questões do banco global aprovadas
+    E já processadas pelo Gemini (gemini_enriched=True).
     """
     own = and_(
         Question.tenant_id == tenant.id,
         Question.is_active == True,
         Question.is_deleted == False,
+        Question.gemini_enriched == True,  # só questões processadas pelo Gemini
     )
     if tenant.is_feature_enabled("question_bank_concursos"):
         global_bank = and_(
@@ -63,6 +65,7 @@ def _question_access_filter(tenant):
             Question.source_type == QuestionSourceType.BANK,
             Question.review_status == "approved",
             Question.is_active == True,
+            Question.gemini_enriched == True,  # só questões processadas pelo Gemini
         )
         return or_(own, global_bank)
     return own
@@ -178,21 +181,6 @@ def before_request():
 @jwt_required()
 @require_tenant
 def list_questions():
-    """
-    Lista questões do banco de concursos com filtros avançados.
-
-    IMPORTANTE: Retorna APENAS questões source_type="bank" (enviadas pelo produtor).
-    Questões de aula (source_type="lesson") são acessadas via GET /lessons/:id/questions.
-
-    Filtros disponíveis (query params):
-    - subject_id, discipline, topic, difficulty
-    - exam_board, exam_year
-    - previously_correct, previously_wrong, not_answered
-    - page, per_page
-
-    SEGURANÇA: Filtra sempre por tenant_id.
-    Aluno nunca vê questões de outro produtor.
-    """
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
     claims = get_jwt()
@@ -203,15 +191,13 @@ def list_questions():
     except ValidationError as e:
         return jsonify({"error": "validation_error", "details": e.messages}), 400
 
-    # ── Query base: questões do banco visíveis para este tenant ──────────────
-    # Sempre inclui questões próprias (tenant_id = tenant.id, source_type = bank)
-    # Se feature question_bank_concursos habilitada: inclui também o banco global
-    # (tenant_id IS NULL, source_type = bank, review_status = approved)
+    # Apenas questões processadas pelo Gemini (gemini_enriched=True)
     own_bank = and_(
         Question.tenant_id == tenant.id,
         Question.source_type == QuestionSourceType.BANK,
         Question.is_active == True,
         Question.is_deleted == False,
+        Question.gemini_enriched == True,
     )
 
     if tenant.is_feature_enabled("question_bank_concursos"):
@@ -220,6 +206,7 @@ def list_questions():
             Question.source_type == QuestionSourceType.BANK,
             Question.review_status == "approved",
             Question.is_active == True,
+            Question.gemini_enriched == True,
         )
         query = Question.query.filter(or_(own_bank, global_bank))
     else:
@@ -342,11 +329,6 @@ def list_questions():
 @require_tenant
 @limiter.limit("100 per hour")
 def create_question():
-    """
-    Cria questão manualmente no banco de concursos.
-    Sempre cria como source_type="bank".
-    Dispara análise automática via Gemini se metadados incompletos.
-    """
     claims = get_jwt()
     if not _is_producer_or_above(claims):
         return jsonify({"error": "forbidden"}), 403
@@ -359,7 +341,6 @@ def create_question():
     except ValidationError as e:
         return jsonify({"error": "validation_error", "details": e.messages}), 400
 
-    # SEGURANÇA: Valida que subject_id pertence ao tenant
     if data.get("subject_id"):
         subject = Subject.query.filter_by(
             id=data["subject_id"],
@@ -371,8 +352,8 @@ def create_question():
 
     question = Question(
         tenant_id=tenant.id,
-        source_type=QuestionSourceType.BANK,  # ← sempre bank quando criada pelo produtor
-        lesson_id=None,  # ← nunca vinculada a aula aqui
+        source_type=QuestionSourceType.BANK,
+        lesson_id=None,
         subject_id=data.get("subject_id"),
         statement=data["statement"],
         context=data.get("context"),
@@ -388,12 +369,11 @@ def create_question():
         correct_alternative_key=data["correct_alternative_key"],
         correct_justification=data.get("correct_justification"),
         is_active=True,
-        is_reviewed=True,  # Marcada como revisada — foi o produtor que criou
+        is_reviewed=True,
     )
     db.session.add(question)
     db.session.flush()
 
-    # Cria as alternativas
     for alt_data in data["alternatives"]:
         alt = Alternative(
             tenant_id=tenant.id,
@@ -406,16 +386,18 @@ def create_question():
 
     db.session.commit()
 
-    # ── Dispara análise Gemini se metadados incompletos ───────────────────────
-    # Se o produtor não preencheu disciplina/tópico/dificuldade, o Gemini preenche
+    # Gemini: analisa se faltar metadados; marca enriched se completo
     _needs_analysis = not data.get("discipline") or not data.get("topic")
     if _needs_analysis:
         try:
             from app.tasks import analyze_question_task
-
             analyze_question_task.delay(question.id, tenant.id)
         except Exception:
-            pass  # Falha no Celery não bloqueia a criação da questão
+            pass
+    else:
+        # Produtor preencheu tudo — já visível sem precisar do Gemini
+        question.gemini_enriched = True
+        db.session.commit()
 
     return (
         jsonify(
@@ -432,15 +414,6 @@ def create_question():
 @jwt_required()
 @require_tenant
 def get_question(question_id: str):
-    """
-    Retorna questão completa com alternativas.
-    Aluno: NÃO recebe gabarito nem justificativas (isso vem apenas após responder).
-    Produtor: recebe tudo.
-
-    SEGURANÇA: Questões de aula (source_type="lesson") também são acessíveis aqui
-    desde que o aluno tenha acesso ao tenant — o isolamento é feito pela lesson_id
-    na listagem, não no GET individual.
-    """
     tenant = get_current_tenant()
     claims = get_jwt()
     user_id = get_jwt_identity()
@@ -485,7 +458,6 @@ def get_question(question_id: str):
 @jwt_required()
 @require_tenant
 def update_question(question_id: str):
-    """Atualiza questão. Apenas produtor."""
     claims = get_jwt()
     if not _is_producer_or_above(claims):
         return jsonify({"error": "forbidden"}), 403
@@ -522,7 +494,6 @@ def update_question(question_id: str):
     )
     question.is_reviewed = True
 
-    # Recria alternativas
     for alt in question.alternatives:
         db.session.delete(alt)
     db.session.flush()
@@ -554,7 +525,6 @@ def update_question(question_id: str):
 @jwt_required()
 @require_tenant
 def delete_question(question_id: str):
-    """Soft delete de questão. Apenas produtor."""
     claims = get_jwt()
     if not _is_producer_or_above(claims):
         return jsonify({"error": "forbidden"}), 403
@@ -585,11 +555,6 @@ def delete_question(question_id: str):
 @require_tenant
 @limiter.limit("200 per hour")
 def answer_question(question_id: str):
-    """
-    Aluno responde uma questão.
-    Retorna: se acertou, gabarito, justificativas, XP ganho.
-    Funciona para questões de banco E questões de aula.
-    """
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
@@ -605,12 +570,11 @@ def answer_question(question_id: str):
         data = schema.load(request.get_json(force=True) or {})
     except ValidationError as e:
         return jsonify({"error": "validation_error", "details": e.messages}), 400
-    # Normaliza para maiúsculo — banco global usa A-E, questões antigas usam a-e
+
     chosen_key = data["chosen_alternative_key"].upper()
     is_correct = chosen_key == question.correct_alternative_key.upper()
     context = data.get("context", "practice")
 
-    # Upsert: se já existe tentativa para este (user, question, context), atualiza
     existing_attempt = QuestionAttempt.query.filter_by(
         user_id=user_id,
         question_id=question.id,
@@ -639,7 +603,6 @@ def answer_question(question_id: str):
         )
         db.session.add(attempt)
 
-    # Atualiza stats apenas em novas tentativas (evita inflacionar contadores)
     if is_new_attempt:
         question.total_attempts += 1
         if is_correct:
@@ -655,15 +618,19 @@ def answer_question(question_id: str):
         pass
 
     # Monta resposta com justificativas
+    # FIX: normaliza case para comparação — banco pode ter "a" ou "A"
     alternatives_with_feedback = []
     for alt in sorted(question.alternatives, key=lambda a: a.key):
+        alt_key_upper = alt.key.upper()
+        correct_key_upper = (question.correct_alternative_key or "").upper()
+        is_correct_alt = alt_key_upper == correct_key_upper
         alt_data = {
             "key": alt.key,
             "text": alt.text,
-            "is_correct": alt.key == question.correct_alternative_key,
-            "is_chosen": alt.key == chosen_key,
+            "is_correct": is_correct_alt,
+            "is_chosen": alt_key_upper == chosen_key,
         }
-        if alt.key == question.correct_alternative_key:
+        if is_correct_alt:
             alt_data["justification"] = question.correct_justification
         elif alt.distractor_justification:
             alt_data["justification"] = alt.distractor_justification
@@ -671,30 +638,24 @@ def answer_question(question_id: str):
 
     xp_gained = 10 if is_correct else 2
 
-    # Dispara atualização de gamificação via Celery (não bloqueia a resposta)
     try:
         from app.tasks import update_gamification_after_answer
-
         update_gamification_after_answer.delay(
             user_id, tenant.id, is_correct, xp_gained
         )
     except Exception:
         pass
 
-    # Dispara adaptação do cronograma se a questão pertence a uma disciplina
-    # Threshold: >= 10 tentativas e acurácia < 50% → injeta revisões extras
-    # Se acurácia >= 70% → remove revisões adaptativas pendentes
     try:
         if question.subject_id:
             from app.tasks.schedule_tasks import adapt_after_question_attempt
-
             adapt_after_question_attempt.delay(
                 user_id=user_id,
                 tenant_id=tenant.id,
                 subject_id=question.subject_id,
             )
     except Exception:
-        pass  # Nunca falha a resposta da questão por causa do cronograma
+        pass
 
     return (
         jsonify(
@@ -720,7 +681,6 @@ def answer_question(question_id: str):
 @jwt_required()
 @require_tenant
 def my_history():
-    """Histórico de tentativas do aluno agrupado por disciplina."""
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
@@ -783,10 +743,6 @@ def my_history():
 
 
 def _get_last_attempts_map(user_id: str, tenant_id: str, question_ids: list) -> dict:
-    """
-    Retorna a última tentativa de cada questão para o aluno atual.
-    Usado para mostrar status (acertou/errou) na listagem.
-    """
     if not question_ids:
         return {}
 
@@ -811,11 +767,6 @@ def _get_last_attempts_map(user_id: str, tenant_id: str, question_ids: list) -> 
 def _serialize_question(
     question: Question, last_attempt=None, include_answer: bool = False
 ) -> dict:
-    """
-    Serializa questão.
-    SEGURANÇA: include_answer=False oculta gabarito para alunos
-    que ainda não responderam — evita que vejam a resposta antes.
-    """
     alternatives = []
     for alt in sorted(question.alternatives, key=lambda a: a.key):
         alt_data = {
@@ -865,14 +816,13 @@ def _serialize_question(
     return data
 
 
-# ── Pipeline Gemini — Importação de questões de concurso (source_type="bank") ──
+# ── Pipeline Gemini ───────────────────────────────────────────────────────────
 
 
 @questions_bp.route("/disciplines", methods=["GET"])
 @jwt_required()
 @require_tenant
 def get_disciplines():
-    """Retorna disciplinas disponíveis para este tenant (inclui banco global se feature ativa)."""
     tenant = get_current_tenant()
     condition = _question_access_filter(tenant)
     rows = (
@@ -889,7 +839,6 @@ def get_disciplines():
 @jwt_required()
 @require_tenant
 def get_topics():
-    """Retorna tópicos de uma disciplina específica."""
     tenant = get_current_tenant()
     discipline = request.args.get("discipline", "").strip()
     if not discipline:
@@ -913,7 +862,6 @@ def get_topics():
 @jwt_required()
 @require_tenant
 def get_count():
-    """Retorna total de questões disponíveis com os filtros aplicados."""
     tenant = get_current_tenant()
     schema = QuestionFilterSchema()
     try:
@@ -937,10 +885,6 @@ def get_count():
 @require_tenant
 @require_feature("ai_features")
 def extract_questions_from_text():
-    """
-    Extrai questões de concurso de um texto via Gemini.
-    As questões extraídas são source_type="bank" — vão para o banco geral.
-    """
     data = request.get_json() or {}
     context = data.get("context", "").strip()
 
@@ -956,10 +900,8 @@ def extract_questions_from_text():
         )
 
     from app.services.gemini_service import GeminiService
-
     svc = GeminiService()
     questions = svc.extract_questions(context)
-
     return jsonify({"questions": questions, "total": len(questions)}), 200
 
 
@@ -968,16 +910,11 @@ def extract_questions_from_text():
 @require_tenant
 @require_feature("ai_features")
 def extract_questions_from_file():
-    """
-    Extrai questões de concurso de PDF/arquivo via Gemini.
-    As questões extraídas são source_type="bank" — vão para o banco geral.
-    """
     if "file" not in request.files:
         return jsonify({"error": "bad_request", "message": "Arquivo não enviado."}), 400
 
     file = request.files["file"]
     context_hint = request.form.get("context", "")
-
     content = file.read()
     filename = file.filename or ""
 
@@ -985,14 +922,11 @@ def extract_questions_from_file():
         try:
             import io
             import pypdf
-
             reader = pypdf.PdfReader(io.BytesIO(content))
             text = "\n".join(page.extract_text() or "" for page in reader.pages)
         except Exception:
             return (
-                jsonify(
-                    {"error": "bad_request", "message": "Não foi possível ler o PDF."}
-                ),
+                jsonify({"error": "bad_request", "message": "Não foi possível ler o PDF."}),
                 400,
             )
     else:
@@ -1003,15 +937,11 @@ def extract_questions_from_file():
 
     if len(text.strip()) < 50:
         return (
-            jsonify(
-                {"error": "bad_request", "message": "Arquivo sem conteúdo suficiente."}
-            ),
+            jsonify({"error": "bad_request", "message": "Arquivo sem conteúdo suficiente."}),
             400,
         )
 
     from app.services.gemini_service import GeminiService
-
     svc = GeminiService()
     questions = svc.extract_questions(text[:15000])
-
     return jsonify({"questions": questions, "total": len(questions)}), 200

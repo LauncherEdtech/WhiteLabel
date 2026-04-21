@@ -47,14 +47,14 @@ class DifficultyLevel(str, enum.Enum):
 
 
 class QuestionSourceType(str, enum.Enum):
-    BANK = "bank"  # Banco global (admin ou produtor aprovado)
-    LESSON = "lesson"  # Gerada pelo Gemini a partir de uma aula
+    BANK = "bank"
+    LESSON = "lesson"
 
 
 class ReviewStatus(str, enum.Enum):
-    APPROVED = "approved"  # Visível no banco global
-    PENDING = "pending"  # Aguardando revisão do admin
-    REJECTED = "rejected"  # Rejeitada pelo admin
+    APPROVED = "approved"
+    PENDING = "pending"
+    REJECTED = "rejected"
 
 
 class QuestionType(str, enum.Enum):
@@ -68,7 +68,6 @@ class QuestionType(str, enum.Enum):
 
 
 def _normalize_statement(text_: str) -> str:
-    """Remove acentos, pontuação e normaliza espaços para comparação."""
     t = text_.lower().strip()
     t = unicodedata.normalize("NFD", t)
     t = "".join(c for c in t if unicodedata.category(c) != "Mn")
@@ -78,7 +77,6 @@ def _normalize_statement(text_: str) -> str:
 
 
 def compute_statement_hash(statement: str) -> str:
-    """MD5 do enunciado normalizado — usado para detecção rápida de duplicata."""
     return hashlib.md5(_normalize_statement(statement).encode("utf-8")).hexdigest()
 
 
@@ -86,37 +84,16 @@ def compute_statement_hash(statement: str) -> str:
 
 
 class Question(BaseModel, TenantMixin):
-    """
-    Questão de concurso com metadados pedagógicos completos.
-
-    Dois universos convivem na mesma tabela:
-      1. Banco global (tenant_id = NULL, source_type = BANK):
-         - Importado pelo admin via bulk-import
-         - Submetido por produtor e aprovado pelo admin
-         - Visível para todos os tenants com feature question_bank_concursos
-      2. Questões de aula (tenant_id = X, source_type = LESSON):
-         - Geradas pelo Gemini a partir de vídeos
-         - Visíveis apenas ao tenant dono
-    """
-
     __tablename__ = "questions"
 
-    # ── Sobrescreve TenantMixin para permitir NULL (banco global) ────────────
     tenant_id = Column(
         UUID(as_uuid=False),
         ForeignKey("tenants.id", ondelete="SET NULL"),
-        nullable=True,  # NULL = questão do banco global
+        nullable=True,
         index=True,
     )
 
-    # ── Identificação e origem ────────────────────────────────────────────────
-    external_id = Column(
-        String(64),
-        unique=True,
-        nullable=True,
-        index=True,
-        comment="ID externo para idempotência no bulk-import (hash do XLSX)",
-    )
+    external_id = Column(String(64), unique=True, nullable=True, index=True)
 
     source_type = Column(
         Enum(
@@ -129,7 +106,6 @@ class Question(BaseModel, TenantMixin):
         index=True,
     )
 
-    # Preenchido apenas quando source_type = LESSON
     lesson_id = Column(
         UUID(as_uuid=False),
         ForeignKey("lessons.id", ondelete="CASCADE"),
@@ -137,8 +113,6 @@ class Question(BaseModel, TenantMixin):
         index=True,
     )
 
-    # ── Rastreamento de submissão pelo produtor ───────────────────────────────
-    # Quem enviou para revisão (produtor). NULL = importado pelo admin.
     submitted_by_tenant_id = Column(
         UUID(as_uuid=False),
         ForeignKey("tenants.id", ondelete="SET NULL"),
@@ -151,7 +125,6 @@ class Question(BaseModel, TenantMixin):
         nullable=True,
     )
 
-    # ── Fluxo de revisão ──────────────────────────────────────────────────────
     review_status = Column(
         Enum(
             ReviewStatus,
@@ -159,7 +132,7 @@ class Question(BaseModel, TenantMixin):
             values_callable=lambda obj: [e.value for e in obj],
         ),
         nullable=False,
-        default=ReviewStatus.APPROVED,  # admin bulk-import já entra aprovado
+        default=ReviewStatus.APPROVED,
         index=True,
     )
     rejection_reason = Column(Text, nullable=True)
@@ -170,20 +143,14 @@ class Question(BaseModel, TenantMixin):
     )
     reviewed_at = Column(DateTime, nullable=True)
 
-    # ── Vínculo com conteúdo do produtor ──────────────────────────────────────
     subject_id = Column(UUID(as_uuid=False), ForeignKey("subjects.id"), nullable=True)
     source_document_id = Column(Text, nullable=True)
 
-    # ── Enunciado ─────────────────────────────────────────────────────────────
     statement = Column(Text, nullable=False)
     context = Column(Text, nullable=True)
     image_url = Column(String(500), nullable=True)
-
-    # Hash do enunciado normalizado — detecção rápida de duplicata
-    # Populado automaticamente via SQLAlchemy event (veja abaixo)
     statement_hash = Column(String(32), nullable=True, index=True)
 
-    # ── Metadados Pedagógicos ─────────────────────────────────────────────────
     discipline = Column(String(255), nullable=True, index=True)
     topic = Column(String(255), nullable=True, index=True)
     subtopic = Column(String(255), nullable=True)
@@ -208,35 +175,38 @@ class Question(BaseModel, TenantMixin):
 
     tip = Column(Text, nullable=True, comment="Dica/macete gerado pelo Gemini")
 
-    # Banca e concurso de origem
     exam_board = Column(String(100), nullable=True, index=True)
     exam_year = Column(Integer, nullable=True)
     exam_name = Column(String(255), nullable=True)
     competency = Column(String(255), nullable=True)
 
-    # ── Gabarito e Justificativas ─────────────────────────────────────────────
     correct_alternative_key = Column(String(1), nullable=False)
     correct_justification = Column(Text, nullable=True)
 
-    # ── Status ────────────────────────────────────────────────────────────────
     is_active = Column(Boolean, default=True, nullable=False)
     is_reviewed = Column(Boolean, default=False, nullable=False)
 
-    # ── Estatísticas agregadas (atualizadas via Celery) ───────────────────────
+    # Marcado True pelo analyze_question_task após Gemini processar.
+    # Questões não enriquecidas ficam invisíveis para alunos e produtores.
+    gemini_enriched = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+        server_default="false",
+        comment="True quando o Gemini já preencheu tópico, dica e distratores",
+    )
+
     total_attempts = Column(Integer, default=0, nullable=False)
     correct_attempts = Column(Integer, default=0, nullable=False)
     avg_response_time_seconds = Column(Float, default=0.0, nullable=False)
 
-    # ── Relacionamentos ───────────────────────────────────────────────────────
     subject = relationship("Subject", back_populates="questions")
     lesson = relationship(
         "Lesson", back_populates="questions", foreign_keys=[lesson_id]
     )
-
     submitted_by_tenant = relationship(
         "Tenant", foreign_keys=[submitted_by_tenant_id], lazy="select"
     )
-
     alternatives = relationship(
         "Alternative",
         back_populates="question",
@@ -254,47 +224,50 @@ class Question(BaseModel, TenantMixin):
         cascade="all, delete-orphan",
     )
 
-    # ── Query helpers (SEMPRE usar em vez de Question.query direto) ───────────
-
     @classmethod
     def query_for_tenant(cls, tenant, session=None):
         """
         Retorna query com questões visíveis para um tenant.
-
-        Regras:
-          - Questões de aula do próprio tenant: sempre visíveis
-          - Banco global (tenant_id IS NULL, review_status = APPROVED):
-            apenas se tenant.is_feature_enabled("question_bank_concursos")
-          - Questões pendentes/rejeitadas do próprio produtor:
-            visíveis apenas para o próprio tenant (via submitted_by_tenant_id)
+        Questões de aula: sempre visíveis (não passam pelo Gemini).
+        Banco global: apenas gemini_enriched=True.
+        Banco próprio: apenas gemini_enriched=True.
         """
         from .. import db
 
         q = (session or db.session).query(cls)
 
+        # Questões de aula — sempre visíveis independente de gemini_enriched
         own_lessons = (cls.tenant_id == tenant.id) & (
             cls.source_type == QuestionSourceType.LESSON
         )
 
         if tenant.is_feature_enabled("question_bank_concursos"):
+            # Banco global: aprovada E processada pelo Gemini
             global_approved = (
                 cls.tenant_id.is_(None)
                 & (cls.source_type == QuestionSourceType.BANK)
                 & (cls.review_status == ReviewStatus.APPROVED)
+                & (cls.gemini_enriched == True)
             )
-            # Questões que o próprio produtor submeteu (qualquer status)
+            # Questões submetidas pelo próprio produtor (qualquer status)
+            # visíveis para ele acompanhar — mesmo sem gemini_enriched
             own_submitted = cls.submitted_by_tenant_id == tenant.id
 
             return q.filter(own_lessons | global_approved | own_submitted)
 
-        return q.filter(own_lessons)
+        # Banco próprio do tenant: só aparece após Gemini processar
+        own_bank = (
+            (cls.tenant_id == tenant.id)
+            & (cls.source_type == QuestionSourceType.BANK)
+            & (cls.gemini_enriched == True)
+            & (cls.is_active == True)
+            & (cls.is_deleted == False)
+        )
+
+        return q.filter(own_lessons | own_bank)
 
     @classmethod
     def find_duplicate(cls, statement: str, exclude_id: str = None):
-        """
-        Busca questão com hash idêntico no banco global.
-        Retorna a Question duplicada ou None.
-        """
         from .. import db
 
         h = compute_statement_hash(statement)
@@ -306,8 +279,6 @@ class Question(BaseModel, TenantMixin):
         if exclude_id:
             query = query.filter(cls.id != exclude_id)
         return query.first()
-
-    # ── Properties ────────────────────────────────────────────────────────────
 
     @property
     def accuracy_rate(self) -> float:
@@ -323,25 +294,13 @@ class Question(BaseModel, TenantMixin):
         return f"<Question {self.id[:8]} [{self.source_type}/{self.difficulty}/{self.review_status}]>"
 
 
-# ── Auto-hash no statement ────────────────────────────────────────────────────
-
-
 @event.listens_for(Question.statement, "set")
 def _set_statement_hash(target, value, oldvalue, initiator):
-    """Recalcula statement_hash sempre que o enunciado mudar."""
     if value:
         target.statement_hash = compute_statement_hash(value)
 
 
-# ── Alternative ───────────────────────────────────────────────────────────────
-
-
 class Alternative(BaseModel, TenantMixin):
-    """
-    Alternativa de uma questão (A, B, C, D, E).
-    Inclui justificativa do distrator — essencial para aprendizado.
-    """
-
     __tablename__ = "alternatives"
 
     question_id = Column(
@@ -349,7 +308,7 @@ class Alternative(BaseModel, TenantMixin):
         ForeignKey("questions.id", ondelete="CASCADE"),
         nullable=False,
     )
-    key = Column(String(1), nullable=False)  # "A", "B", "C", "D", "E"
+    key = Column(String(1), nullable=False)
     text = Column(Text, nullable=False)
     distractor_justification = Column(Text, nullable=True)
 
@@ -360,32 +319,13 @@ class Alternative(BaseModel, TenantMixin):
     )
 
 
-# ── QuestionAttempt ───────────────────────────────────────────────────────────
-
-
 class QuestionAttempt(BaseModel, TenantMixin):
-    """
-    Registro de cada resposta de um aluno.
-
-    SEGURANÇA: tenant_id sempre preenchido — dados de aluno nunca são globais.
-    A questão respondida pode ser global (tenant_id NULL na Question),
-    mas a tentativa sempre pertence ao tenant.
-
-    UNICIDADE:
-    - Contextos não-simulado (practice, schedule, review, lesson):
-        UNIQUE(user_id, question_id, context) — index parcial WHERE context != 'simulado'
-    - Contexto simulado:
-        UNIQUE(user_id, question_id, simulado_attempt_id) — index parcial WHERE context = 'simulado'
-        Isso permite a mesma questão em simulados DIFERENTES sem conflito.
-    """
-
     __tablename__ = "question_attempts"
 
-    # Override para garantir NOT NULL (dados de aluno nunca podem ser globais)
     tenant_id = Column(
         UUID(as_uuid=False),
         ForeignKey("tenants.id", ondelete="CASCADE"),
-        nullable=False,  # ← Obrigatório — diferente de Question
+        nullable=False,
         index=True,
     )
 
@@ -398,12 +338,10 @@ class QuestionAttempt(BaseModel, TenantMixin):
     is_correct = Column(Boolean, nullable=False)
     response_time_seconds = Column(Integer, nullable=True)
 
-    # Contexto da tentativa (analytics segmentado)
     context = Column(
         String(50),
         default="practice",
         nullable=False,
-        comment="practice | simulado | schedule | review | lesson",
     )
 
     simulado_attempt_id = Column(
@@ -416,8 +354,6 @@ class QuestionAttempt(BaseModel, TenantMixin):
     question = relationship("Question", back_populates="attempts")
 
     __table_args__ = (
-        # Contextos não-simulado: impede dupla tentativa na mesma questão/contexto
-        # Usa partial index — não interfere com simulados
         Index(
             "uq_attempt_non_simulado",
             "user_id",
@@ -426,8 +362,6 @@ class QuestionAttempt(BaseModel, TenantMixin):
             unique=True,
             postgresql_where=text("context != 'simulado'"),
         ),
-        # Contexto simulado: impede duplicata dentro do MESMO simulado,
-        # mas permite a mesma questão em simulados diferentes
         Index(
             "uq_attempt_simulado",
             "user_id",
@@ -439,12 +373,7 @@ class QuestionAttempt(BaseModel, TenantMixin):
     )
 
 
-# ── QuestionTag ───────────────────────────────────────────────────────────────
-
-
 class QuestionTag(BaseModel, TenantMixin):
-    """Tags para organização e busca de questões."""
-
     __tablename__ = "question_tags"
 
     question_id = Column(
