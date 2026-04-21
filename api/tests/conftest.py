@@ -110,6 +110,7 @@ def _seed_test_data():
         difficulty="medium", discipline="Direito Penal",
         correct_alternative_key="a",
         correct_justification="Nullum crimen sine lege.",
+        gemini_enriched=True, 
     )
     _db.session.add(question)
     _db.session.flush()
