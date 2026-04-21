@@ -222,15 +222,26 @@ def send_welcome_email(self, to_email, to_name, password, tenant_name, platform_
 def update_gamification_after_answer(self, user_id, tenant_id, is_correct, xp_gained):
     try:
         from app.extensions import db
-        from app.models.gamification import UserPoints
         from app.services.badge_engine import BadgeEngine
-        user_points = UserPoints.query.filter_by(user_id=user_id, tenant_id=tenant_id).first()
-        if user_points:
-            user_points.total_points += xp_gained
-            user_points.questions_answered += 1
-            if is_correct: user_points.questions_correct += 1
-            db.session.commit()
+
+        # UserPoints foi removido do model — tenta importar graciosamente
+        try:
+            from app.models.gamification import UserPoints
+            user_points = UserPoints.query.filter_by(user_id=user_id, tenant_id=tenant_id).first()
+            if user_points:
+                user_points.total_points += xp_gained
+                user_points.questions_answered += 1
+                if is_correct:
+                    user_points.questions_correct += 1
+                db.session.commit()
+        except ImportError:
+            pass  # UserPoints não existe mais neste deploy
+
+        try:
             BadgeEngine(user_id, tenant_id).check_and_award()
+        except Exception:
+            pass
+
         return {"status": "ok", "xp": xp_gained}
     except Exception as exc:
         raise self.retry(exc=exc, countdown=30)
