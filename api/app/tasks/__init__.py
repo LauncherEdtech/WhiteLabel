@@ -17,8 +17,12 @@ send_welcome_email = _module.send_welcome_email
 update_gamification_after_answer = _module.update_gamification_after_answer
 analyze_question_task = _module.analyze_question_task
 generate_lesson_questions_task = _module.generate_lesson_questions_task
-process_xlsx_import_job = _module.process_xlsx_import_job
 
+# Exportado apenas se tasks.py já tem a função (requer deploy conjunto)
+try:
+    process_xlsx_import_job = _module.process_xlsx_import_job
+except AttributeError:
+    process_xlsx_import_job = None  # tasks.py ainda não foi atualizado
 
 __all__ = [
     "send_broadcast_email",
@@ -28,5 +32,4 @@ __all__ = [
     "analyze_question_task",
     "generate_lesson_questions_task",
     "process_xlsx_import_job",
-
 ]

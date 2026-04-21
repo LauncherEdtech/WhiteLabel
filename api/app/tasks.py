@@ -429,3 +429,151 @@ def scheduled_insights_refresh():
 
     logger.info(f"scheduled_insights_refresh: {len(tenants)} tenant(s) enfileirados.")
     return {"status": "ok", "tenants_queued": len(tenants)}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# XLSX IMPORT JOB — processamento assíncrono de planilhas de questões
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@celery_app.task(
+    name="app.tasks.process_xlsx_import_job",
+    bind=True,
+    max_retries=0,
+)
+def process_xlsx_import_job(self, job_id: str):
+    """
+    Processa importação de questões a partir de xlsx/zip salvo no S3.
+    Estado mantido no Redis. Checa cancelamento a cada 10 linhas.
+    """
+    import json
+    import logging
+    import zipfile
+    from datetime import datetime
+
+    logger = logging.getLogger(__name__)
+
+    from app.routes.admin.questions import (
+        _job_get, _job_set, _job_is_cancelled,
+        _download_file_from_s3_temp, _delete_s3_temp,
+        _extract_zip, _parse_xlsx_sheets, _insert_or_update_question,
+    )
+    from app.extensions import db
+
+    logger.info(f"[xlsx_import_job] Iniciando job {job_id}")
+
+    job = _job_get(job_id)
+    if not job:
+        logger.error(f"[xlsx_import_job] Job {job_id} não encontrado no Redis")
+        return
+
+    job["status"] = "running"
+    _job_set(job_id, job)
+
+    s3_key = job.get("s3_key")
+    s3_ext = job.get("s3_ext", "xlsx")
+    enrich_ai = job.get("enrich_ai", True)
+
+    file_bytes = _download_file_from_s3_temp(s3_key)
+    if not file_bytes:
+        job["status"] = "error"
+        job["finished_at"] = datetime.utcnow().isoformat()
+        job["error_details"].append({"error": "Arquivo não encontrado no S3"})
+        _job_set(job_id, job)
+        return
+
+    image_map: dict[str, bytes] = {}
+    if s3_ext == "zip":
+        try:
+            xlsx_bytes, image_map = _extract_zip(file_bytes)
+        except zipfile.BadZipFile:
+            job["status"] = "error"
+            job["finished_at"] = datetime.utcnow().isoformat()
+            job["error_details"].append({"error": "Arquivo zip corrompido"})
+            _job_set(job_id, job)
+            _delete_s3_temp(s3_key)
+            return
+    else:
+        xlsx_bytes = file_bytes
+
+    try:
+        rows = _parse_xlsx_sheets(xlsx_bytes)
+    except Exception as e:
+        job["status"] = "error"
+        job["finished_at"] = datetime.utcnow().isoformat()
+        job["error_details"].append({"error": f"Erro ao ler xlsx: {str(e)}"})
+        _job_set(job_id, job)
+        _delete_s3_temp(s3_key)
+        return
+
+    job["total"] = len(rows)
+    _job_set(job_id, job)
+
+    for i, row in enumerate(rows):
+        if i % 10 == 0 and _job_is_cancelled(job_id):
+            logger.info(f"[xlsx_import_job] Job {job_id} cancelado na linha {i}")
+            job["status"] = "cancelled"
+            job["finished_at"] = datetime.utcnow().isoformat()
+            _job_set(job_id, job)
+            _delete_s3_temp(s3_key)
+            db.session.rollback()
+            return
+
+        try:
+            status, img_uploaded = _insert_or_update_question(row, image_map, enrich_ai)
+            if status == "inserted":
+                job["inserted"] += 1
+            elif status == "updated":
+                job["updated"] += 1
+            elif status == "skipped":
+                job["skipped"] += 1
+            elif status.startswith("error:"):
+                job["errors"] += 1
+                if len(job["error_details"]) < 50:
+                    job["error_details"].append({
+                        "row": row.get("_row"),
+                        "sheet": row.get("_sheet"),
+                        "statement_preview": (row.get("statement") or "")[:60],
+                        "error": status[6:],
+                    })
+            if img_uploaded:
+                job["images_uploaded"] += 1
+            if (job["inserted"] + job["updated"]) % 50 == 0:
+                db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            job["errors"] += 1
+            if len(job["error_details"]) < 50:
+                job["error_details"].append({
+                    "row": row.get("_row"),
+                    "sheet": row.get("_sheet"),
+                    "statement_preview": (row.get("statement") or "")[:60],
+                    "error": str(e),
+                })
+
+        job["processed"] = i + 1
+        if i % 10 == 0:
+            _job_set(job_id, job)
+
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"[xlsx_import_job] Commit final falhou: {e}")
+
+    job["status"] = "done"
+    job["finished_at"] = datetime.utcnow().isoformat()
+    _job_set(job_id, job)
+    _delete_s3_temp(s3_key)
+
+    logger.info(
+        f"[xlsx_import_job] Job {job_id} concluído: "
+        f"inserted={job['inserted']} updated={job['updated']} "
+        f"skipped={job['skipped']} errors={job['errors']}"
+    )
+    return {
+        "status": "done",
+        "inserted": job["inserted"],
+        "updated": job["updated"],
+        "skipped": job["skipped"],
+        "errors": job["errors"],
+    }
