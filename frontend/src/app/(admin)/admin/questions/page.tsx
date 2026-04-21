@@ -871,7 +871,7 @@ function XlsxImportPanel() {
                         )}
                         {preview.questions_with_image > 0 && (
                             <div className="flex items-center gap-2 p-2.5 rounded-lg text-xs bg-success/10 border border-success/20 text-success">
-                                <Image className="h-3.5 w-3.5 shrink-0" />
+                                <ImageIcon className="h-3.5 w-3.5 shrink-0" />
                                 {preview.questions_with_image} questão(ões) com imagem detectada(s) — upload automático para S3
                             </div>
                         )}
@@ -1075,7 +1075,7 @@ function ImportJobMonitor({
 
                 {job.images_uploaded > 0 && (
                     <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-success/10 border border-success/20">
-                        <Image className="h-3.5 w-3.5 text-success shrink-0" />
+                        <ImageIcon className="h-3.5 w-3.5 text-success shrink-0" />
                         <p className="text-xs text-success font-medium">
                             {job.images_uploaded} imagem(ns) salva(s) no S3
                         </p>
@@ -1450,7 +1450,7 @@ function ImportResultCard({ result, onReset }: { result: ImportResult; onReset: 
 
                 {(result.images_uploaded ?? 0) > 0 && (
                     <div className="mt-3 flex items-center gap-2 p-2 rounded-lg bg-success/10 border border-success/20">
-                        <Image className="h-3.5 w-3.5 text-success shrink-0" />
+                        <ImageIcon className="h-3.5 w-3.5 text-success shrink-0" />
                         <p className="text-xs text-success font-medium">
                             {result.images_uploaded} imagem(ns) salva(s) no S3
                         </p>
