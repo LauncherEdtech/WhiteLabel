@@ -1133,18 +1133,25 @@ function ScheduleStartView({ courseId, onGenerated }: { courseId: string; onGene
   });
 
   if (templateLoading && !forceAI) return (
-    <div className="max-w-lg mx-auto space-y-4">
+    // ✅ FIX: data-onboarding aqui também, para o tour encontrar o alvo
+    // mesmo durante o loading
+    <div data-onboarding="schedule" className="max-w-lg mx-auto space-y-4">
       <div className="h-32 rounded-xl bg-muted animate-pulse" />
       <div className="h-14 rounded-xl bg-muted animate-pulse" />
     </div>
   );
 
   const hasPublishedTemplate = !forceAI && !!templateData?.template;
+
   if (!hasPublishedTemplate || forceAI) {
+    // ScheduleWizard já tem data-onboarding="schedule" internamente — ok
     return <ScheduleWizard courseId={courseId} onGenerated={onGenerated} />;
   }
+
   return (
-    <div className="max-w-lg mx-auto">
+    // ✅ FIX: wrapper com data-onboarding para o tour encontrar o alvo
+    // quando o aluno ainda está na tela de escolha (template vs IA)
+    <div data-onboarding="schedule" className="max-w-lg mx-auto">
       <ProducerTemplateChoice
         courseId={courseId}
         onAdopted={() => {

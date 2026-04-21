@@ -818,7 +818,7 @@ def bulk_import():
                 item.get("difficulty", "medium"), DifficultyLevel.MEDIUM
             )
             q.question_type = _QTYPE_MAP.get(item.get("question_type", ""))
-            q.correct_alternative_key = item.get("correct_answer_key", "").upper()
+            q.correct_alternative_key = item.get("correct_answer_key", "").lower()
             q.correct_justification = item.get("explanation")
             q.tip = item.get("tip")
             q.exam_board = item.get("exam_board")
@@ -827,24 +827,36 @@ def bulk_import():
             q.source_document_id = item.get("source")
             q.is_active = True
 
+            # Marca como enriquecida se vier com tópico + dica + justificativa
+            if q.topic and q.tip and q.correct_justification:
+                q.gemini_enriched = True
+
             if is_new:
                 db.session.add(q)
                 db.session.flush()
+            else:
+                # Update: recria alternativas com dados enriquecidos pelo Gemini
+                db.session.flush()
+                for existing_alt in q.alternatives:
+                    db.session.delete(existing_alt)
+                db.session.flush()
 
-                for alt in item.get("alternatives", []):
-                    db.session.add(
-                        Alternative(
-                            id=str(uuid4()),
-                            tenant_id=None,
-                            question_id=q.id,
-                            key=alt["key"].upper(),
-                            text=alt["text"],
-                            distractor_justification=(
-                                alt.get("explanation") if not alt.get("is_correct") else None
-                            ),
-                        )
+            # Cria/recria alternativas (tanto insert quanto update)
+            for alt in item.get("alternatives", []):
+                db.session.add(
+                    Alternative(
+                        id=str(uuid4()),
+                        tenant_id=None,
+                        question_id=q.id,
+                        key=alt["key"].lower(),
+                        text=alt["text"],
+                        distractor_justification=(
+                            alt.get("explanation") if not alt.get("is_correct") else None
+                        ),
                     )
+                )
 
+            if is_new:
                 for tag_str in item.get("tags", []):
                     tag_str = tag_str.strip().lower()
                     if tag_str:
@@ -856,7 +868,6 @@ def bulk_import():
                                 tag=tag_str,
                             )
                         )
-
                 inserted += 1
             else:
                 updated += 1

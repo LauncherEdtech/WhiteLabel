@@ -15,8 +15,8 @@ import { cn } from "@/lib/utils/cn";
 import {
     BookOpen, Upload, Clock, CheckCircle2, XCircle, AlertCircle,
     ChevronDown, ChevronUp, FileJson, FileSpreadsheet,
-    BarChart3, Building2, Loader2, Plus, Sparkles, Image,
-    FolderOpen, Layers,
+    BarChart3, Building2, Loader2, Plus, Sparkles, Image as ImageIcon,
+    FolderOpen, Layers, Pencil, Trash2,
 } from "lucide-react";
 import { QUERY_KEYS } from "@/lib/constants/queryKeys";
 
@@ -35,13 +35,21 @@ interface PendingQuestion {
     statement: string;
     discipline: string;
     topic: string | null;
+    subtopic: string | null;
     difficulty: "easy" | "medium" | "hard";
     question_type: string | null;
     review_status: "pending" | "approved" | "rejected";
     rejection_reason: string | null;
     reviewed_at: string | null;
     submitted_by_tenant: { id: string; name: string; slug: string } | null;
-    alternatives: { key: string; text: string }[];
+    alternatives: { key: string; text: string; distractor_justification?: string | null }[];
+    correct_alternative_key: string;
+    correct_justification: string | null;
+    tip: string | null;
+    image_url: string | null;
+    exam_board: string | null;
+    exam_year: number | null;
+    exam_name: string | null;
     created_at: string;
 }
 
@@ -1493,6 +1501,7 @@ function PendingPanel({
 }) {
     const [selectedTenant, setSelectedTenant] = useState<string | null>(null);
     const [rejectTarget, setRejectTarget] = useState<PendingQuestion | null>(null);
+    const [editTarget, setEditTarget] = useState<PendingQuestion | null>(null);
     const [expandedId, setExpandedId] = useState<string | null>(null);
     const toast = useToast();
     const queryClient = useQueryClient();
@@ -1576,6 +1585,7 @@ function PendingPanel({
                             onToggle={() => setExpandedId(expandedId === q.id ? null : q.id)}
                             onApprove={() => approveMutation.mutate(q.id)}
                             onReject={() => setRejectTarget(q)}
+                            onEdit={() => setEditTarget(q)}
                             approving={approveMutation.isPending && approveMutation.variables === q.id}
                         />
                     ))}
@@ -1585,6 +1595,18 @@ function PendingPanel({
             {rejectTarget && (
                 <RejectModal question={rejectTarget} onClose={() => setRejectTarget(null)} />
             )}
+
+            {editTarget && (
+                <EditQuestionModal
+                    question={editTarget}
+                    onClose={() => setEditTarget(null)}
+                    onSaved={(updated) => {
+                        setEditTarget(null);
+                        queryClient.invalidateQueries({ queryKey: QUERY_KEYS.QUESTION_BANK_PENDING });
+                        queryClient.invalidateQueries({ queryKey: QUERY_KEYS.QUESTION_BANK_STATS });
+                    }}
+                />
+            )}
         </div>
     );
 }
@@ -1592,13 +1614,14 @@ function PendingPanel({
 // ── Pending Question Card ─────────────────────────────────────────────────────
 
 function PendingQuestionCard({
-    question, expanded, onToggle, onApprove, onReject, approving,
+    question, expanded, onToggle, onApprove, onReject, onEdit, approving,
 }: {
     question: PendingQuestion;
     expanded: boolean;
     onToggle: () => void;
     onApprove: () => void;
     onReject: () => void;
+    onEdit: () => void;
     approving: boolean;
 }) {
     return (
@@ -1635,6 +1658,14 @@ function PendingQuestionCard({
                     </div>
 
                     <div className="flex items-center gap-1 shrink-0">
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={onEdit}
+                        >
+                            <Pencil className="h-3.5 w-3.5" />
+                            Editar
+                        </Button>
                         <Button
                             size="sm"
                             variant="outline"
@@ -1934,6 +1965,302 @@ function SingleQuestionModal({ open, onClose }: { open: boolean; onClose: () => 
                         </Button>
                         <Button type="submit" loading={mutation.isPending}>
                             Adicionar questão
+                        </Button>
+                    </DialogFooter>
+                </form>
+            </DialogContent>
+        </Dialog>
+    );
+}
+// ── Edit Question Modal ────────────────────────────────────────────────────────
+
+const LETTERS_EDIT = ["a", "b", "c", "d", "e"] as const;
+const DIFFICULTY_OPTIONS = [
+    { value: "easy", label: "Fácil" },
+    { value: "medium", label: "Médio" },
+    { value: "hard", label: "Difícil" },
+];
+const TYPE_OPTIONS = [
+    { value: "", label: "— selecione —" },
+    { value: "interpretacao", label: "Interpretação" },
+    { value: "aplicacao", label: "Aplicação" },
+    { value: "raciocinio", label: "Raciocínio" },
+    { value: "memorizacao", label: "Memorização" },
+];
+
+function EditQuestionModal({
+    question,
+    onClose,
+    onSaved,
+}: {
+    question: PendingQuestion;
+    onClose: () => void;
+    onSaved: (updated: PendingQuestion) => void;
+}) {
+    const toast = useToast();
+    const imageRef = useRef<HTMLInputElement>(null);
+    const [correctKey, setCorrectKey] = useState(question.correct_alternative_key?.toLowerCase() ?? "a");
+    const [imageFile, setImageFile] = useState<File | null>(null);
+    const [imagePreview, setImagePreview] = useState<string | null>(question.image_url);
+    const [removeImage, setRemoveImage] = useState(false);
+    const [alts, setAlts] = useState<{ key: string; text: string; distractor_justification: string }[]>(
+        LETTERS_EDIT.map(l => {
+            const existing = question.alternatives.find(a => a.key.toLowerCase() === l);
+            return {
+                key: l,
+                text: existing?.text ?? "",
+                distractor_justification: existing?.distractor_justification ?? "",
+            };
+        })
+    );
+
+    const { register, handleSubmit, formState: { errors } } = useForm({
+        defaultValues: {
+            statement: question.statement,
+            discipline: question.discipline,
+            topic: question.topic ?? "",
+            subtopic: question.subtopic ?? "",
+            difficulty: question.difficulty,
+            question_type: question.question_type ?? "",
+            correct_justification: question.correct_justification ?? "",
+            tip: question.tip ?? "",
+            exam_board: question.exam_board ?? "",
+            exam_year: question.exam_year?.toString() ?? "",
+            exam_name: question.exam_name ?? "",
+        },
+    });
+
+    const saveMutation = useMutation({
+        mutationFn: async (data: any) => {
+            const fd = new FormData();
+            fd.append("statement", data.statement);
+            fd.append("discipline", data.discipline);
+            fd.append("topic", data.topic);
+            fd.append("subtopic", data.subtopic);
+            fd.append("difficulty", data.difficulty);
+            fd.append("question_type", data.question_type);
+            fd.append("correct_alternative_key", correctKey);
+            fd.append("correct_justification", data.correct_justification);
+            fd.append("tip", data.tip);
+            fd.append("exam_board", data.exam_board);
+            fd.append("exam_year", data.exam_year);
+            fd.append("exam_name", data.exam_name);
+            fd.append("alternatives", JSON.stringify(
+                alts.filter(a => a.text.trim()).map(a => ({
+                    key: a.key,
+                    text: a.text,
+                    distractor_justification: a.distractor_justification || null,
+                }))
+            ));
+            if (imageFile) fd.append("image", imageFile);
+            if (removeImage) fd.append("remove_image", "true");
+
+            const res = await apiClient.put(`/admin/questions/${question.id}`, fd, {
+                headers: { "Content-Type": "multipart/form-data" },
+            });
+            return res.data;
+        },
+        onSuccess: (data) => {
+            toast.success("Questão atualizada!");
+            onSaved(data.question);
+        },
+        onError: () => toast.error("Erro ao salvar questão"),
+    });
+
+    function handleImageChange(e: React.ChangeEvent<HTMLInputElement>) {
+        const f = e.target.files?.[0];
+        if (!f) return;
+        setImageFile(f);
+        setRemoveImage(false);
+        const reader = new FileReader();
+        reader.onload = ev => setImagePreview(ev.target?.result as string);
+        reader.readAsDataURL(f);
+    }
+
+    function handleRemoveImage() {
+        setImageFile(null);
+        setImagePreview(null);
+        setRemoveImage(true);
+        if (imageRef.current) imageRef.current.value = "";
+    }
+
+    return (
+        <Dialog open onOpenChange={v => { if (!v) onClose(); }}>
+            <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+                <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2">
+                        <Pencil className="h-5 w-5" />
+                        Editar questão
+                    </DialogTitle>
+                </DialogHeader>
+
+                <form onSubmit={handleSubmit(d => saveMutation.mutate(d))} className="space-y-5">
+
+                    {/* Enunciado */}
+                    <div className="space-y-1">
+                        <label className="text-sm font-medium">Enunciado <span className="text-destructive">*</span></label>
+                        <textarea
+                            {...register("statement", { required: true })}
+                            rows={5}
+                            className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+                        />
+                    </div>
+
+                    {/* Imagem */}
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">Imagem da questão</label>
+                        {imagePreview ? (
+                            <div className="relative rounded-lg overflow-hidden border border-border bg-muted/30 w-full max-h-64">
+                                <img src={imagePreview} alt="Preview" className="w-full max-h-64 object-contain" />
+                                <button
+                                    type="button"
+                                    onClick={handleRemoveImage}
+                                    className="absolute top-2 right-2 p-1.5 rounded-lg bg-destructive text-destructive-foreground hover:bg-destructive/80 transition-colors"
+                                >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                            </div>
+                        ) : (
+                            <div
+                                onClick={() => imageRef.current?.click()}
+                                className="flex items-center gap-3 p-4 rounded-lg border-2 border-dashed border-border hover:border-primary/50 cursor-pointer transition-colors bg-muted/20"
+                            >
+                                <ImageIcon className="h-5 w-5 text-muted-foreground" />
+                                <p className="text-sm text-muted-foreground">
+                                    Clique para adicionar imagem (JPG, PNG, GIF)
+                                </p>
+                            </div>
+                        )}
+                        <input
+                            ref={imageRef}
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={handleImageChange}
+                        />
+                    </div>
+
+                    {/* Metadados */}
+                    <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium">Disciplina <span className="text-destructive">*</span></label>
+                            <Input {...register("discipline", { required: true })} />
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium">Tópico</label>
+                            <Input {...register("topic")} placeholder="Ex: Princípio da Legalidade" />
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium">Subtópico</label>
+                            <Input {...register("subtopic")} />
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium">Dificuldade</label>
+                            <select {...register("difficulty")} className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm">
+                                {DIFFICULTY_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                            </select>
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium">Tipo</label>
+                            <select {...register("question_type")} className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm">
+                                {TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                            </select>
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium">Banca</label>
+                            <Input {...register("exam_board")} placeholder="CESPE, FCC..." />
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium">Ano</label>
+                            <Input {...register("exam_year")} type="number" placeholder="2024" />
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium">Concurso</label>
+                            <Input {...register("exam_name")} placeholder="Ex: PC-SP 2024" />
+                        </div>
+                    </div>
+
+                    {/* Alternativas */}
+                    <div className="space-y-2">
+                        <p className="text-sm font-medium">
+                            Alternativas <span className="text-xs text-muted-foreground font-normal">— clique no círculo para marcar a correta</span>
+                        </p>
+                        {alts.map((alt, idx) => (
+                            <div key={alt.key} className={cn(
+                                "rounded-lg border p-3 space-y-2 transition-all",
+                                alt.key === correctKey ? "border-success/40 bg-success/5" : "border-border"
+                            )}>
+                                <div className="flex items-center gap-3">
+                                    <span className={cn(
+                                        "text-sm font-bold w-5 text-center uppercase shrink-0",
+                                        alt.key === correctKey ? "text-success" : "text-muted-foreground"
+                                    )}>{alt.key.toUpperCase()}</span>
+                                    <Input
+                                        value={alt.text}
+                                        onChange={e => {
+                                            const updated = [...alts];
+                                            updated[idx] = { ...updated[idx], text: e.target.value };
+                                            setAlts(updated);
+                                        }}
+                                        placeholder={`Alternativa ${alt.key.toUpperCase()}`}
+                                        className="flex-1 h-8 text-sm"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => setCorrectKey(alt.key)}
+                                        className={cn(
+                                            "h-5 w-5 rounded-full border-2 shrink-0 transition-all flex items-center justify-center",
+                                            alt.key === correctKey
+                                                ? "border-success bg-success"
+                                                : "border-muted-foreground/40 hover:border-success"
+                                        )}
+                                    >
+                                        {alt.key === correctKey && <CheckCircle2 className="h-3.5 w-3.5 text-white" />}
+                                    </button>
+                                </div>
+                                {alt.key !== correctKey && alt.text && (
+                                    <textarea
+                                        value={alt.distractor_justification}
+                                        onChange={e => {
+                                            const updated = [...alts];
+                                            updated[idx] = { ...updated[idx], distractor_justification: e.target.value };
+                                            setAlts(updated);
+                                        }}
+                                        rows={2}
+                                        placeholder="Por que esta alternativa está errada..."
+                                        className="w-full px-3 py-1.5 rounded-md border border-input bg-background text-xs resize-none focus:outline-none focus:ring-1 focus:ring-ring text-muted-foreground"
+                                    />
+                                )}
+                            </div>
+                        ))}
+                    </div>
+
+                    {/* Justificativa + Dica */}
+                    <div className="space-y-3">
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium">Justificativa da correta</label>
+                            <textarea
+                                {...register("correct_justification")}
+                                rows={3}
+                                placeholder="Por que a alternativa correta está certa..."
+                                className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+                            />
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium">Dica / Macete</label>
+                            <textarea
+                                {...register("tip")}
+                                rows={2}
+                                placeholder="Dica rápida para resolver este tipo de questão..."
+                                className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+                            />
+                        </div>
+                    </div>
+
+                    <DialogFooter>
+                        <Button type="button" variant="ghost" onClick={onClose}>Cancelar</Button>
+                        <Button type="submit" loading={saveMutation.isPending}>
+                            Salvar alterações
                         </Button>
                     </DialogFooter>
                 </form>
