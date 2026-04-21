@@ -1,0 +1,11 @@
+[run]
+omit =
+    app/tasks/cloudwatch_metrics.py
+    app/tasks/schedule_tasks.py
+    app/celery_worker.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise NotImplementedError
