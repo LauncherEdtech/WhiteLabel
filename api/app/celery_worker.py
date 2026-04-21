@@ -9,6 +9,8 @@ flask_app = create_app("production")
 
 # Guarda referência do flask_app no celery_app para tasks que precisam de contexto explícito
 celery_app.flask_app = flask_app
+flask_app.app_context().push()
+
 
 with flask_app.app_context():
     import app.tasks                        # tasks.py principal (generate, analyze, email)
