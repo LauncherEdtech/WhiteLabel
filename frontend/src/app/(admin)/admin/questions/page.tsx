@@ -858,7 +858,7 @@ function XlsxImportPanel() {
                         {(preview.questions_invalid ?? 0) > 0 && (
                             <div className="flex items-center gap-2 p-2.5 rounded-lg text-xs bg-destructive/10 border border-destructive/20 text-destructive">
                                 <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-                                {preview.questions_invalid} questão(ões) com gabarito inválido — serão rejeitadas na importação
+                                {preview.questions_invalid} questão(ões) com gabarito inválido serão rejeitadas na importação
                             </div>
                         )}
                         {preview.questions_with_image > 0 && (

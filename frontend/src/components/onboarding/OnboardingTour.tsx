@@ -74,7 +74,7 @@ const STEPS: TourStep[] = [
         route: "/schedule",
         target: "[data-onboarding='schedule']",
         title: "Cronograma inteligente",
-        description: "A IA organiza seus estudos automaticamente baseado no seu desempenho e disponibilidade. Ele se adapta quando você fica para trás ou melhora.",
+        description: "Escolha entre o cronograma do seu professor ou deixe a IA montar um personalizado. Depois disso, ele se adapta automaticamente conforme seu desempenho e disponibilidade.",
         icon: <Calendar className="h-5 w-5 text-primary" />,
         cta: "Próximo",
         position: "bottom",
@@ -328,7 +328,7 @@ export function OnboardingTour({ initialStep = 0, onComplete }: OnboardingTourPr
                             onClick={handleSkip}
                             className="text-xs text-muted-foreground hover:text-foreground transition-colors py-2"
                         >
-                            Pular — já conheço a plataforma
+                            Pular, já conheço a plataforma
                         </button>
                     </div>
                 </div>
