@@ -182,21 +182,41 @@ export default function AdminQuestionsPage() {
 
 // ── Stats Panel ───────────────────────────────────────────────────────────────
 
+interface ReprocessJob {
+    job_id: string;
+    status: "queued" | "running" | "done" | "cancelled" | "cancelling" | "error";
+    total: number;
+    processed: number;
+    enriched: number;
+    skipped: number;
+    errors: number;
+    already_enriched: number;
+    progress_pct: number;
+    started_at: string;
+    finished_at: string | null;
+    error_details: { question_id?: string; error: string }[];
+}
+
 function StatsPanel({ stats, isLoading }: { stats?: BankStats; isLoading: boolean }) {
     const toast = useToast();
     const queryClient = useQueryClient();
+    const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
-    const reprocessMutation = useMutation({
+    const startMutation = useMutation({
         mutationFn: () =>
             apiClient.post("/admin/questions/reprocess-gemini").then(r => r.data),
         onSuccess: (data: any) => {
+            if (!data.job_id) {
+                toast.success("Nenhuma questão pendente", "Todas já foram processadas pelo Gemini!");
+                return;
+            }
+            setActiveJobId(data.job_id);
             toast.success(
-                `${data.queued} questões enfileiradas`,
-                "Processamento Gemini iniciado em background"
+                `${data.total} questões enfileiradas`,
+                "Acompanhe o progresso abaixo"
             );
-            queryClient.invalidateQueries({ queryKey: QUERY_KEYS.QUESTION_BANK_STATS });
         },
-        onError: () => toast.error("Erro ao enfileirar reprocessamento"),
+        onError: () => toast.error("Erro ao iniciar reprocessamento"),
     });
 
     if (isLoading) {
@@ -232,30 +252,46 @@ function StatsPanel({ stats, isLoading }: { stats?: BankStats; isLoading: boolea
                 ))}
             </div>
 
-            {/* Ação de reprocessamento Gemini */}
+            {/* Painel de reprocessamento Gemini */}
             <Card className="border-primary/20 bg-primary/5">
-                <CardContent className="p-4 flex items-center justify-between gap-4">
-                    <div className="flex items-center gap-3">
-                        <Sparkles className="h-5 w-5 text-primary shrink-0" />
-                        <div>
-                            <p className="text-sm font-medium text-foreground">
-                                Reprocessar com Gemini
-                            </p>
-                            <p className="text-xs text-muted-foreground mt-0.5">
-                                Re-enfileira questões sem tópico, dica ou distratores para o Gemini processar
-                            </p>
+                <CardContent className="p-4 space-y-4">
+                    <div className="flex items-center justify-between gap-4">
+                        <div className="flex items-center gap-3">
+                            <Sparkles className="h-5 w-5 text-primary shrink-0" />
+                            <div>
+                                <p className="text-sm font-medium text-foreground">
+                                    Reprocessar com Gemini
+                                </p>
+                                <p className="text-xs text-muted-foreground mt-0.5">
+                                    Preenche tópico, dica e distratores das questões ainda não processadas
+                                </p>
+                            </div>
                         </div>
+                        {!activeJobId && (
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                loading={startMutation.isPending}
+                                onClick={() => startMutation.mutate()}
+                                className="shrink-0"
+                            >
+                                <Sparkles className="h-3.5 w-3.5" />
+                                Iniciar
+                            </Button>
+                        )}
                     </div>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        loading={reprocessMutation.isPending}
-                        onClick={() => reprocessMutation.mutate()}
-                        className="shrink-0"
-                    >
-                        <Sparkles className="h-3.5 w-3.5" />
-                        Reprocessar
-                    </Button>
+
+                    {activeJobId && (
+                        <ReprocessJobMonitor
+                            jobId={activeJobId}
+                            onDone={() => {
+                                queryClient.invalidateQueries({ queryKey: QUERY_KEYS.QUESTION_BANK_STATS });
+                            }}
+                            onReset={() => setActiveJobId(null)}
+                        />
+                    )}
+
+                    <ReprocessJobHistory activeJobId={activeJobId} />
                 </CardContent>
             </Card>
 
@@ -278,6 +314,262 @@ function StatsPanel({ stats, isLoading }: { stats?: BankStats; isLoading: boolea
                         </div>
                     </CardContent>
                 </Card>
+            )}
+        </div>
+    );
+}
+
+// ── Reprocess Job Monitor ─────────────────────────────────────────────────────
+
+function ReprocessJobMonitor({
+    jobId,
+    onDone,
+    onReset,
+}: {
+    jobId: string;
+    onDone: () => void;
+    onReset: () => void;
+}) {
+    const toast = useToast();
+    const [job, setJob] = useState<ReprocessJob | null>(null);
+    const [showErrors, setShowErrors] = useState(false);
+    const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+    const isFinished = (s: string) => ["done", "cancelled", "error"].includes(s);
+
+    useEffect(() => {
+        async function poll() {
+            try {
+                const res = await apiClient.get(`/admin/questions/reprocess-gemini/status?job_id=${jobId}`);
+                const data: ReprocessJob = res.data;
+                setJob(data);
+                if (isFinished(data.status)) {
+                    if (intervalRef.current) clearInterval(intervalRef.current);
+                    if (data.status === "done") onDone();
+                }
+            } catch { /* silencia */ }
+        }
+        poll();
+        intervalRef.current = setInterval(poll, 2000);
+        return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+    }, [jobId]);
+
+    const cancelMutation = useMutation({
+        mutationFn: () =>
+            apiClient.post("/admin/questions/reprocess-gemini/cancel", { job_id: jobId }).then(r => r.data),
+        onSuccess: () => toast.success("Cancelamento solicitado"),
+        onError: () => toast.error("Erro ao cancelar"),
+    });
+
+    if (!job) {
+        return (
+            <div className="flex items-center gap-2 text-muted-foreground py-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <p className="text-xs">Conectando...</p>
+            </div>
+        );
+    }
+
+    const statusConfig = {
+        queued: { label: "Na fila", color: "text-muted-foreground", icon: Clock },
+        running: { label: "Processando", color: "text-primary", icon: Loader2 },
+        cancelling: { label: "Cancelando...", color: "text-warning", icon: Loader2 },
+        done: { label: "Concluído", color: "text-success", icon: CheckCircle2 },
+        cancelled: { label: "Cancelado", color: "text-warning", icon: XCircle },
+        error: { label: "Erro", color: "text-destructive", icon: AlertCircle },
+    };
+
+    const cfg = statusConfig[job.status] ?? statusConfig.queued;
+    const StatusIcon = cfg.icon;
+    const finished = isFinished(job.status);
+    const pct = job.progress_pct ?? 0;
+
+    const elapsed = job.started_at
+        ? Math.floor((Date.now() - new Date(job.started_at).getTime()) / 1000)
+        : 0;
+    const elapsedStr = elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
+
+    return (
+        <div className="space-y-3 pt-1">
+            {/* Status + ações */}
+            <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                    <StatusIcon className={cn(
+                        "h-4 w-4 shrink-0", cfg.color,
+                        (job.status === "running" || job.status === "cancelling") && "animate-spin"
+                    )} />
+                    <span className={cn("text-sm font-semibold", cfg.color)}>{cfg.label}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                    {!finished && job.status !== "cancelling" && (
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-destructive border-destructive/30 hover:bg-destructive/10 h-7 text-xs"
+                            loading={cancelMutation.isPending}
+                            onClick={() => cancelMutation.mutate()}
+                        >
+                            <XCircle className="h-3 w-3" />
+                            Pausar
+                        </Button>
+                    )}
+                    {finished && (
+                        <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={onReset}>
+                            Novo reprocessamento
+                        </Button>
+                    )}
+                </div>
+            </div>
+
+            {/* Barra de progresso */}
+            <div className="space-y-1">
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span>{job.processed.toLocaleString("pt-BR")} / {job.total.toLocaleString("pt-BR")} questões</span>
+                    <span className="font-mono">{pct}% · {elapsedStr}</span>
+                </div>
+                <div className="h-2 rounded-full bg-muted overflow-hidden">
+                    <div
+                        className={cn(
+                            "h-full rounded-full transition-all duration-500",
+                            job.status === "done" && "bg-success",
+                            job.status === "cancelled" && "bg-warning",
+                            job.status === "error" && "bg-destructive",
+                            ["running", "queued", "cancelling"].includes(job.status) && "bg-primary",
+                        )}
+                        style={{ width: `${Math.max(pct, job.status === "queued" ? 2 : 0)}%` }}
+                    />
+                </div>
+            </div>
+
+            {/* Contadores */}
+            <div className="grid grid-cols-3 gap-2 text-center">
+                {[
+                    { label: "Enriquecidas", value: job.enriched, color: "text-success" },
+                    { label: "Ignoradas", value: job.skipped, color: "text-muted-foreground" },
+                    { label: "Erros", value: job.errors, color: "text-destructive" },
+                ].map(({ label, value, color }) => (
+                    <div key={label} className="p-2 rounded-lg bg-background/60">
+                        <p className={cn("text-lg font-bold font-display", color)}>{value.toLocaleString("pt-BR")}</p>
+                        <p className="text-xs text-muted-foreground">{label}</p>
+                    </div>
+                ))}
+            </div>
+
+            {/* Erros */}
+            {job.error_details.length > 0 && (
+                <div className="space-y-1">
+                    <button
+                        onClick={() => setShowErrors(!showErrors)}
+                        className="text-xs text-destructive hover:underline flex items-center gap-1"
+                    >
+                        <AlertCircle className="h-3 w-3" />
+                        {job.errors} erro{job.errors !== 1 ? "s" : ""} — {showErrors ? "ocultar" : "ver detalhes"}
+                    </button>
+                    {showErrors && (
+                        <div className="p-2 rounded-lg bg-destructive/5 border border-destructive/20 space-y-1 max-h-32 overflow-y-auto">
+                            {job.error_details.map((e, i) => (
+                                <p key={i} className="text-xs font-mono text-destructive">
+                                    {e.question_id?.slice(0, 8)}… — {e.error}
+                                </p>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+// ── Reprocess Job History ─────────────────────────────────────────────────────
+
+function ReprocessJobHistory({ activeJobId }: { activeJobId: string | null }) {
+    const [open, setOpen] = useState(false);
+
+    const { data, isLoading, refetch } = useQuery<{ jobs: ReprocessJob[] }>({
+        queryKey: ["reprocess-jobs-history"],
+        queryFn: () => apiClient.get("/admin/questions/reprocess-gemini/status").then(r => r.data),
+        enabled: open,
+        refetchInterval: open ? 5000 : false,
+        staleTime: 0,
+    });
+
+    const jobs = (data?.jobs ?? []).filter(j => j.job_id !== activeJobId);
+
+    const dotColor: Record<string, string> = {
+        queued: "bg-muted-foreground", running: "bg-primary animate-pulse",
+        cancelling: "bg-warning animate-pulse", done: "bg-success",
+        cancelled: "bg-warning", error: "bg-destructive",
+    };
+    const statusLabel: Record<string, string> = {
+        queued: "Na fila", running: "Processando", cancelling: "Cancelando",
+        done: "Concluído", cancelled: "Cancelado", error: "Erro",
+    };
+
+    function fmt(iso: string) {
+        return new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+    }
+
+    return (
+        <div className="border-t border-border/50 pt-3">
+            <button
+                onClick={() => { setOpen(!open); if (!open) refetch(); }}
+                className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors w-full"
+            >
+                <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-180")} />
+                <span className="font-medium">Histórico de reprocessamentos</span>
+                {jobs.length > 0 && !open && (
+                    <span className="ml-auto font-mono">{jobs.length} job{jobs.length !== 1 ? "s" : ""}</span>
+                )}
+            </button>
+
+            {open && (
+                <div className="mt-2 space-y-2">
+                    {isLoading && (
+                        <div className="flex items-center gap-2 py-3 text-muted-foreground justify-center">
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            <p className="text-xs">Carregando...</p>
+                        </div>
+                    )}
+                    {!isLoading && jobs.length === 0 && (
+                        <p className="text-xs text-muted-foreground text-center py-3">
+                            Nenhum histórico encontrado (jobs expiram após 24h)
+                        </p>
+                    )}
+                    {jobs.map(job => (
+                        <div key={job.job_id} className="p-3 rounded-lg border border-border/50 bg-background/40 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                    <span className={cn("h-2 w-2 rounded-full shrink-0", dotColor[job.status] ?? "bg-muted-foreground")} />
+                                    <div>
+                                        <p className="text-xs text-muted-foreground">
+                                            {fmt(job.started_at)} · <span className="text-foreground">{statusLabel[job.status] ?? job.status}</span>
+                                        </p>
+                                    </div>
+                                </div>
+                                <span className="text-xs font-mono text-muted-foreground shrink-0">
+                                    {job.total.toLocaleString("pt-BR")} questões
+                                </span>
+                            </div>
+                            <div className="h-1 rounded-full bg-muted overflow-hidden">
+                                <div
+                                    className={cn(
+                                        "h-full rounded-full",
+                                        job.status === "done" && "bg-success",
+                                        job.status === "cancelled" && "bg-warning",
+                                        job.status === "error" && "bg-destructive",
+                                        ["running", "queued", "cancelling"].includes(job.status) && "bg-primary",
+                                    )}
+                                    style={{ width: `${job.progress_pct}%` }}
+                                />
+                            </div>
+                            <div className="flex gap-3 text-xs text-muted-foreground">
+                                {job.enriched > 0 && <span className="text-success font-medium">+{job.enriched.toLocaleString("pt-BR")} enriquecidas</span>}
+                                {job.skipped > 0 && <span>{job.skipped.toLocaleString("pt-BR")} ignoradas</span>}
+                                {job.errors > 0 && <span className="text-destructive font-medium">{job.errors.toLocaleString("pt-BR")} erros</span>}
+                            </div>
+                        </div>
+                    ))}
+                </div>
             )}
         </div>
     );

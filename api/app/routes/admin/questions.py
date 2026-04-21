@@ -1129,23 +1129,53 @@ def bank_stats():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# REPROCESSAMENTO GEMINI — re-enfileira questões não processadas
+# REPROCESSAMENTO GEMINI — job assíncrono com progresso em tempo real
 # ══════════════════════════════════════════════════════════════════════════════
+
+# Prefixo de chave Redis separado do import job para não misturar históricos
+def _reprocess_job_key(job_id: str) -> str:
+    return f"reprocess_job:{job_id}"
+
+
+def _reprocess_cancel_key(job_id: str) -> str:
+    return f"reprocess_job:{job_id}:cancel"
+
+
+def _reprocess_job_get(job_id: str) -> dict | None:
+    try:
+        raw = redis_client.get(_reprocess_job_key(job_id))
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+def _reprocess_job_set(job_id: str, data: dict):
+    try:
+        redis_client.setex(_reprocess_job_key(job_id), _JOB_TTL, json.dumps(data))
+    except Exception:
+        pass
+
+
+def _reprocess_job_is_cancelled(job_id: str) -> bool:
+    try:
+        return bool(redis_client.exists(_reprocess_cancel_key(job_id)))
+    except Exception:
+        return False
+
+
+def _reprocess_job_set_cancel(job_id: str):
+    try:
+        redis_client.setex(_reprocess_cancel_key(job_id), _JOB_TTL, "1")
+    except Exception:
+        pass
 
 
 @admin_questions_bp.route("/questions/reprocess-gemini", methods=["POST"])
 @jwt_required()
 def reprocess_gemini():
     """
-    Re-enfileira todas as questões do banco global que ainda não foram
-    processadas pelo Gemini (gemini_enriched=False ou tip=NULL).
-
-    Útil para recuperar questões importadas antes do fix do tenant_id=None.
-
-    Body (opcional):
-      { "limit": 500 }   — máximo de questões a enfileirar (default: todas)
-
-    Retorna: { queued: N, already_enriched: M, total: T }
+    Inicia job assíncrono de reprocessamento Gemini.
+    Retorna job_id imediatamente — acompanhe via GET /reprocess-gemini/status.
     """
     err = _require_super_admin()
     if err:
@@ -1154,23 +1184,18 @@ def reprocess_gemini():
     data = request.get_json(silent=True) or {}
     limit = int(data.get("limit", 9999))
 
-    # Busca questões do banco global ainda não processadas
-    pending = (
-        db.session.query(Question)
+    # Conta questões pendentes para o job_data
+    pending_count = (
+        db.session.query(func.count(Question.id))
         .filter(
             Question.source_type == QuestionSourceType.BANK,
             Question.tenant_id.is_(None),
             Question.review_status == ReviewStatus.APPROVED,
             Question.is_active == True,
-            # gemini_enriched=False OU coluna ainda não existe (tip=NULL como proxy)
-            db.or_(
-                Question.gemini_enriched == False,
-                Question.tip.is_(None),
-            )
+            Question.tip.is_(None),
         )
-        .limit(limit)
-        .all()
-    )
+        .scalar()
+    ) or 0
 
     already_enriched = (
         db.session.query(func.count(Question.id))
@@ -1178,30 +1203,114 @@ def reprocess_gemini():
             Question.source_type == QuestionSourceType.BANK,
             Question.tenant_id.is_(None),
             Question.review_status == ReviewStatus.APPROVED,
-            Question.gemini_enriched == True,
+            Question.tip.isnot(None),
         )
         .scalar()
     ) or 0
 
-    queued = 0
-    errors = 0
+    if pending_count == 0:
+        return jsonify(
+            job_id=None,
+            queued=0,
+            already_enriched=already_enriched,
+            message="Nenhuma questão pendente para reprocessar.",
+        ), 200
+
+    job_id = str(uuid4())
+    job_data = {
+        "job_id": job_id,
+        "status": "queued",
+        "total": min(pending_count, limit),
+        "processed": 0,
+        "enriched": 0,
+        "skipped": 0,
+        "errors": 0,
+        "already_enriched": already_enriched,
+        "limit": limit,
+        "started_at": datetime.utcnow().isoformat(),
+        "finished_at": None,
+        "error_details": [],
+    }
+    _reprocess_job_set(job_id, job_data)
 
     try:
-        from app.tasks import analyze_question_task
-        for q in pending:
-            try:
-                analyze_question_task.delay(q.id, None)
-                queued += 1
-            except Exception as e:
-                current_app.logger.error(f"reprocess_gemini: falha ao enfileirar {q.id}: {e}")
-                errors += 1
-    except ImportError:
-        return jsonify(error="Celery não disponível."), 500
+        from app.tasks import run_reprocess_gemini_job
+        run_reprocess_gemini_job.delay(job_id, limit)
+    except Exception as e:
+        current_app.logger.error(f"reprocess_gemini dispatch error: {e}")
+        return jsonify(error="Erro ao enfileirar job."), 500
 
     return jsonify(
-        queued=queued,
+        job_id=job_id,
+        total=job_data["total"],
         already_enriched=already_enriched,
-        errors=errors,
-        total=queued + already_enriched,
-        message=f"{queued} questões enfileiradas para processamento Gemini.",
-    ), 200
+        status="queued",
+    ), 202
+
+
+@admin_questions_bp.route("/questions/reprocess-gemini/status", methods=["GET"])
+@jwt_required()
+def reprocess_gemini_status():
+    """Retorna o estado atual do job de reprocessamento."""
+    err = _require_super_admin()
+    if err:
+        return err
+
+    job_id = request.args.get("job_id")
+    if job_id:
+        job = _reprocess_job_get(job_id)
+        if not job:
+            return jsonify(error="Job não encontrado ou expirado."), 404
+        total = job.get("total", 0)
+        processed = job.get("processed", 0)
+        job["progress_pct"] = round((processed / total * 100), 1) if total else 0
+        return jsonify(job), 200
+
+    # Sem job_id → lista histórico (últimos 20)
+    try:
+        keys = redis_client.keys("reprocess_job:*")
+        job_keys = [k for k in keys if not k.endswith(b":cancel")]
+    except Exception:
+        return jsonify(jobs=[]), 200
+
+    jobs = []
+    for key in job_keys:
+        try:
+            raw = redis_client.get(key)
+            if raw:
+                job = json.loads(raw)
+                total = job.get("total", 0)
+                processed = job.get("processed", 0)
+                job["progress_pct"] = round((processed / total * 100), 1) if total else 0
+                jobs.append(job)
+        except Exception:
+            continue
+
+    jobs.sort(key=lambda j: j.get("started_at", ""), reverse=True)
+    return jsonify(jobs=jobs[:20]), 200
+
+
+@admin_questions_bp.route("/questions/reprocess-gemini/cancel", methods=["POST"])
+@jwt_required()
+def reprocess_gemini_cancel():
+    """Solicita cancelamento do job de reprocessamento."""
+    err = _require_super_admin()
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    job_id = data.get("job_id", "")
+    if not job_id:
+        return jsonify(error="job_id obrigatório."), 400
+
+    job = _reprocess_job_get(job_id)
+    if not job:
+        return jsonify(error="Job não encontrado."), 404
+    if job.get("status") not in ("queued", "running"):
+        return jsonify(error=f"Job já finalizado com status '{job.get('status')}'."), 400
+
+    _reprocess_job_set_cancel(job_id)
+    job["status"] = "cancelling"
+    _reprocess_job_set(job_id, job)
+
+    return jsonify(message="Cancelamento solicitado.", job_id=job_id), 200

@@ -22,7 +22,12 @@ generate_lesson_questions_task = _module.generate_lesson_questions_task
 try:
     process_xlsx_import_job = _module.process_xlsx_import_job
 except AttributeError:
-    process_xlsx_import_job = None  # tasks.py ainda não foi atualizado
+    process_xlsx_import_job = None
+
+try:
+    run_reprocess_gemini_job = _module.run_reprocess_gemini_job
+except AttributeError:
+    run_reprocess_gemini_job = None
 
 __all__ = [
     "send_broadcast_email",
@@ -32,4 +37,5 @@ __all__ = [
     "analyze_question_task",
     "generate_lesson_questions_task",
     "process_xlsx_import_job",
+    "run_reprocess_gemini_job",
 ]
