@@ -662,13 +662,13 @@ def run_reprocess_gemini_job(self, job_id: str, limit: int = 9999):
 
     logger.info(f"[reprocess_gemini_job] Iniciando job {job_id}")
 
-    job = _reprocess_job_get(job_id)
+    job = _job_get(job_id)
     if not job:
         logger.error(f"[reprocess_gemini_job] Job {job_id} não encontrado")
         return
 
     job["status"] = "running"
-    _reprocess_job_set(job_id, job)
+    _job_set(job_id, job)
 
     # Busca todas as questões pendentes de uma vez (IDs apenas para não travar memória)
     pending_ids = [
@@ -685,17 +685,17 @@ def run_reprocess_gemini_job(self, job_id: str, limit: int = 9999):
     ]
 
     job["total"] = len(pending_ids)
-    _reprocess_job_set(job_id, job)
+    _job_set(job_id, job)
 
     svc = GeminiService()
 
     for i, question_id in enumerate(pending_ids):
         # Checa cancelamento a cada 5 questões
-        if i % 5 == 0 and _reprocess_job_is_cancelled(job_id):
+        if i % 5 == 0 and _job_is_cancelled(job_id):
             logger.info(f"[reprocess_gemini_job] Cancelado na questão {i}")
             job["status"] = "cancelled"
             job["finished_at"] = datetime.utcnow().isoformat()
-            _reprocess_job_set(job_id, job)
+            _job_set(job_id, job)
             return
 
         try:
@@ -765,11 +765,11 @@ def run_reprocess_gemini_job(self, job_id: str, limit: int = 9999):
 
         # Atualiza Redis a cada 5 questões
         if i % 5 == 0:
-            _reprocess_job_set(job_id, job)
+            _job_set(job_id, job)
 
     job["status"] = "done"
     job["finished_at"] = datetime.utcnow().isoformat()
-    _reprocess_job_set(job_id, job)
+    _job_set(job_id, job)
 
     logger.info(
         f"[reprocess_gemini_job] Job {job_id} concluído: "
