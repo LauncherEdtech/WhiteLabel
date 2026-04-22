@@ -2,8 +2,9 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { analyticsApi } from "@/lib/api/analytics";
+import { apiClient } from "@/lib/api/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ProgressBar } from "@/components/shared/ProgressBar";
@@ -14,9 +15,11 @@ import {
   ChevronLeft, Target, BookOpen, TrendingUp,
   AlertTriangle, CheckCircle2, ListChecks,
   Sparkles, GraduationCap, Calendar, ChevronDown,
+  RefreshCw, Pencil, X, Check, Loader2,
 } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useToast } from "@/lib/hooks/useToast";
 import type { WeeklyMission, WeeklyMissionItem } from "@/types/api";
 
 export default function StudentDetailPage() {
@@ -149,27 +152,219 @@ export default function StudentDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Insights do aluno */}
-      {insights?.length > 0 && (
-        <div className="space-y-2">
-          <p className="text-sm font-semibold text-foreground">Insights deste aluno</p>
-          {insights.map((insight: any, i: number) => (
-            <Card key={i} className={cn(
-              "border-l-4",
-              insight.type === "weakness" ? "border-l-destructive" :
-                insight.type === "motivation" ? "border-l-success" : "border-l-warning"
-            )}>
-              <CardContent className="p-3 flex items-start gap-2">
-                <span className="text-lg">{insight.icon}</span>
-                <div>
-                  <p className="text-sm font-medium text-foreground">{insight.title}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">{insight.message}</p>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+      {/* Insights — gerenciamento pelo produtor */}
+      <InsightsSection studentId={id} initialInsights={insights ?? []} />
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SEÇÃO DE INSIGHTS — regenerar + edição inline
+// ══════════════════════════════════════════════════════════════════════════════
+
+interface InsightItem {
+  type: string;
+  icon: string;
+  title: string;
+  message: string;
+}
+
+function InsightsSection({
+  studentId,
+  initialInsights,
+}: {
+  studentId: string;
+  initialInsights: InsightItem[];
+}) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+
+  const [insights, setInsights] = useState<InsightItem[]>(initialInsights);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState<{ title: string; message: string }>({ title: "", message: "" });
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Sincroniza quando os dados externos mudam
+  useEffect(() => {
+    setInsights(initialInsights);
+  }, [initialInsights]);
+
+  // ── Regenerar via Gemini ───────────────────────────────────────────────────
+  const handleRegenerate = async () => {
+    setIsRegenerating(true);
+    try {
+      const res = await apiClient.post(`/analytics/student/${studentId}/insights/regenerate`);
+      const newInsights: InsightItem[] = res.data.insights ?? [];
+      setInsights(newInsights);
+      setEditingIndex(null);
+      queryClient.invalidateQueries({ queryKey: ["analytics", "student", "dashboard", studentId] });
+      toast.success("Insights regenerados com sucesso!");
+    } catch {
+      toast.error("Erro ao regenerar insights. Tente novamente.");
+    } finally {
+      setIsRegenerating(false);
+    }
+  };
+
+  // ── Edição inline ─────────────────────────────────────────────────────────
+  const startEdit = (index: number) => {
+    setEditingIndex(index);
+    setEditDraft({ title: insights[index].title, message: insights[index].message });
+  };
+
+  const cancelEdit = () => {
+    setEditingIndex(null);
+    setEditDraft({ title: "", message: "" });
+  };
+
+  // Aplica edição localmente (ainda não salva no servidor)
+  const applyEdit = () => {
+    if (editingIndex === null) return;
+    setInsights(prev => prev.map((ins, i) =>
+      i === editingIndex ? { ...ins, ...editDraft } : ins
+    ));
+    setEditingIndex(null);
+  };
+
+  // ── Salvar todas as edições no Redis via API ───────────────────────────────
+  const handleSaveAll = async () => {
+    setIsSaving(true);
+    try {
+      await apiClient.put(`/analytics/student/${studentId}/insights`, { insights });
+      queryClient.invalidateQueries({ queryKey: ["analytics", "student", "dashboard", studentId] });
+      toast.success("Insights salvos com sucesso!");
+    } catch {
+      toast.error("Erro ao salvar insights. Tente novamente.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const BORDER_COLOR: Record<string, string> = {
+    motivation: "border-l-success",
+    positive: "border-l-success",
+    weakness: "border-l-destructive",
+    alert: "border-l-destructive",
+    next_step: "border-l-warning",
+    warning: "border-l-warning",
+  };
+
+  if (insights.length === 0) return null;
+
+  return (
+    <div className="space-y-3">
+      {/* Cabeçalho */}
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-semibold text-foreground">Insights deste aluno</p>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRegenerate}
+            disabled={isRegenerating || editingIndex !== null}
+            className="h-7 text-xs gap-1.5"
+          >
+            {isRegenerating
+              ? <Loader2 className="h-3 w-3 animate-spin" />
+              : <RefreshCw className="h-3 w-3" />
+            }
+            {isRegenerating ? "Gerando..." : "Gerar novamente"}
+          </Button>
+
+          {/* Salvar edições — visível apenas quando não há edição aberta */}
+          {editingIndex === null && (
+            <Button
+              size="sm"
+              onClick={handleSaveAll}
+              disabled={isSaving}
+              className="h-7 text-xs gap-1.5"
+            >
+              {isSaving
+                ? <Loader2 className="h-3 w-3 animate-spin" />
+                : <Check className="h-3 w-3" />
+              }
+              {isSaving ? "Salvando..." : "Salvar edições"}
+            </Button>
+          )}
         </div>
-      )}
+      </div>
+
+      {/* Cards */}
+      {insights.map((insight, i) => (
+        <Card
+          key={i}
+          className={cn(
+            "border-l-4 transition-all",
+            BORDER_COLOR[insight.type] ?? "border-l-primary",
+            editingIndex === i && "ring-2 ring-primary/30"
+          )}
+        >
+          <CardContent className="p-3">
+            {editingIndex === i ? (
+              // ── Modo edição ──────────────────────────────────────────────
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-lg">{insight.icon}</span>
+                  <span className="text-xs text-muted-foreground font-medium uppercase tracking-wide">
+                    Editando insight
+                  </span>
+                </div>
+                <input
+                  type="text"
+                  value={editDraft.title}
+                  onChange={e => setEditDraft(d => ({ ...d, title: e.target.value }))}
+                  placeholder="Título do insight"
+                  className="w-full text-sm font-medium bg-muted/50 border border-border rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-primary/30 text-foreground placeholder:text-muted-foreground"
+                />
+                <textarea
+                  value={editDraft.message}
+                  onChange={e => setEditDraft(d => ({ ...d, message: e.target.value }))}
+                  placeholder="Mensagem do insight"
+                  rows={3}
+                  className="w-full text-xs bg-muted/50 border border-border rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-primary/30 text-foreground placeholder:text-muted-foreground resize-none leading-relaxed"
+                />
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  <Button variant="ghost" size="sm" onClick={cancelEdit} className="h-7 text-xs gap-1">
+                    <X className="h-3 w-3" /> Cancelar
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={applyEdit}
+                    disabled={!editDraft.title.trim() || !editDraft.message.trim()}
+                    className="h-7 text-xs gap-1"
+                  >
+                    <Check className="h-3 w-3" /> Aplicar
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              // ── Modo visualização ────────────────────────────────────────
+              <div className="flex items-start gap-2">
+                <span className="text-lg shrink-0">{insight.icon}</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-foreground">{insight.title}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">{insight.message}</p>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => startEdit(i)}
+                  disabled={isRegenerating || isSaving}
+                  className="h-7 w-7 p-0 shrink-0 text-muted-foreground hover:text-foreground"
+                  title="Editar insight"
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      ))}
+
+      <p className="text-xs text-muted-foreground text-right">
+        Edições ficam salvas por 12h ou até a próxima regeneração.
+      </p>
     </div>
   );
 }
@@ -224,11 +419,9 @@ function ProducerWeeklyMissionCard({ mission }: { mission: WeeklyMission | undef
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            {/* Badge tipo do cronograma */}
             {has_schedule && schedule_source_type && (
               <ScheduleSourceBadge sourceType={schedule_source_type} />
             )}
-            {/* Contador */}
             {total_items > 0 && (
               <span className={cn(
                 "text-xs font-bold px-2 py-0.5 rounded-full",
@@ -274,15 +467,8 @@ function ProducerWeeklyMissionCard({ mission }: { mission: WeeklyMission | undef
           </div>
         )}
 
-        {/* Tarefas do cronograma */}
-        {scheduleItem && (
-          <ProducerScheduleBlock item={scheduleItem} />
-        )}
-
-        {/* Disciplinas a melhorar */}
-        {disciplineItem && (
-          <ProducerDisciplineBlock item={disciplineItem} />
-        )}
+        {scheduleItem && <ProducerScheduleBlock item={scheduleItem} />}
+        {disciplineItem && <ProducerDisciplineBlock item={disciplineItem} />}
       </CardContent>
     </Card>
   );

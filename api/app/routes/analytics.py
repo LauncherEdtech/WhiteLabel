@@ -1879,6 +1879,111 @@ def _generate_insights(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# GERENCIAMENTO DE INSIGHTS DO ALUNO — endpoints para o produtor
+# ══════════════════════════════════════════════════════════════════════════════
+ 
+ 
+@analytics_bp.route("/student/<user_id>/insights/regenerate", methods=["POST"])
+@jwt_required()
+@require_tenant
+def regenerate_student_insights(user_id: str):
+    """
+    Produtor força regeneração dos insights de um aluno via Gemini.
+    Limpa o cache e recalcula com os dados mais recentes.
+    """
+    claims = get_jwt()
+    if not _is_producer_or_above(claims):
+        return jsonify({"error": "forbidden"}), 403
+ 
+    tenant = get_current_tenant()
+ 
+    target_user = User.query.filter_by(
+        id=user_id, tenant_id=tenant.id, is_deleted=False
+    ).first()
+    if not target_user:
+        return jsonify({"error": "user_not_found"}), 404
+ 
+    # Apaga caches de insights e do dashboard completo
+    _delete_cached_insights(user_id, tenant.id)
+    _cache_delete(_dashboard_cache_key(user_id, tenant.id))
+ 
+    # Recalcula contexto completo do aluno
+    now = datetime.now(timezone.utc)
+    now_brt = now.astimezone(BRT)
+    today_start = now_brt.replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).astimezone(timezone.utc)
+    week_start = today_start - timedelta(days=now_brt.weekday())
+ 
+    questions_stats = _get_questions_stats(user_id, tenant.id, today_start, week_start)
+    discipline_stats = _get_discipline_stats(user_id, tenant.id)
+    lesson_progress = _get_lesson_progress_stats(user_id, tenant.id)
+    todays_pending = _get_todays_pending(user_id, tenant.id, today_start)
+    weekly_mission = _get_weekly_mission(user_id, tenant.id, discipline_stats)
+ 
+    insights = _generate_insights(
+        user=target_user,
+        tenant=tenant,
+        questions_stats=questions_stats,
+        discipline_stats=discipline_stats,
+        lesson_progress=lesson_progress,
+        weekly_mission=weekly_mission,
+        todays_pending=todays_pending,
+    )
+    _set_cached_insights(user_id, tenant.id, insights)
+ 
+    current_app.logger.info(
+        f"[INSIGHTS] Regenerado pelo produtor para user={user_id} tenant={tenant.id}"
+    )
+ 
+    return jsonify({"insights": insights}), 200
+ 
+ 
+@analytics_bp.route("/student/<user_id>/insights", methods=["PUT"])
+@jwt_required()
+@require_tenant
+def update_student_insights(user_id: str):
+    """
+    Produtor edita manualmente os insights de um aluno.
+    Os insights editados são salvos no cache Redis (TTL 12h).
+    """
+    claims = get_jwt()
+    if not _is_producer_or_above(claims):
+        return jsonify({"error": "forbidden"}), 403
+ 
+    tenant = get_current_tenant()
+ 
+    target_user = User.query.filter_by(
+        id=user_id, tenant_id=tenant.id, is_deleted=False
+    ).first()
+    if not target_user:
+        return jsonify({"error": "user_not_found"}), 404
+ 
+    body = request.get_json(silent=True) or {}
+    insights = body.get("insights")
+ 
+    if not isinstance(insights, list) or len(insights) == 0:
+        return jsonify({"error": "invalid_payload", "detail": "insights deve ser uma lista não vazia"}), 400
+ 
+    # Valida estrutura mínima de cada insight
+    for item in insights:
+        if not isinstance(item, dict) or not item.get("title") or not item.get("message"):
+            return jsonify({"error": "invalid_insight", "detail": "Cada insight precisa de title e message"}), 400
+ 
+    # Salva no cache com TTL 12h (mesmo TTL do Gemini)
+    _set_cached_insights(user_id, tenant.id, insights)
+    # Invalida dashboard para que o próximo GET reflita os insights editados
+    _cache_delete(_dashboard_cache_key(user_id, tenant.id))
+ 
+    current_app.logger.info(
+        f"[INSIGHTS] Editado manualmente pelo produtor para user={user_id} tenant={tenant.id}"
+    )
+ 
+    return jsonify({"insights": insights}), 200
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # PRÓXIMA AÇÃO RECOMENDADA — widget coach com Gemini
 # ══════════════════════════════════════════════════════════════════════════════
 
