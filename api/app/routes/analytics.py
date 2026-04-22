@@ -316,6 +316,10 @@ def student_dashboard():
     lesson_progress = _get_lesson_progress_stats(target_user_id, tenant.id)
     todays_pending = _get_todays_pending(target_user_id, tenant.id, today_start)
     time_stats = _get_time_stats(target_user_id, tenant.id, today_start, week_start)
+
+    # ── weekly_mission calculado ANTES dos insights para alimentá-los ─────────
+    weekly_mission = _get_weekly_mission(target_user_id, tenant.id, discipline_stats)
+
     insights = _get_cached_insights(target_user_id, tenant.id)
     if not insights:
         insights = _generate_insights(
@@ -324,11 +328,10 @@ def student_dashboard():
             questions_stats=questions_stats,
             discipline_stats=discipline_stats,
             lesson_progress=lesson_progress,
-            time_stats=time_stats,
+            weekly_mission=weekly_mission,
+            todays_pending=todays_pending,
         )
         _set_cached_insights(target_user_id, tenant.id, insights)
-
-    weekly_mission = _get_weekly_mission(target_user_id, tenant.id, discipline_stats)
 
     payload = {
         "student": {
@@ -1421,6 +1424,7 @@ def _get_todays_pending(user_id: str, tenant_id: str, today_start: datetime) -> 
         data = {
             "id": item.id,
             "type": item.item_type,
+            "item_type": item.item_type,
             "estimated_minutes": item.estimated_minutes,
             "priority_reason": item.priority_reason,
             "status": item.status,
@@ -1431,12 +1435,14 @@ def _get_todays_pending(user_id: str, tenant_id: str, today_start: datetime) -> 
                 "title": item.lesson.title,
                 "duration_minutes": item.lesson.duration_minutes,
             }
+            data["lesson_title"] = item.lesson.title
         if item.subject_id and item.subject:
             data["subject"] = {
                 "id": item.subject.id,
                 "name": item.subject.name,
                 "color": item.subject.color,
             }
+            data["subject_name"] = item.subject.name
         result.append(data)
 
     return result
@@ -1841,9 +1847,16 @@ def _generate_insights(
     questions_stats: dict,
     discipline_stats: list,
     lesson_progress: dict,
-    time_stats: dict,
+    weekly_mission: dict = None,
+    todays_pending: list = None,
 ) -> list:
+    """
+    Gera os 3 insights do dashboard do aluno.
+    Foco: missão semanal, pendências de hoje, desempenho por disciplina.
+    """
     api_key = current_app.config.get("GEMINI_API_KEY", "")
+    weekly_mission = weekly_mission or {}
+    todays_pending = todays_pending or []
 
     if api_key:
         try:
@@ -1854,13 +1867,14 @@ def _generate_insights(
                 questions_stats=questions_stats,
                 discipline_stats=discipline_stats,
                 lesson_progress=lesson_progress,
-                time_stats=time_stats,
+                weekly_mission=weekly_mission,
+                todays_pending=todays_pending,
             )
         except Exception as e:
             current_app.logger.warning(f"Gemini insights falhou, usando fallback: {e}")
 
     return _rule_based_insights(
-        questions_stats, discipline_stats, lesson_progress, time_stats
+        questions_stats, discipline_stats, lesson_progress, weekly_mission, todays_pending
     )
 
 
@@ -2243,46 +2257,81 @@ def _gemini_student_insights(
     questions_stats: dict,
     discipline_stats: list,
     lesson_progress: dict,
-    time_stats: dict,
+    weekly_mission: dict,
+    todays_pending: list,
 ) -> list:
-    from google import genai  # SDK correto: google-genai
+    """
+    Gera 3 insights via Gemini com foco em:
+      1. Missão semanal (progresso do cronograma)
+      2. Pendências de hoje
+      3. Desempenho por disciplina
+    """
+    from google import genai
 
-    # Lê tema do tenant — fallback "militar"
     insight_theme = (tenant.settings or {}).get("insight_theme", "militar")
     voice = _INSIGHT_THEME_VOICE.get(insight_theme, _INSIGHT_THEME_VOICE["militar"])
 
     weak = [d for d in discipline_stats if d["performance_label"] == "fraco"]
     strong = [d for d in discipline_stats if d["performance_label"] == "forte"]
+    weak_str = (
+        ", ".join(f"{d['discipline']} ({d['accuracy_rate']}%)" for d in weak[:3])
+        or "nenhuma"
+    )
+    strong_str = (
+        ", ".join(f"{d['discipline']} ({d['accuracy_rate']}%)" for d in strong[:3])
+        or "nenhuma"
+    )
 
-    weak_str = [f"{d['discipline']} ({d['accuracy_rate']}%)" for d in weak[:3]]
-    strong_str = [f"{d['discipline']} ({d['accuracy_rate']}%)" for d in strong[:3]]
+    # ── Missão semanal ────────────────────────────────────────────────────────
+    has_schedule = weekly_mission.get("has_schedule", False)
+    total_items = weekly_mission.get("total_items", 0)
+    completed_items = weekly_mission.get("completed_items", 0)
+    mission_pct = round((completed_items / total_items) * 100) if total_items > 0 else 0
+
+    if not has_schedule or total_items == 0:
+        mission_str = "sem cronograma ativo — nenhuma missão configurada"
+    else:
+        mission_str = (
+            f"{completed_items}/{total_items} itens concluídos esta semana ({mission_pct}%)"
+        )
+
+    # ── Pendências de hoje ────────────────────────────────────────────────────
+    pending_count = len(todays_pending)
+    pending_labels = (
+        "; ".join(
+            p.get("lesson_title") or p.get("subject_name") or p.get("item_type", "item")
+            for p in todays_pending[:3]
+        )
+        if todays_pending
+        else "nenhuma"
+    )
 
     prompt = f"""Você é um {voice['persona']}.
-Analise os dados de estudo do candidato e gere EXATAMENTE 3 insights em português.
- 
+Analise os dados do candidato e gere EXATAMENTE 3 insights em português.
+
 DADOS DO CANDIDATO:
 - Nome: {user.name}
+- {voice['meta'].capitalize()}: {mission_str}
+- Pendências de hoje no cronograma: {pending_count} item(ns) — {pending_labels}
 - Questões respondidas hoje: {questions_stats['today']['answered']}
 - Taxa de acerto geral: {questions_stats['overall_accuracy']}%
-- Tempo estudado esta semana: {time_stats['week_minutes']} minutos
-- {voice['meta'].capitalize()}: {time_stats['weekly_goal_minutes']} minutos ({time_stats['weekly_progress_percent']}% concluído)
-- Aulas assistidas: {lesson_progress['total_watched']} de {lesson_progress['total_available']}
 - Pontos fracos ({voice['fraqueza']}): {weak_str}
 - Pontos fortes: {strong_str}
- 
+- Aulas assistidas: {lesson_progress['total_watched']} de {lesson_progress['total_available']}
+
 TOM OBRIGATÓRIO: {voice['tom']}
-- No insight motivacional, chame o candidato de "{voice['chamada']}" uma vez.
-- Substitua "meta" por "{voice['meta']}", "estudo" por "{voice['estudo']}", "ponto fraco" por "{voice['fraqueza']}".
+- Chame o candidato de "{voice['chamada']}" UMA VEZ, apenas no primeiro insight.
+- Substitua "meta" por "{voice['meta']}", "ponto fraco" por "{voice['fraqueza']}".
 - Seja direto e específico. Máximo 2 frases por insight. Use os dados reais acima.
- 
-REGRAS:
-1. Um insight: motivacional (type=motivation)
-2. Um insight: ponto fraco (type=weakness)
-3. Um insight: próximo passo (type=next_step)
+
+REGRAS — gere exatamente nesta ordem:
+1. Insight de {voice['meta']} (type=motivation): Comente o progresso da {voice['meta']} ({mission_str}). Se não há cronograma, incentive a criar um. Chame pelo nome "{voice['chamada']}" aqui.
+2. Insight de pendências (type=next_step): Baseado nos {pending_count} item(ns) pendente(s) de hoje ({pending_labels}). Se zero pendências, comente as questões respondidas hoje ({questions_stats['today']['answered']}).
+3. Insight de desempenho (type=weakness): Baseado nos pontos fracos ({weak_str}) e acerto geral de {questions_stats['overall_accuracy']}%. Se não há pontos fracos, parabenize o desempenho.
 4. Responda APENAS com JSON válido, sem markdown, sem explicações.
- 
+
 FORMATO OBRIGATÓRIO:
-{{"insights": [{{"type": "motivation"|"weakness"|"next_step", "icon": "🎯"|"⚠️"|"📌", "title": "título curto", "message": "mensagem prática"}}]}}"""
+{{"insights": [{{"type": "motivation"|"weakness"|"next_step", "icon": "emoji", "title": "título curto", "message": "mensagem prática"}}]}}"""
 
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
@@ -2366,40 +2415,101 @@ def _rule_based_insights(
     questions_stats: dict,
     discipline_stats: list,
     lesson_progress: dict,
-    time_stats: dict,
+    weekly_mission: dict = None,
+    todays_pending: list = None,
 ) -> list:
+    """
+    Fallback sem Gemini. Mesma estrutura de 3 insights:
+      1. Missão semanal
+      2. Pendências de hoje
+      3. Desempenho por disciplina
+    """
     insights = []
+    weekly_mission = weekly_mission or {}
+    todays_pending = todays_pending or []
 
-    progress_pct = time_stats["weekly_progress_percent"]
-    if progress_pct >= 80:
+    # ── Insight 1: Missão semanal ─────────────────────────────────────────────
+    has_schedule = weekly_mission.get("has_schedule", False)
+    total_items = weekly_mission.get("total_items", 0)
+    completed_items = weekly_mission.get("completed_items", 0)
+
+    if not has_schedule or total_items == 0:
         insights.append(
             {
                 "type": "motivation",
-                "icon": "🎯",
-                "title": "Semana excelente!",
-                "message": f"Você já completou {progress_pct}% da sua meta semanal. Continue assim — consistência é o segredo da aprovação.",
+                "icon": "📅",
+                "title": "Crie seu cronograma semanal",
+                "message": "Candidatos com cronograma têm 3x mais chances de aprovação. Configure o seu agora.",
             }
         )
-    elif progress_pct >= 40:
-        remaining = time_stats["weekly_goal_minutes"] - time_stats["week_minutes"]
+    else:
+        mission_pct = round((completed_items / total_items) * 100)
+        remaining = total_items - completed_items
+        if mission_pct >= 80:
+            insights.append(
+                {
+                    "type": "positive",
+                    "icon": "🏆",
+                    "title": f"Missão quase cumprida — {mission_pct}%",
+                    "message": f"Você completou {completed_items} de {total_items} itens esta semana. Faltam apenas {remaining} para zerar a missão!",
+                }
+            )
+        elif mission_pct >= 40:
+            insights.append(
+                {
+                    "type": "motivation",
+                    "icon": "🎯",
+                    "title": f"Missão em andamento — {mission_pct}%",
+                    "message": f"{completed_items} de {total_items} itens concluídos. Restam {remaining} para completar a semana.",
+                }
+            )
+        else:
+            insights.append(
+                {
+                    "type": "warning",
+                    "icon": "📋",
+                    "title": f"Missão atrasada — {mission_pct}%",
+                    "message": f"Apenas {completed_items} de {total_items} itens concluídos. Retome o cronograma para não perder o ritmo.",
+                }
+            )
+
+    # ── Insight 2: Pendências de hoje ─────────────────────────────────────────
+    pending_count = len(todays_pending)
+    if pending_count > 0:
+        first = todays_pending[0]
+        item_label = (
+            first.get("lesson_title")
+            or first.get("subject_name")
+            or first.get("item_type", "item pendente")
+        )
         insights.append(
             {
-                "type": "motivation",
-                "icon": "🎯",
-                "title": "Você está no caminho certo",
-                "message": f"Faltam apenas {round(remaining)} minutos para bater sua meta da semana. Você consegue!",
+                "type": "next_step",
+                "icon": "📌",
+                "title": f"{pending_count} pendência(s) para hoje",
+                "message": f"Próximo item: {item_label}. Cada aula concluída te aproxima da aprovação.",
+            }
+        )
+    elif questions_stats["today"]["answered"] == 0:
+        insights.append(
+            {
+                "type": "next_step",
+                "icon": "📌",
+                "title": "Comece com questões hoje",
+                "message": "Você ainda não respondeu nenhuma questão hoje. Que tal resolver 10 questões rápidas agora?",
             }
         )
     else:
         insights.append(
             {
                 "type": "next_step",
-                "icon": "📌",
-                "title": "Hora de retomar o ritmo",
-                "message": f"Você completou {progress_pct}% da meta desta semana. Que tal reservar 30 minutos agora para estudar?",
+                "icon": "✅",
+                "title": "Agenda do dia em dia",
+                "message": f"Você respondeu {questions_stats['today']['answered']} questões hoje. Continue praticando!",
             }
         )
 
+    # ── Insight 3: Desempenho por disciplina ──────────────────────────────────
     weak = [d for d in discipline_stats if d["performance_label"] == "fraco"]
     if weak:
         weakest = weak[0]
@@ -2408,7 +2518,7 @@ def _rule_based_insights(
                 "type": "weakness",
                 "icon": "⚠️",
                 "title": f"Foco em {weakest['discipline']}",
-                "message": f"Sua taxa de acerto em {weakest['discipline']} está em {weakest['accuracy_rate']}%. Revise o material e pratique mais questões desta disciplina.",
+                "message": f"Sua taxa de acerto em {weakest['discipline']} está em {weakest['accuracy_rate']}%. Revise o material e pratique mais questões.",
             }
         )
     elif questions_stats["overall_accuracy"] < 50:
@@ -2427,37 +2537,6 @@ def _rule_based_insights(
                 "icon": "💪",
                 "title": "Bom desempenho!",
                 "message": f"Taxa de acerto de {questions_stats['overall_accuracy']}%. Continue praticando para consolidar o conhecimento.",
-            }
-        )
-
-    if lesson_progress["total_watched"] < lesson_progress["total_available"]:
-        remaining_lessons = (
-            lesson_progress["total_available"] - lesson_progress["total_watched"]
-        )
-        insights.append(
-            {
-                "type": "next_step",
-                "icon": "📌",
-                "title": f"{remaining_lessons} aulas para assistir",
-                "message": "Assista às aulas pendentes antes de resolver questões — a base teórica aumenta o aproveitamento.",
-            }
-        )
-    elif questions_stats["today"]["answered"] == 0:
-        insights.append(
-            {
-                "type": "next_step",
-                "icon": "📌",
-                "title": "Comece com questões hoje",
-                "message": "Você ainda não respondeu nenhuma questão hoje. Que tal resolver 10 questões rápidas agora?",
-            }
-        )
-    else:
-        insights.append(
-            {
-                "type": "next_step",
-                "icon": "📌",
-                "title": "Continue praticando",
-                "message": f"Você respondeu {questions_stats['today']['answered']} questões hoje. Tente chegar a 20 para um estudo mais completo.",
             }
         )
 
