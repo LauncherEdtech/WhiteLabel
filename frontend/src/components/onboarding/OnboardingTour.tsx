@@ -74,7 +74,7 @@ const STEPS: TourStep[] = [
         route: "/schedule",
         target: "[data-onboarding='schedule']",
         title: "Cronograma inteligente",
-        description: "Escolha entre o cronograma do seu professor ou deixe a IA montar um personalizado. Depois disso, ele se adapta automaticamente conforme seu desempenho e disponibilidade.",
+        description: "Deixe o Mentor Inteligente montar um cronograma personalizado. Depois disso, ele se adapta automaticamente conforme seu desempenho e disponibilidade.",
         icon: <Calendar className="h-5 w-5 text-primary" />,
         cta: "Próximo",
         position: "bottom",
