@@ -6,6 +6,10 @@ from unittest.mock import patch
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _is_sqlite(db) -> bool:
+    """Retorna True se o banco de testes é SQLite."""
+    return "sqlite" in str(db.engine.url)
+
 def _enroll_student(db, app):
     """Matricula o aluno no curso de teste (idempotente)."""
     from app.models.course import Course, CourseEnrollment
@@ -82,6 +86,8 @@ class TestSchedule:
         assert data["schedule"]["status"] == "active"
 
     def test_generate_schedule_with_target_date(self, client, student_headers, db, app):
+        if _is_sqlite(db):
+            import pytest as _pt; _pt.skip("SQLite bulk update DateTime incompatibility")
         _enroll_student(db, app)
         course_id = _get_course_id(app)
 
@@ -90,10 +96,8 @@ class TestSchedule:
             json={"course_id": course_id, "target_date": "2026-12-31"},
             headers=student_headers,
         )
-        # 500 pode ocorrer em SQLite (DateTime incompatibility) — ignorado em CI
-        assert res.status_code in (200, 201, 500)
-        if res.status_code in (200, 201):
-            assert res.json["schedule"]["target_date"] == "2026-12-31"
+        assert res.status_code in (200, 201)
+        assert res.json["schedule"]["target_date"] == "2026-12-31"
 
     def test_generate_schedule_not_enrolled(self, client, db, app):
         """Aluno não matriculado recebe 403."""
@@ -197,6 +201,8 @@ class TestSchedule:
         assert res.status_code == 400
 
     def test_reorganize_schedule(self, client, student_headers, db, app):
+        if _is_sqlite(db):
+            import pytest as _pt; _pt.skip("SQLite bulk update DateTime incompatibility")
         _enroll_student(db, app)
         course_id = _get_course_id(app)
 
@@ -205,10 +211,8 @@ class TestSchedule:
             json={"course_id": course_id},
             headers=student_headers,
         )
-        # 500 pode ocorrer em SQLite (DateTime incompatibility) — ignorado em CI
-        assert res.status_code in (200, 500)
-        if res.status_code == 200:
-            assert res.json["schedule"]["status"] == "active"
+        assert res.status_code == 200
+        assert res.json["schedule"]["status"] == "active"
 
     def test_reorganize_missing_course_id(self, client, student_headers):
         res = client.post(
@@ -295,6 +299,8 @@ class TestSchedule:
         assert res.json["item_status"] == "skipped"
 
     def test_delete_schedule(self, client, student_headers, db, app):
+        if _is_sqlite(db):
+            import pytest as _pt; _pt.skip("SQLite bulk update DateTime incompatibility")
         _enroll_student(db, app)
         course_id = _get_course_id(app)
 
@@ -302,8 +308,8 @@ class TestSchedule:
             f"/api/v1/schedule/?course_id={course_id}",
             headers=student_headers,
         )
-        # 200 = deletado, 404 = não existia, 500 = SQLite DateTime (só em CI)
-        assert res.status_code in (200, 404, 500)
+        # 200 = deletado, 404 = não existia
+        assert res.status_code in (200, 404)
 
     def test_delete_schedule_missing_course_id(self, client, student_headers):
         res = client.delete("/api/v1/schedule/", headers=student_headers)
