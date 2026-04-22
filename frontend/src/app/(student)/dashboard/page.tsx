@@ -178,7 +178,7 @@ export default function DashboardPage() {
                 <div>
                     <div className="flex items-center gap-2 mb-2 lg:mb-3">
                         <Lightbulb className="h-4 w-4 text-warning" />
-                        <h2 className="text-sm font-semibold text-foreground">Análise inteligente</h2>
+                        <h2 className="text-sm font-semibold text-foreground">Mentor inteligente</h2>
                     </div>
                     <div className="space-y-2 lg:space-y-3">
                         {insights.map((insight, i) => (
