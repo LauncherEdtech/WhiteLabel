@@ -913,6 +913,10 @@ def list_questions():
     q_type = request.args.get("question_type")
     review_status = request.args.get("review_status")
     tenant_filter = request.args.get("submitted_by_tenant_id")
+    search = request.args.get("search", "").strip()
+    gemini_filter = request.args.get("gemini_enriched")
+    date_from = request.args.get("date_from")
+    date_to = request.args.get("date_to")
     page = int(request.args.get("page", 1))
     per_page = min(int(request.args.get("per_page", 30)), 100)
 
@@ -920,6 +924,8 @@ def list_questions():
         Question.source_type == QuestionSourceType.BANK,
         Question.tenant_id.is_(None),
     )
+    if search:
+        query = query.filter(Question.statement.ilike(f"%{search}%"))
     if discipline:
         query = query.filter(Question.discipline.ilike(f"%{discipline}%"))
     if topic:
@@ -932,6 +938,22 @@ def list_questions():
         query = query.filter(Question.review_status == review_status)
     if tenant_filter:
         query = query.filter(Question.submitted_by_tenant_id == tenant_filter)
+    if gemini_filter == "true":
+        query = query.filter(Question.gemini_enriched == True)
+    elif gemini_filter == "false":
+        query = query.filter(Question.gemini_enriched == False)
+    if date_from:
+        from datetime import datetime as _dt
+        try:
+            query = query.filter(Question.created_at >= _dt.fromisoformat(date_from))
+        except ValueError:
+            pass
+    if date_to:
+        from datetime import datetime as _dt
+        try:
+            query = query.filter(Question.created_at < _dt.fromisoformat(date_to + "T23:59:59"))
+        except ValueError:
+            pass
 
     paginated = query.order_by(Question.created_at.desc()).paginate(
         page=page, per_page=per_page, error_out=False
@@ -1069,6 +1091,44 @@ def delete_question(question_id):
     q.is_active = False
     db.session.commit()
     return jsonify(message="Questão desativada.")
+
+
+@admin_questions_bp.route("/questions/bulk-delete", methods=["POST"])
+@jwt_required()
+def bulk_delete_questions():
+    """
+    Remove permanentemente um lote de questões pelo ID.
+    Libera external_id para re-importação sem conflito.
+    Body: { "ids": ["id1", "id2", ...] }
+    """
+    err = _require_super_admin()
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    ids = data.get("ids", [])
+
+    if not ids or not isinstance(ids, list):
+        return jsonify(error="Envie { 'ids': [...] }"), 400
+    if len(ids) > 500:
+        return jsonify(error="Máximo 500 questões por operação."), 400
+
+    deleted_qs = (
+        db.session.query(Question)
+        .filter(
+            Question.id.in_(ids),
+            Question.tenant_id.is_(None),
+            Question.source_type == QuestionSourceType.BANK,
+        )
+        .all()
+    )
+
+    count = len(deleted_qs)
+    for q in deleted_qs:
+        db.session.delete(q)
+
+    db.session.commit()
+    return jsonify(deleted=count, message=f"{count} questão(ões) removida(s) permanentemente."), 200
 
 
 @admin_questions_bp.route("/questions/stats", methods=["GET"])

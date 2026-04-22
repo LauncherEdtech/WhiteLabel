@@ -16,7 +16,8 @@ import {
     BookOpen, Upload, Clock, CheckCircle2, XCircle, AlertCircle,
     ChevronDown, ChevronUp, FileJson, FileSpreadsheet,
     BarChart3, Building2, Loader2, Plus, Sparkles, Image as ImageIcon,
-    FolderOpen, Layers, Pencil, Trash2,
+    FolderOpen, Layers, Pencil, Trash2, Search, SlidersHorizontal,
+    Eye, EyeOff,
 } from "lucide-react";
 import { QUERY_KEYS } from "@/lib/constants/queryKeys";
 
@@ -105,7 +106,7 @@ const DIFFICULTY_VARIANT: Record<string, string> = {
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function AdminQuestionsPage() {
-    const [tab, setTab] = useState<"stats" | "import" | "pending">("stats");
+    const [tab, setTab] = useState<"stats" | "import" | "pending" | "questions">("stats");
 
     const { data: stats, isLoading: statsLoading } = useQuery<BankStats>({
         queryKey: QUERY_KEYS.QUESTION_BANK_STATS,
@@ -126,7 +127,8 @@ export default function AdminQuestionsPage() {
 
     const tabs = [
         { key: "stats" as const, label: "Visão Geral", icon: BarChart3 },
-        { key: "import" as const, label: "Importar Questões", icon: Upload },
+        { key: "questions" as const, label: "Todas as Questões", icon: Search },
+        { key: "import" as const, label: "Importar", icon: Upload },
         {
             key: "pending" as const,
             label: "Revisão Pendente",
@@ -175,6 +177,7 @@ export default function AdminQuestionsPage() {
 
             {/* Content */}
             {tab === "stats" && <StatsPanel stats={stats} isLoading={statsLoading} />}
+            {tab === "questions" && <AllQuestionsPanel />}
             {tab === "import" && <ImportPanel />}
             {tab === "pending" && (
                 <PendingPanel
@@ -578,6 +581,434 @@ function ReprocessJobHistory({ activeJobId }: { activeJobId: string | null }) {
                         </div>
                     ))}
                 </div>
+            )}
+        </div>
+    );
+}
+
+// ── All Questions Panel ──────────────────────────────────────────────────────
+
+interface AdminQuestion {
+    id: string;
+    statement: string;
+    discipline: string | null;
+    topic: string | null;
+    difficulty: string | null;
+    question_type: string | null;
+    review_status: string;
+    correct_alternative_key: string;
+    correct_justification: string | null;
+    tip: string | null;
+    image_url: string | null;
+    exam_board: string | null;
+    exam_year: number | null;
+    exam_name: string | null;
+    subtopic: string | null;
+    gemini_enriched?: boolean;
+    is_active: boolean;
+    total_attempts: number;
+    accuracy_rate: number;
+    alternatives: { key: string; text: string; distractor_justification?: string | null }[];
+}
+
+function AllQuestionsPanel() {
+    const toast = useToast();
+    const queryClient = useQueryClient();
+    const [search, setSearch] = useState("");
+    const [debouncedSearch, setDebouncedSearch] = useState("");
+    const [discipline, setDiscipline] = useState("");
+    const [difficulty, setDifficulty] = useState("");
+    const [reviewStatus, setReviewStatus] = useState("");
+    const [geminiFilter, setGeminiFilter] = useState("");
+    const [dateFrom, setDateFrom] = useState("");
+    const [dateTo, setDateTo] = useState("");
+    const [page, setPage] = useState(1);
+    const [editTarget, setEditTarget] = useState<AdminQuestion | null>(null);
+    const [showFilters, setShowFilters] = useState(false);
+    const [selected, setSelected] = useState<Set<string>>(new Set());
+    const [confirmDelete, setConfirmDelete] = useState(false);
+
+    // Debounce search
+    useEffect(() => {
+        const t = setTimeout(() => { setDebouncedSearch(search); setPage(1); }, 400);
+        return () => clearTimeout(t);
+    }, [search]);
+
+    const { data, isLoading, isFetching } = useQuery({
+        queryKey: ["admin-questions", debouncedSearch, discipline, difficulty, reviewStatus, geminiFilter, dateFrom, dateTo, page],
+        queryFn: () => apiClient.get("/admin/questions", {
+            params: {
+                search: debouncedSearch || undefined,
+                discipline: discipline || undefined,
+                difficulty: difficulty || undefined,
+                review_status: reviewStatus || undefined,
+                gemini_enriched: geminiFilter || undefined,
+                date_from: dateFrom || undefined,
+                date_to: dateTo || undefined,
+                page,
+                per_page: 25,
+            }
+        }).then(r => r.data),
+        placeholderData: (prev: any) => prev,
+        staleTime: 30_000,
+    });
+
+    const questions: AdminQuestion[] = data?.questions ?? [];
+    const total: number = data?.total ?? 0;
+    const pages: number = data?.pages ?? 1;
+
+    const approveMutation = useMutation({
+        mutationFn: (id: string) => apiClient.post(`/admin/questions/${id}/approve`).then(r => r.data),
+        onSuccess: () => {
+            toast.success("Questão aprovada!");
+            queryClient.invalidateQueries({ queryKey: ["admin-questions"] });
+            queryClient.invalidateQueries({ queryKey: QUERY_KEYS.QUESTION_BANK_STATS });
+        },
+        onError: () => toast.error("Erro ao aprovar"),
+    });
+
+    const deleteMutation = useMutation({
+        mutationFn: (ids: string[]) =>
+            apiClient.post("/admin/questions/bulk-delete", { ids }).then(r => r.data),
+        onSuccess: (data) => {
+            toast.success(`${data.deleted} questão(ões) removida(s)`, "External IDs liberados para re-importação");
+            setSelected(new Set());
+            setConfirmDelete(false);
+            queryClient.invalidateQueries({ queryKey: ["admin-questions"] });
+            queryClient.invalidateQueries({ queryKey: QUERY_KEYS.QUESTION_BANK_STATS });
+        },
+        onError: () => toast.error("Erro ao remover questões"),
+    });
+
+    const activeFilters = [discipline, difficulty, reviewStatus, geminiFilter, dateFrom, dateTo].filter(Boolean).length;
+
+    function toggleSelect(id: string) {
+        setSelected(prev => {
+            const next = new Set(prev);
+            next.has(id) ? next.delete(id) : next.add(id);
+            return next;
+        });
+    }
+
+    function selectAll() {
+        setSelected(new Set(questions.map(q => q.id)));
+    }
+
+    function clearSelection() {
+        setSelected(new Set());
+    }
+
+    // Quick filter: today
+    function filterToday() {
+        const today = new Date().toISOString().split("T")[0];
+        setDateFrom(today);
+        setDateTo(today);
+        setPage(1);
+        setShowFilters(true);
+    }
+
+    const STATUS_LABEL: Record<string, string> = {
+        approved: "Aprovada", pending: "Pendente", rejected: "Rejeitada",
+    };
+    const STATUS_COLOR: Record<string, string> = {
+        approved: "bg-success/10 text-success border-success/20",
+        pending: "bg-warning/10 text-warning border-warning/20",
+        rejected: "bg-destructive/10 text-destructive border-destructive/20",
+    };
+    const DIFF_COLOR: Record<string, string> = {
+        easy: "bg-success/10 text-success border-success/20",
+        medium: "bg-warning/10 text-warning border-warning/20",
+        hard: "bg-destructive/10 text-destructive border-destructive/20",
+    };
+    const DIFF_LABEL: Record<string, string> = { easy: "Fácil", medium: "Médio", hard: "Difícil" };
+
+    return (
+        <div className="space-y-4">
+            {/* Search + Filter bar */}
+            <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <input
+                        value={search}
+                        onChange={e => { setSearch(e.target.value); }}
+                        placeholder="Buscar por enunciado..."
+                        className="w-full pl-9 pr-4 h-10 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                </div>
+                <Button
+                    variant={showFilters ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setShowFilters(v => !v)}
+                >
+                    <SlidersHorizontal className="h-4 w-4" />
+                    Filtros
+                    {activeFilters > 0 && (
+                        <span className="ml-1 h-4 w-4 rounded-full bg-primary-foreground text-primary text-[10px] flex items-center justify-center font-bold">
+                            {activeFilters}
+                        </span>
+                    )}
+                </Button>
+            </div>
+
+            {/* Filters */}
+            {showFilters && (
+                <div className="grid grid-cols-2 gap-3 p-4 rounded-xl border border-border bg-muted/20">
+                    <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Disciplina</label>
+                        <input
+                            value={discipline}
+                            onChange={e => { setDiscipline(e.target.value); setPage(1); }}
+                            placeholder="Ex: Direito Penal"
+                            className="w-full h-9 px-3 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        />
+                    </div>
+                    <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Dificuldade</label>
+                        <select value={difficulty} onChange={e => { setDifficulty(e.target.value); setPage(1); }}
+                            className="w-full h-9 px-3 rounded-lg border border-input bg-background text-sm">
+                            <option value="">Todas</option>
+                            <option value="easy">Fácil</option>
+                            <option value="medium">Médio</option>
+                            <option value="hard">Difícil</option>
+                        </select>
+                    </div>
+                    <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Status de revisão</label>
+                        <select value={reviewStatus} onChange={e => { setReviewStatus(e.target.value); setPage(1); }}
+                            className="w-full h-9 px-3 rounded-lg border border-input bg-background text-sm">
+                            <option value="">Todos</option>
+                            <option value="approved">Aprovadas</option>
+                            <option value="pending">Pendentes</option>
+                            <option value="rejected">Rejeitadas</option>
+                        </select>
+                    </div>
+                    <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Gemini</label>
+                        <select value={geminiFilter} onChange={e => { setGeminiFilter(e.target.value); setPage(1); }}
+                            className="w-full h-9 px-3 rounded-lg border border-input bg-background text-sm">
+                            <option value="">Todas</option>
+                            <option value="true">Processadas pelo Gemini</option>
+                            <option value="false">Não processadas</option>
+                        </select>
+                    </div>
+                    <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Adicionado de</label>
+                        <input type="date" value={dateFrom}
+                            onChange={e => { setDateFrom(e.target.value); setPage(1); }}
+                            className="w-full h-9 px-3 rounded-lg border border-input bg-background text-sm" />
+                    </div>
+                    <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Adicionado até</label>
+                        <input type="date" value={dateTo}
+                            onChange={e => { setDateTo(e.target.value); setPage(1); }}
+                            className="w-full h-9 px-3 rounded-lg border border-input bg-background text-sm" />
+                    </div>
+                    {activeFilters > 0 && (
+                        <button
+                            onClick={() => { setDiscipline(""); setDifficulty(""); setReviewStatus(""); setGeminiFilter(""); setDateFrom(""); setDateTo(""); setPage(1); }}
+                            className="col-span-2 text-xs text-muted-foreground hover:text-foreground flex items-center gap-1"
+                        >
+                            <XCircle className="h-3 w-3" /> Limpar filtros
+                        </button>
+                    )}
+                </div>
+            )}
+
+            {/* Count + Selection toolbar */}
+            <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                    <p className="text-sm text-muted-foreground">
+                        {isLoading ? "Carregando..." : `${total.toLocaleString("pt-BR")} questões encontradas`}
+                    </p>
+                    {!isLoading && questions.length > 0 && (
+                        <button onClick={filterToday} className="text-xs text-primary hover:underline">
+                            Ver adicionadas hoje
+                        </button>
+                    )}
+                </div>
+                <div className="flex items-center gap-2">
+                    {isFetching && !isLoading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+                    {selected.size > 0 && (
+                        <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground">{selected.size} selecionada(s)</span>
+                            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={clearSelection}>
+                                Limpar
+                            </Button>
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 text-xs text-destructive border-destructive/30 hover:bg-destructive/10"
+                                onClick={() => setConfirmDelete(true)}
+                            >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                Apagar {selected.size}
+                            </Button>
+                        </div>
+                    )}
+                    {questions.length > 0 && selected.size === 0 && (
+                        <button onClick={selectAll} className="text-xs text-muted-foreground hover:text-foreground">
+                            Selecionar página
+                        </button>
+                    )}
+                </div>
+            </div>
+
+            {/* List */}
+            {isLoading ? (
+                <div className="space-y-3">
+                    {[...Array(5)].map((_, i) => <div key={i} className="h-20 bg-muted rounded-xl animate-pulse" />)}
+                </div>
+            ) : questions.length === 0 ? (
+                <div className="py-16 text-center text-muted-foreground">
+                    <Search className="h-10 w-10 mx-auto mb-3 opacity-30" />
+                    <p className="text-sm">Nenhuma questão encontrada</p>
+                </div>
+            ) : (
+                <div className="space-y-2">
+                    {questions.map(q => (
+                        <div key={q.id} className={cn(
+                            "flex items-start gap-3 p-4 rounded-xl border transition-colors",
+                            selected.has(q.id)
+                                ? "border-destructive/40 bg-destructive/5"
+                                : "border-border bg-background hover:bg-muted/20"
+                        )}>
+                            <input
+                                type="checkbox"
+                                checked={selected.has(q.id)}
+                                onChange={() => toggleSelect(q.id)}
+                                className="mt-1 h-4 w-4 rounded border-border accent-destructive cursor-pointer shrink-0"
+                            />
+                            <div className="flex-1 min-w-0">
+                                {/* Badges */}
+                                <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                                    {q.discipline && (
+                                        <span className="text-xs font-medium bg-muted px-2 py-0.5 rounded-md">
+                                            {q.discipline}
+                                        </span>
+                                    )}
+                                    {q.topic && (
+                                        <span className="text-xs text-muted-foreground">{q.topic}</span>
+                                    )}
+                                    {q.difficulty && (
+                                        <span className={cn("text-xs px-2 py-0.5 rounded-full border", DIFF_COLOR[q.difficulty])}>
+                                            {DIFF_LABEL[q.difficulty]}
+                                        </span>
+                                    )}
+                                    <span className={cn("text-xs px-2 py-0.5 rounded-full border", STATUS_COLOR[q.review_status] ?? "bg-muted text-muted-foreground border-border")}>
+                                        {STATUS_LABEL[q.review_status] ?? q.review_status}
+                                    </span>
+                                    {q.gemini_enriched && (
+                                        <span className="text-xs px-2 py-0.5 rounded-full border bg-primary/10 text-primary border-primary/20 flex items-center gap-1">
+                                            <Sparkles className="h-2.5 w-2.5" /> Gemini
+                                        </span>
+                                    )}
+                                    {q.image_url && (
+                                        <span className="text-xs text-muted-foreground flex items-center gap-1">
+                                            <ImageIcon className="h-3 w-3" /> imagem
+                                        </span>
+                                    )}
+                                </div>
+                                {/* Statement */}
+                                <p className="text-sm text-foreground line-clamp-2">{q.statement}</p>
+                                {/* Meta */}
+                                <div className="flex items-center gap-3 mt-1.5 text-xs text-muted-foreground">
+                                    {q.exam_board && <span>{q.exam_board}{q.exam_year ? ` ${q.exam_year}` : ""}</span>}
+                                    <span>{q.total_attempts} tentativas · {(q.accuracy_rate * 100).toFixed(0)}% acerto</span>
+                                </div>
+                            </div>
+
+                            {/* Actions */}
+                            <div className="flex items-center gap-1 shrink-0">
+                                {q.review_status === "pending" && (
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="text-success border-success/30 hover:bg-success/10"
+                                        loading={approveMutation.isPending && approveMutation.variables === q.id}
+                                        onClick={() => approveMutation.mutate(q.id)}
+                                    >
+                                        <CheckCircle2 className="h-3.5 w-3.5" />
+                                        Aprovar
+                                    </Button>
+                                )}
+                                <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => setEditTarget(q as any)}
+                                >
+                                    <Pencil className="h-3.5 w-3.5" />
+                                    Editar
+                                </Button>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            {/* Pagination */}
+            {pages > 1 && (
+                <div className="flex items-center justify-between pt-2">
+                    <Button variant="outline" size="sm" disabled={page === 1} onClick={() => setPage(p => p - 1)}>
+                        <ChevronDown className="h-4 w-4 rotate-90" /> Anterior
+                    </Button>
+                    <span className="text-xs text-muted-foreground font-mono">
+                        {page} / {pages}
+                    </span>
+                    <Button variant="outline" size="sm" disabled={page === pages} onClick={() => setPage(p => p + 1)}>
+                        Próxima <ChevronDown className="h-4 w-4 -rotate-90" />
+                    </Button>
+                </div>
+            )}
+
+            {/* Edit Modal */}
+            {editTarget && (
+                <EditQuestionModal
+                    question={editTarget as any}
+                    onClose={() => setEditTarget(null)}
+                    onSaved={() => {
+                        setEditTarget(null);
+                        queryClient.invalidateQueries({ queryKey: ["admin-questions"] });
+                        queryClient.invalidateQueries({ queryKey: QUERY_KEYS.QUESTION_BANK_STATS });
+                    }}
+                />
+            )}
+
+            {/* Confirm bulk delete */}
+            {confirmDelete && (
+                <Dialog open onOpenChange={v => { if (!v) setConfirmDelete(false); }}>
+                    <DialogContent className="max-w-sm">
+                        <DialogHeader>
+                            <DialogTitle className="flex items-center gap-2 text-destructive">
+                                <Trash2 className="h-5 w-5" />
+                                Confirmar exclusão
+                            </DialogTitle>
+                        </DialogHeader>
+                        <div className="py-2 space-y-3">
+                            <p className="text-sm text-foreground">
+                                Você está prestes a <strong>remover permanentemente</strong>{" "}
+                                <span className="text-destructive font-bold">{selected.size} questão(ões)</span> do banco.
+                            </p>
+                            <div className="p-3 rounded-lg bg-success/10 border border-success/20">
+                                <p className="text-xs text-success font-medium">
+                                    ✓ Os IDs externos serão liberados — você poderá reimportar as versões enriquecidas pelo Gemini sem conflito.
+                                </p>
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                                Esta ação não pode ser desfeita.
+                            </p>
+                        </div>
+                        <DialogFooter>
+                            <Button variant="ghost" onClick={() => setConfirmDelete(false)}>Cancelar</Button>
+                            <Button
+                                variant="destructive"
+                                loading={deleteMutation.isPending}
+                                onClick={() => deleteMutation.mutate(Array.from(selected))}
+                            >
+                                Remover {selected.size} questão(ões)
+                            </Button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
             )}
         </div>
     );
