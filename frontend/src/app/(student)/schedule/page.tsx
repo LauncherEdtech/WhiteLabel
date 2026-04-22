@@ -829,15 +829,7 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
                 <p className="text-xs text-muted-foreground flex items-center justify-center gap-1"><Target className="h-3 w-3" />Dias p/ prova</p>
               </CardContent>
             </Card>
-          ) : (
-            <Card><CardContent className="p-4 text-center">
-              <p className={cn("text-2xl font-bold",
-                stats.abandonment_risk > 0.6 ? "text-destructive" : stats.abandonment_risk > 0.3 ? "text-warning" : "text-success")}>
-                {stats.abandonment_risk > 0.6 ? "Alto" : stats.abandonment_risk > 0.3 ? "Médio" : "Baixo"}
-              </p>
-              <p className="text-xs text-muted-foreground">Risco abandono</p>
-            </CardContent></Card>
-          )}
+          ) : null}
         </div>
       )}
 

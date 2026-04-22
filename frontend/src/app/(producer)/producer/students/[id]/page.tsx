@@ -256,7 +256,7 @@ function InsightsSection({
     <div className="space-y-3">
       {/* Cabeçalho */}
       <div className="flex items-center justify-between">
-        <p className="text-sm font-semibold text-foreground">Insights deste aluno</p>
+        <p className="text-sm font-semibold text-foreground">Mentor Inteligente deste aluno</p>
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
