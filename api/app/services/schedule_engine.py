@@ -1011,26 +1011,41 @@ class ScheduleEngine:
             priority_reason=priority_reason,
             status="pending",
         ))
-        # v11: pausa após aula = break_minutes do aluno (pode ser 0)
         day_used += lesson_dur + self.break_minutes
         day_order += 1
 
-        if subject and subject_id != "__no_subject__":
-            questions_minutes = self._calculate_questions_minutes(lesson_dur)
-            # v11: questões + pausa só se couber no budget
-            questions_cost = questions_minutes + self.break_minutes
+        if not subject or subject_id == "__no_subject__":
+            return day_used, day_order
 
-            if day_used + questions_cost <= effective_minutes:
-                items_to_add.append(ScheduleItem(
-                    tenant_id=tenant_id, schedule_id=schedule_id,
-                    item_type="questions", subject_id=subject_id,
-                    scheduled_date=slot_str, order=day_order,
-                    estimated_minutes=questions_minutes,
-                    priority_reason=f"Fixação: {subject.name}",
-                    status="pending",
-                ))
-                day_used += questions_cost
-                day_order += 1
+        questions_minutes = self._calculate_questions_minutes(lesson_dur)
+        questions_cost = questions_minutes + self.break_minutes
+
+        if is_long_lesson:
+            # v13 FIX: force-fit sempre adiciona questões obrigatórias (mín. 10 min)
+            # independente do budget — fixação após aula longa é inegociável.
+            forced_minutes = self.QUESTIONS_MIN_MINUTES
+            items_to_add.append(ScheduleItem(
+                tenant_id=tenant_id, schedule_id=schedule_id,
+                item_type="questions", subject_id=subject_id,
+                scheduled_date=slot_str, order=day_order,
+                estimated_minutes=forced_minutes,
+                priority_reason=f"Fixação obrigatória: {subject.name} (após aula longa)",
+                status="pending",
+            ))
+            day_used += forced_minutes + self.break_minutes
+            day_order += 1
+        elif day_used + questions_cost <= effective_minutes:
+            # Aula normal: questões só se couber no budget
+            items_to_add.append(ScheduleItem(
+                tenant_id=tenant_id, schedule_id=schedule_id,
+                item_type="questions", subject_id=subject_id,
+                scheduled_date=slot_str, order=day_order,
+                estimated_minutes=questions_minutes,
+                priority_reason=f"Fixação: {subject.name}",
+                status="pending",
+            ))
+            day_used += questions_cost
+            day_order += 1
 
         return day_used, day_order
 

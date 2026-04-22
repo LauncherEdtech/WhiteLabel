@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useState, useEffect } from "react";
-import { useToast } from "@/lib/hooks/useToast";
+import { useToast } from "@/components/ui/toaster";
 import type { WeeklyMission, WeeklyMissionItem } from "@/types/api";
 
 export default function StudentDetailPage() {
