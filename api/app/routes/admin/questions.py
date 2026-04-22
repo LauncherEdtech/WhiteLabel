@@ -1077,29 +1077,12 @@ def reject_question(question_id):
     return jsonify(message="Questão rejeitada.", question=_serialize_admin(q))
 
 
-@admin_questions_bp.route("/questions/<question_id>", methods=["DELETE"])
-@jwt_required()
-def delete_question(question_id):
-    err = _require_super_admin()
-    if err:
-        return err
-
-    q = db.session.get(Question, question_id)
-    if not q:
-        return jsonify(error="Questão não encontrada"), 404
-
-    q.is_active = False
-    db.session.commit()
-    return jsonify(message="Questão desativada.")
-
-
 @admin_questions_bp.route("/questions/bulk-delete", methods=["POST"])
 @jwt_required()
 def bulk_delete_questions():
     """
-    Remove permanentemente um lote de questões pelo ID.
-    Libera external_id para re-importação sem conflito.
-    Body: { "ids": ["id1", "id2", ...] }
+    Remove permanentemente um lote de questões.
+    DEVE vir antes de /<question_id> para o Flask não confundir 'bulk-delete' com um ID.
     """
     err = _require_super_admin()
     if err:
@@ -1129,6 +1112,123 @@ def bulk_delete_questions():
 
     db.session.commit()
     return jsonify(deleted=count, message=f"{count} questão(ões) removida(s) permanentemente."), 200
+
+
+@admin_questions_bp.route("/questions/<question_id>", methods=["GET"])
+@jwt_required()
+def get_question_admin(question_id):
+    """Retorna questão completa para edição."""
+    err = _require_super_admin()
+    if err:
+        return err
+    q = db.session.get(Question, question_id)
+    if not q:
+        return jsonify(error="Questão não encontrada"), 404
+    return jsonify(question=_serialize_admin(q)), 200
+
+
+@admin_questions_bp.route("/questions/<question_id>", methods=["PUT"])
+@jwt_required()
+def update_question_admin(question_id):
+    """Edita questão. Aceita multipart/form-data (com imagem) ou JSON."""
+    err = _require_super_admin()
+    if err:
+        return err
+    q = db.session.get(Question, question_id)
+    if not q:
+        return jsonify(error="Questão não encontrada"), 404
+
+    if request.content_type and "multipart" in request.content_type:
+        data = request.form
+        image_file = request.files.get("image")
+    else:
+        data = request.get_json(force=True) or {}
+        image_file = None
+
+    def _get(key, default=None):
+        v = data.get(key, default)
+        return v if v != "" else default
+
+    if _get("statement"): q.statement = _get("statement")
+    if _get("discipline") is not None: q.discipline = _get("discipline") or q.discipline
+    if _get("topic") is not None: q.topic = _get("topic") or None
+    if _get("subtopic") is not None: q.subtopic = _get("subtopic") or None
+    if _get("difficulty"):
+        try: q.difficulty = DifficultyLevel(_get("difficulty"))
+        except ValueError: pass
+    if _get("question_type") is not None:
+        try: q.question_type = QuestionType(_get("question_type")) if _get("question_type") else None
+        except ValueError: pass
+    if _get("correct_alternative_key"): q.correct_alternative_key = _get("correct_alternative_key").lower()
+    if _get("correct_justification") is not None: q.correct_justification = _get("correct_justification") or None
+    if _get("tip") is not None: q.tip = _get("tip") or None
+    if _get("exam_board") is not None: q.exam_board = _get("exam_board") or None
+    if _get("exam_year") is not None:
+        try: q.exam_year = int(_get("exam_year")) if _get("exam_year") else None
+        except (ValueError, TypeError): pass
+    if _get("exam_name") is not None: q.exam_name = _get("exam_name") or None
+
+    alts_raw = _get("alternatives")
+    if alts_raw:
+        if isinstance(alts_raw, str):
+            import json as _json
+            alts_raw = _json.loads(alts_raw)
+        if isinstance(alts_raw, list):
+            for alt in q.alternatives:
+                db.session.delete(alt)
+            db.session.flush()
+            for alt_data in alts_raw:
+                db.session.add(Alternative(
+                    tenant_id=q.tenant_id, question_id=q.id,
+                    key=str(alt_data.get("key", "")).lower(),
+                    text=str(alt_data.get("text", "")),
+                    distractor_justification=alt_data.get("distractor_justification") or None,
+                ))
+
+    if image_file and image_file.filename:
+        image_bytes = image_file.read()
+        if image_bytes:
+            url = _upload_image_to_s3(image_bytes, image_file.filename, q.id)
+            if url: q.image_url = url
+
+    if _get("remove_image") in ("true", True, "1"):
+        q.image_url = None
+
+    if q.topic and q.tip and q.correct_justification:
+        q.gemini_enriched = True
+
+    db.session.commit()
+    return jsonify(question=_serialize_admin(q), message="Questão atualizada."), 200
+
+
+@admin_questions_bp.route("/questions/<question_id>/image", methods=["DELETE"])
+@jwt_required()
+def delete_question_image(question_id):
+    """Remove a imagem de uma questão."""
+    err = _require_super_admin()
+    if err:
+        return err
+    q = db.session.get(Question, question_id)
+    if not q:
+        return jsonify(error="Questão não encontrada"), 404
+    q.image_url = None
+    db.session.commit()
+    return jsonify(message="Imagem removida."), 200
+
+
+@admin_questions_bp.route("/questions/<question_id>", methods=["DELETE"])
+@jwt_required()
+def delete_question(question_id):
+    """Hard delete — libera external_id para re-importação."""
+    err = _require_super_admin()
+    if err:
+        return err
+    q = db.session.get(Question, question_id)
+    if not q:
+        return jsonify(error="Questão não encontrada"), 404
+    db.session.delete(q)
+    db.session.commit()
+    return jsonify(message="Questão removida permanentemente.")
 
 
 @admin_questions_bp.route("/questions/stats", methods=["GET"])
