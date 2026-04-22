@@ -1107,6 +1107,20 @@ def bulk_delete_questions():
     )
 
     count = len(deleted_qs)
+    question_ids = [q.id for q in deleted_qs]
+
+    # Deleta todos os filhos antes — FKs sem CASCADE no banco
+    from app.models.question import Alternative, QuestionTag, QuestionAttempt
+    db.session.query(QuestionAttempt).filter(
+        QuestionAttempt.question_id.in_(question_ids)
+    ).delete(synchronize_session=False)
+    db.session.query(Alternative).filter(
+        Alternative.question_id.in_(question_ids)
+    ).delete(synchronize_session=False)
+    db.session.query(QuestionTag).filter(
+        QuestionTag.question_id.in_(question_ids)
+    ).delete(synchronize_session=False)
+
     for q in deleted_qs:
         db.session.delete(q)
 
