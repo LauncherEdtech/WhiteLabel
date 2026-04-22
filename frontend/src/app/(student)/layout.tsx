@@ -15,7 +15,6 @@ import { TopBar } from "@/components/layout/TopBar";
 import { FloatingCoachWidget } from "@/components/student/FloatingCoachWidget";
 import { OnboardingTour } from "@/components/onboarding/OnboardingTour";
 import { useOnboarding } from "@/lib/hooks/useOnboarding";
-import { FloatingSupportButton } from "@/components/shared/FloatingSupportButton";
 
 export default function StudentLayout({ children }: { children: React.ReactNode }) {
     const { user, isLoading } = useAuthStore();
@@ -100,7 +99,6 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
                     </div>
                 </main>
                 <FloatingCoachWidget />
-                <FloatingSupportButton />
                 {showTour && <OnboardingTour onComplete={() => setShowTour(false)} />}
             </div>
         );
@@ -117,7 +115,6 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
                 </main>
                 <StudentMinimalNav />
                 <FloatingCoachWidget />
-                <FloatingSupportButton />
                 {showTour && <OnboardingTour onComplete={() => setShowTour(false)} />}
             </div>
         );
@@ -136,7 +133,6 @@ export default function StudentLayout({ children }: { children: React.ReactNode 
                 </main>
             </div>
             <FloatingCoachWidget />
-            <FloatingSupportButton />
             {showTour && <OnboardingTour onComplete={() => setShowTour(false)} />}
         </div>
     );
