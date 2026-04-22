@@ -4,6 +4,8 @@
 // FIX: usePathname garante que o document.title do tenant é reaplicado após
 // cada navegação client-side do Next.js (que reseta o título via metadata estático).
 // FIX: favicon usa logo_url como fallback quando favicon_url não está definido.
+// FIX: setFavicon helper cria a tag <link rel="icon"> se não existir e limpa
+// o atributo type para evitar mime errado quando a logo for png/svg/webp.
 
 "use client";
 
@@ -26,6 +28,23 @@ export function applyPalette(paletteKey: string, customVars?: Record<string, str
     } else {
         document.documentElement.classList.remove("dark");
     }
+}
+
+// ── setFavicon ────────────────────────────────────────────────────────────────
+// Atualiza (ou cria) a tag <link rel="icon"> com a URL fornecida.
+// Cria a tag caso não exista no <head> — garante funcionamento mesmo se
+// o root layout não tiver declarado o link.
+function setFavicon(url: string) {
+    if (typeof document === "undefined") return;
+    let link = document.querySelector<HTMLLinkElement>("link[rel='icon']");
+    if (!link) {
+        link = document.createElement("link");
+        link.rel = "icon";
+        document.head.appendChild(link);
+    }
+    // Remove o type para não forçar mime errado quando a URL for png/svg/webp
+    link.removeAttribute("type");
+    link.href = url;
 }
 
 // ── applyBrandingCssVars ──────────────────────────────────────────────────────
@@ -51,10 +70,9 @@ export function applyBrandingCssVars(branding: Record<string, any>) {
     if (branding.platform_name) document.title = branding.platform_name;
 
     // Usa favicon_url se disponível, senão cai para logo_url
-    const faviconHref = branding.favicon_url || branding.logo_url;
+    const faviconHref: string | undefined = branding.favicon_url || branding.logo_url;
     if (faviconHref) {
-        const favicon = document.querySelector<HTMLLinkElement>("link[rel='icon']");
-        if (favicon) favicon.href = faviconHref;
+        setFavicon(faviconHref);
     }
 }
 
@@ -94,10 +112,9 @@ export function TenantBrandingLoader() {
         const branding = tenant?.branding as any;
         if (!branding) return;
         if (branding.platform_name) document.title = branding.platform_name;
-        const faviconHref = branding.favicon_url || branding.logo_url;
+        const faviconHref: string | undefined = branding.favicon_url || branding.logo_url;
         if (faviconHref) {
-            const favicon = document.querySelector<HTMLLinkElement>("link[rel='icon']");
-            if (favicon) favicon.href = faviconHref;
+            setFavicon(faviconHref);
         }
     }, [pathname, tenant?.branding]);
 

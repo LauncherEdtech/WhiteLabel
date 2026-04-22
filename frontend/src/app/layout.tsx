@@ -35,6 +35,10 @@ export default function RootLayout({
     <html lang="pt-BR" suppressHydrationWarning>
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        {/* Favicon placeholder — TenantBrandingLoader sobrescreve o href no
+            client com a logo do tenant. A tag precisa existir no <head> para
+            que o querySelector("link[rel='icon']") encontre o elemento. */}
+        <link rel="icon" href="/favicon.ico" type="image/x-icon" />
       </head>
       <body className={`${dmSans.variable} ${sora.variable} antialiased`}>
         <Providers>
