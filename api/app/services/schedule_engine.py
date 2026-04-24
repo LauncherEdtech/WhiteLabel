@@ -150,25 +150,40 @@ class ScheduleEngine:
             db.session.commit()
             return deleted_schedule
 
-        schedule = StudySchedule(
-            tenant_id=self.tenant_id,
-            user_id=self.user_id,
-            course_id=self.course_id,
-            status="active",
-            source_type="ai",
-            target_date=target_date,
-            availability_snapshot={
-                "days": self.available_days,
-                "hours_per_day": self.hours_per_day,
-                "break_minutes": self.break_minutes,
-            },
-            last_reorganized_at=datetime.now(timezone.utc).isoformat(),
-        )
-        db.session.add(schedule)
-        db.session.flush()
-        self._build_items(schedule, start_date=date.today())
-        db.session.commit()
-        return schedule
+        from sqlalchemy.exc import IntegrityError
+
+                schedule = StudySchedule(
+                    tenant_id=self.tenant_id,
+                    user_id=self.user_id,
+                    course_id=self.course_id,
+                    status="active",
+                    source_type="ai",
+                    target_date=target_date,
+                    availability_snapshot={
+                        "days": self.available_days,
+                        "hours_per_day": self.hours_per_day,
+                        "break_minutes": self.break_minutes,
+                    },
+                    last_reorganized_at=datetime.now(timezone.utc).isoformat(),
+                )
+                db.session.add(schedule)
+                try:
+                    db.session.flush()
+                except IntegrityError:
+                    # Race condition: outro worker criou o cronograma antes
+                    db.session.rollback()
+                    existing = StudySchedule.query.filter_by(
+                        user_id=self.user_id,
+                        course_id=self.course_id,
+                        tenant_id=self.tenant_id,
+                        is_deleted=False,
+                    ).first()
+                    if existing:
+                        return self.reorganize(existing)
+                    raise
+                self._build_items(schedule, start_date=date.today())
+                db.session.commit()
+                return schedule
 
     def reorganize(self, schedule: Optional[StudySchedule] = None) -> StudySchedule:
         if not schedule:

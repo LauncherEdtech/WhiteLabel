@@ -553,7 +553,7 @@ def delete_question(question_id: str):
 @questions_bp.route("/<string:question_id>/answer", methods=["POST"])
 @jwt_required()
 @require_tenant
-@limiter.limit("200 per hour")
+@limiter.limit("2000 per hour")
 def answer_question(question_id: str):
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
