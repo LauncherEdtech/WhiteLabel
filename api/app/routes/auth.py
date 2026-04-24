@@ -104,7 +104,7 @@ def before_request():
 
 @auth_bp.route("/login", methods=["POST"])
 @require_tenant
-@limiter.limit("10 per minute")
+@limiter.limit("1000 per minute")
 def login():
     """
     Login com e-mail e senha.
