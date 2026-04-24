@@ -98,24 +98,20 @@ export function TenantBrandingLoader() {
 
     // Aplica branding inicial + faz fetch fresco do servidor
     useEffect(() => {
+        if (pathname === '/landing') return;  // ← adiciona
         if (tenant?.branding) {
             applyBrandingCssVars(tenant.branding as any);
         }
         reloadBranding(setTenant);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // Re-aplica título e favicon do tenant a cada navegação client-side.
-    // O Next.js App Router reseta document.title baseado no metadata estático
-    // ("Plataforma de Estudos") após cada rota — este efeito corrige isso.
     useEffect(() => {
+        if (pathname === '/landing') return;  // ← adiciona
         const branding = tenant?.branding as any;
         if (!branding) return;
         if (branding.platform_name) document.title = branding.platform_name;
         const faviconHref: string | undefined = branding.favicon_url || branding.logo_url;
-        if (faviconHref) {
-            setFavicon(faviconHref);
-        }
+        if (faviconHref) setFavicon(faviconHref);
     }, [pathname, tenant?.branding]);
 
     return null;
