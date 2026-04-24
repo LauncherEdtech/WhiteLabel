@@ -6,7 +6,6 @@
 // FIX: favicon usa logo_url como fallback quando favicon_url não está definido.
 // FIX: setFavicon helper cria a tag <link rel="icon"> se não existir e limpa
 // o atributo type para evitar mime errado quando a logo for png/svg/webp.
-// FIX: landing page (/landing) é ignorada pelo branding de tenant.
 
 "use client";
 
@@ -79,9 +78,6 @@ export function applyBrandingCssVars(branding: Record<string, any>) {
 
 // ── reloadBranding ────────────────────────────────────────────────────────────
 export async function reloadBranding(setTenant: (t: any) => void): Promise<void> {
-    // Landing page institucional: não aplica branding de tenant
-    if (typeof window !== "undefined" && window.location.pathname === "/landing") return;
-
     const slug = Cookies.get("tenant_slug") ?? "concurso-demo";
     try {
         const res = await fetch(`/api/tenant?t=${Date.now()}`, {
@@ -102,8 +98,6 @@ export function TenantBrandingLoader() {
 
     // Aplica branding inicial + faz fetch fresco do servidor
     useEffect(() => {
-        // Landing page institucional: não aplica branding de tenant
-        if (pathname === "/landing") return;
         if (tenant?.branding) {
             applyBrandingCssVars(tenant.branding as any);
         }
@@ -113,15 +107,15 @@ export function TenantBrandingLoader() {
 
     // Re-aplica título e favicon do tenant a cada navegação client-side.
     // O Next.js App Router reseta document.title baseado no metadata estático
-    // após cada rota — este efeito corrige isso.
+    // ("Plataforma de Estudos") após cada rota — este efeito corrige isso.
     useEffect(() => {
-        // Landing page institucional: preserva título e favicon da Launcher
-        if (pathname === "/landing") return;
         const branding = tenant?.branding as any;
         if (!branding) return;
         if (branding.platform_name) document.title = branding.platform_name;
         const faviconHref: string | undefined = branding.favicon_url || branding.logo_url;
-        if (faviconHref) setFavicon(faviconHref);
+        if (faviconHref) {
+            setFavicon(faviconHref);
+        }
     }, [pathname, tenant?.branding]);
 
     return null;
