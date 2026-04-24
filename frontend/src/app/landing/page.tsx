@@ -3,10 +3,10 @@ import './landing.css';
 import LandingClient from './LandingClient';
 
 export const metadata: Metadata = {
-  title: 'Launcher — Infraestrutura de receita para infoprodutores de concursos',
+  title: 'LauncherEDU',
   description: 'A plataforma white-label que aumenta retenção, valor percebido e receita para infoprodutores de concursos públicos.',
   openGraph: {
-    title: 'Launcher — Infraestrutura de receita para concursos',
+    title: 'LauncherEDU',
     description: 'Cronograma inteligente, banco de questões, simulados, gamificação e Mentor com IA.',
     url: 'https://launcheredu.com.br',
     siteName: 'Launcher',
