@@ -84,7 +84,7 @@ def before_request():
 @schedule_bp.route("/generate", methods=["POST"])
 @jwt_required()
 @require_tenant
-@limiter.limit("30 per hour")
+@limiter.limit("1000 per hour")
 def generate_schedule():
     """Gera ou reorganiza o cronograma inteligente."""
     tenant = get_current_tenant()
@@ -435,7 +435,7 @@ def uncheckin_item(item_id: str):
 @schedule_bp.route("/reorganize", methods=["POST"])
 @jwt_required()
 @require_tenant
-@limiter.limit("5 per hour")
+@limiter.limit("100 per hour")
 def reorganize_schedule():
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
