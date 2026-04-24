@@ -122,7 +122,7 @@ def before_request():
 @simulados_bp.route("/", methods=["POST"])
 @jwt_required()
 @require_tenant
-@limiter.limit("20 per hour")
+@limiter.limit("5000 per hour")
 def create_simulado():
     claims = get_jwt()
     if not _is_producer_or_above(claims):
@@ -221,7 +221,7 @@ def create_simulado():
 @simulados_bp.route("/auto-generate", methods=["POST"])
 @jwt_required()
 @require_tenant
-@limiter.limit("10 per hour")
+@limiter.limit("1000 per hour")
 def auto_generate_simulado():
     """
     Cria simulado. Dois modos:
@@ -542,7 +542,7 @@ def get_simulado(simulado_id: str):
 @simulados_bp.route("/<string:simulado_id>/start", methods=["POST"])
 @jwt_required()
 @require_tenant
-@limiter.limit("20 per hour")
+@limiter.limit("5000 per hour")
 def start_attempt(simulado_id: str):
     """
     Aluno inicia tentativa.
@@ -726,7 +726,7 @@ def start_attempt(simulado_id: str):
 @simulados_bp.route("/attempts/<string:attempt_id>/answer", methods=["POST"])
 @jwt_required()
 @require_tenant
-@limiter.limit("500 per hour")
+@limiter.limit("1000 per hour")
 def answer_question(attempt_id: str):
     tenant = get_current_tenant()
     user_id = get_jwt_identity()

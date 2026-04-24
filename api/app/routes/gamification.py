@@ -55,7 +55,7 @@ def before_request():
 @gamification_bp.route("/ratings/lessons/<string:lesson_id>", methods=["POST"])
 @jwt_required()
 @require_tenant
-@limiter.limit("20 per hour")
+@limiter.limit("5000 per hour")
 def rate_lesson(lesson_id: str):
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
