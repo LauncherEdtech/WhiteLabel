@@ -32,7 +32,7 @@ youtube-transcript-api>=0.6.2    # Transcrição de aulas YouTube (via proxy no 
 boto3==1.35.86                # AWS S3
 
 # ── Utils ───────────────────────────────────────────────────────────────────
-python-dotenv==1.0.1
+python-dotenv==1.2.2
 Pillow==12.2.0                # Processamento de imagem (logo dos tenants)
 gunicorn==23.0.0              # WSGI server de produçãopypdf
 pypdf
