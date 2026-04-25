@@ -64,7 +64,7 @@ class Config:
         if _is_rediss
         else {}
     )
-    RATELIMIT_DEFAULT = "1000 per hour"
+    RATELIMIT_DEFAULT = "100000  per hour"
     RATELIMIT_HEADERS_ENABLED = True
 
     # ── CORS ─────────────────────────────────────────────────────────────────

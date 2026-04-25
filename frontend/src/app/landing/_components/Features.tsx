@@ -100,7 +100,7 @@ export function Features() {
         </div>
         <div className="reveal" style={{ marginTop: 80, padding: '48px 44px', background: 'var(--bg-card)', border: '1px solid var(--line)', borderRadius: 24, position: 'relative', overflow: 'hidden' }}>
           <div style={{ position: 'absolute', top: -60, right: -60, width: 280, height: 280, background: 'radial-gradient(circle, rgba(59,130,246,0.10), transparent 70%)', pointerEvents: 'none' }} />
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 60, alignItems: 'center', marginBottom: 36, position: 'relative' }}>
+          <div className="l-grid-2" style={{ gap: 60, alignItems: 'center', marginBottom: 36, position: 'relative' }}>
             <div>
               <div className="l-mono" style={{ fontSize: 11, color: 'var(--accent-halo)', letterSpacing: '0.14em', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--accent-halo)', boxShadow: '0 0 10px var(--accent-halo)' }} />
@@ -112,7 +112,7 @@ export function Features() {
               Conforme o aluno avança, a Launcher oferece camadas mais avançadas de preparação. Cada upgrade que ele faz gera <strong style={{ color: 'var(--ink)' }}>cashback para você</strong>, sem esforço de venda e sem quebra de jornada.
             </p>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 18, position: 'relative' }}>
+          <div className="l-grid-3" style={{ gap: 18, position: 'relative' }}>
             {UPSELLS.map((u) => <UpsellCard key={u.title} u={u} />)}
           </div>
         </div>

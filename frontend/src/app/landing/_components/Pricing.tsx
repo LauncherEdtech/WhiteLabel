@@ -201,7 +201,7 @@ function ROICalc() {
                 </p>
             </div>
 
-            <div className="l-roi-grid" style={{ position: 'relative' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 40, position: 'relative' }}>
                 {/* Inputs */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
                     <div>
@@ -283,7 +283,7 @@ export function Pricing() {
                             <div className="l-mono" style={{ fontSize: 11, color: 'var(--accent-halo)', letterSpacing: '0.14em', marginBottom: 8 }}>INCLUSO EM TODOS OS PLANOS</div>
                             <div style={{ fontFamily: 'Space Grotesk', fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em' }}>Tudo que seu aluno precisa para estudar com estrutura.</div>
                         </div>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(200px, 1fr))', gap: '8px 24px', flex: '1 1 420px' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(140px, 1fr))', gap: '8px 16px', flex: '1 1 280px' }}>
                             {FEATURES_INCLUDED.map((f) => (
                                 <div key={f} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13.5, color: 'var(--ink)' }}>
                                     <span style={{ width: 16, height: 16, borderRadius: 999, background: 'rgba(59,130,246,0.18)', color: 'var(--accent-halo)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, flexShrink: 0 }}>✓</span>
@@ -294,7 +294,7 @@ export function Pricing() {
                     </div>
                 </div>
 
-                <div className="l-grid-plans">
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 20, alignItems: 'stretch' }}>
                     {PLANS.map((p, i) => <PlanCard key={p.id} p={p} i={i} />)}
                 </div>
 
