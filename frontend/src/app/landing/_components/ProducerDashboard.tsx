@@ -68,7 +68,7 @@ function DashboardMock() {
   return (
     <>
       <div><div style={{ fontFamily: 'Space Grotesk', fontSize: 26, fontWeight: 700, color: '#fff' }}>Dashboard</div><div style={{ fontSize: 12, color: '#8F8F8F', marginTop: 3 }}>Visão geral da sua turma</div></div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12 }}>
+      <div className="l-kpi-grid">
         <KPI icon={<Svg24 path="users" />} value="1.284" label="Total de alunos" />
         <KPI icon={<Svg24 path="trend" />} value="78%" label="Engajamento (7d)" sub="1.002 ativos" iconBg="#0F2A1A" iconColor="#10B981" />
         <KPI icon={<Svg24 path="warn" />} value="34" label="Em risco" sub="risco de abandono" iconBg="#2A1F0A" iconColor="#F59E0B" />
@@ -97,7 +97,7 @@ function DashboardMock() {
       </div>
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: '#fff', marginBottom: 10 }}><span>💡</span>Insights da turma</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
+        <div className="l-insight-grid">
           <InsightCard icon="📈" accent="#10B981" title="Engajamento saudável" body="78% de engajamento semanal. A turma está 3x mais ativa que a média." />
           <InsightCard icon="⚠" accent="#F59E0B" title="34 alunos em risco" body="Cerca de 2,6% da turma está inativa há mais de 7 dias." />
           <InsightCard icon="📚" accent="var(--accent)" title="Oportunidade: Direito Tributário" body="A turma tem apenas 41,7% de acerto. Considere criar material de revisão." />
@@ -117,7 +117,7 @@ function AnalyticsMock() {
   return (
     <>
       <div><div style={{ fontFamily: 'Space Grotesk', fontSize: 26, fontWeight: 700, color: '#fff' }}>Analytics</div><div style={{ fontSize: 12, color: '#8F8F8F', marginTop: 3 }}>Visão detalhada do desempenho</div></div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12 }}>
+      <div className="l-kpi-grid">
         <KPI icon={<Svg24 path="users" />} value="1.284" label="Total de alunos" />
         <KPI icon={<Svg24 path="trend" />} value="78%" label="Engajamento (7d)" iconBg="#0F2A1A" iconColor="#10B981" />
         <KPI icon={<Svg24 path="warn" />} value="34" label="Em risco" iconBg="#2A1F0A" iconColor="#F59E0B" />
@@ -145,7 +145,7 @@ function StudentMock() {
         <div style={{ fontFamily: 'Space Grotesk', fontSize: 24, fontWeight: 700, color: '#fff' }}>Arlindo Candini</div>
         <div style={{ fontSize: 11, padding: '5px 10px', background: '#0F2A1A', color: '#10B981', borderRadius: 6, fontWeight: 600, border: '1px solid #1A4A2F' }}>● Em ritmo</div>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12 }}>
+      <div className="l-kpi-grid">
         <KPI icon={<Svg24 path="target" />} value="84,7%" label="Acerto geral" />
         <KPI icon={<Svg24 path="book" />} value="2.140" label="Questões" />
         <KPI icon={<Svg24 path="clock" />} value="126min" label="Esta semana" iconBg="#0F2A1A" iconColor="#10B981" />
@@ -181,7 +181,7 @@ function StudentMock() {
 
 function PanelShell({ step, kind, title, desc, bullets, side = 'right', children }: { step: string; kind: string; title: string; desc: string; bullets: string[]; side?: 'left' | 'right'; children: ReactNode }) {
   const explanation = (
-    <div style={{ padding: 36, display: 'flex', flexDirection: 'column', gap: 14, background: 'var(--bg-elev)', borderRight: side === 'right' ? '1px solid var(--line)' : 'none', borderLeft: side === 'left' ? '1px solid var(--line)' : 'none' }}>
+    <div className="l-panel-explanation" style={{ padding: 36, display: 'flex', flexDirection: 'column', gap: 14, background: 'var(--bg-elev)', borderRight: side === 'right' ? '1px solid var(--line)' : 'none', borderLeft: side === 'left' ? '1px solid var(--line)' : 'none' }}>
       <div className="l-mono" style={{ fontSize: 11, color: 'var(--accent)', letterSpacing: '0.14em', display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--accent)', boxShadow: '0 0 10px var(--accent)' }} />{step} · {kind}
       </div>
@@ -192,9 +192,9 @@ function PanelShell({ step, kind, title, desc, bullets, side = 'right', children
       </ul>
     </div>
   );
-  const mock = <div style={{ background: '#0A0A0A', padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: 18, minHeight: 540 }}>{children}</div>;
+  const mock = <div className="l-dashboard-mock" style={{ background: '#0A0A0A', padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: 18, minHeight: 540 }}>{children}</div>;
   return (
-    <div className="reveal" style={{ background: 'var(--bg-card)', border: '1px solid var(--line)', borderRadius: 20, overflow: 'hidden', display: 'grid', gridTemplateColumns: side === 'right' ? '360px 1fr' : '1fr 360px' }}>
+    <div className={`reveal ${side === 'right' ? 'l-panel-right' : 'l-panel-left'}`} style={{ background: 'var(--bg-card)', border: '1px solid var(--line)', borderRadius: 20, overflow: 'hidden' }}>
       {side === 'right' ? <>{explanation}{mock}</> : <>{mock}{explanation}</>}
     </div>
   );
@@ -323,7 +323,7 @@ function ROICalc() {
         </div>
         <h3 style={{ fontFamily: 'Space Grotesk', fontSize: 32, fontWeight: 600, letterSpacing: '-0.025em', margin: 0, lineHeight: 1.1 }}>A Launcher pode virar uma nova linha de receita.</h3>
       </div>
-      <div className="l-roi-grid" style={{ position: 'relative' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 40, position: 'relative' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
           <div>
             <div style={{ fontSize: 13, color: 'var(--ink-dim)', marginBottom: 10 }}>1. Qual plano você contrata?</div>
@@ -377,7 +377,7 @@ export function Pricing() {
               <div className="l-mono" style={{ fontSize: 11, color: 'var(--accent-halo)', letterSpacing: '0.14em', marginBottom: 8 }}>INCLUSO EM TODOS OS PLANOS</div>
               <div style={{ fontFamily: 'Space Grotesk', fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em' }}>Tudo que seu aluno precisa para estudar com estrutura.</div>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(140px, 1fr))', gap: '8px 16px', flex: '1 1 280px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(200px, 1fr))', gap: '8px 24px', flex: '1 1 420px' }}>
               {FEATURES_INCLUDED.map((f) => (
                 <div key={f} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13.5 }}>
                   <span style={{ width: 16, height: 16, borderRadius: 999, background: 'rgba(59,130,246,0.18)', color: 'var(--accent-halo)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, flexShrink: 0 }}>✓</span>{f}
@@ -386,7 +386,7 @@ export function Pricing() {
             </div>
           </div>
         </div>
-        <div className="l-grid-plans">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 20, alignItems: 'stretch' }}>
           {PLANS.map((p, i) => <PlanCard key={p.id} p={p} i={i} />)}
         </div>
         <ROICalc />
