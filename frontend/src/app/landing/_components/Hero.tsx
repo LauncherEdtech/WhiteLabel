@@ -1,7 +1,6 @@
 'use client';
 import { useState, useEffect } from 'react';
-import { Btn, WaIcon, Avatar, GlowBG, GridLines } from './primitives';
-import { Eyebrow } from './primitives';
+import { Btn, WaIcon, Avatar, GlowBG, GridLines, Eyebrow } from './primitives';
 
 /* ─── MiniDashboard ──────────────────────────────────────────────── */
 function MiniDashboard({ tick }: { tick: number }) {
@@ -84,30 +83,27 @@ function MiniDashboard({ tick }: { tick: number }) {
 /* ─── Variant 1: Editorial ───────────────────────────────────────── */
 function HeroVariant1() {
   return (
-    <div style={{ position: 'relative', maxWidth: 1360, margin: '0 auto' }}>
+    <div style={{ position: 'relative', maxWidth: 1360, margin: '0 auto', width: '100%' }}>
       <GlowBG color="var(--accent)" size={800} opacity={0.18} top={-100} left={-200} />
       <GlowBG color="var(--accent-halo)" size={500} opacity={0.1} bottom={-100} right={-100} />
       <div className="reveal" style={{ marginBottom: 32 }}>
         <Eyebrow>Feito para concursos públicos</Eyebrow>
       </div>
-      <h1 className="l-display reveal" data-delay="1" style={{ fontSize: 'clamp(52px, 8.5vw, 128px)', lineHeight: 0.98, letterSpacing: '-0.035em', fontWeight: 600, margin: 0, maxWidth: 1200 }}>
+      <h1 className="l-display reveal" data-delay="1" style={{ fontSize: 'clamp(40px, 8.5vw, 128px)', lineHeight: 0.98, letterSpacing: '-0.035em', fontWeight: 600, margin: 0, maxWidth: 1200 }}>
         O sistema que faz seu aluno{' '}
         <em style={{ fontStyle: 'italic', color: 'var(--accent-halo)' }}>estudar mais</em> e você{' '}
         <u style={{ textDecorationColor: 'var(--accent)', textDecorationThickness: 4, textUnderlineOffset: 12 }}>vender mais.</u>
       </h1>
-      <p className="reveal" data-delay="2" style={{ fontSize: 'clamp(18px,1.5vw,22px)', lineHeight: 1.5, maxWidth: 680, marginTop: 40, color: 'var(--ink-dim)' }}>
+      <p className="reveal" data-delay="2" style={{ fontSize: 'clamp(16px,1.5vw,22px)', lineHeight: 1.5, maxWidth: 680, marginTop: 32, color: 'var(--ink-dim)' }}>
         Você não precisa de mais uma área de membros. Você precisa de uma infraestrutura que aumenta retenção, valor percebido e receita, com dados de verdade.
       </p>
-      <div className="reveal" data-delay="3" style={{ display: 'flex', gap: 14, marginTop: 44, flexWrap: 'wrap' }}>
+      <div className="reveal" data-delay="3" style={{ display: 'flex', gap: 12, marginTop: 36, flexWrap: 'wrap' }}>
         <Btn variant="primary" big>Quero essa infraestrutura</Btn>
-        <Btn variant="ghost" big icon={false}><WaIcon /> Conversar no WhatsApp</Btn>
+        <Btn variant="ghost" big icon={false}><WaIcon /> WhatsApp</Btn>
       </div>
-      <div className="reveal" data-delay="4" style={{ display: 'flex', alignItems: 'center', gap: 18, marginTop: 56 }}>
+      <div className="reveal" data-delay="4" style={{ display: 'flex', alignItems: 'center', gap: 18, marginTop: 48, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex' }}>
-          {[
-            { i: 'JF', c: '#3B82F6' }, { i: 'CA', c: '#A855F7' },
-            { i: 'RM', c: '#22C55E' }, { i: 'PS', c: '#F59E0B' },
-          ].map((a, i) => (
+          {[{ i: 'JF', c: '#3B82F6' }, { i: 'CA', c: '#A855F7' }, { i: 'RM', c: '#22C55E' }, { i: 'PS', c: '#F59E0B' }].map((a, i) => (
             <div key={i} style={{ marginLeft: i ? -12 : 0 }}>
               <Avatar initials={a.i} color={a.c} size={40} />
             </div>
@@ -131,19 +127,19 @@ function HeroVariant2() {
     return () => clearInterval(t);
   }, []);
   return (
-    <div style={{ position: 'relative', maxWidth: 1360, margin: '0 auto', display: 'grid', gridTemplateColumns: '1.1fr 1fr', gap: 60, alignItems: 'center' }}>
+    <div className="l-hero-split" style={{ maxWidth: 1360, margin: '0 auto', width: '100%' }}>
       <GlowBG color="var(--accent)" size={700} opacity={0.16} top={-150} right={0} />
       <div>
         <div className="reveal" style={{ marginBottom: 26 }}>
           <Eyebrow>Leve seu negócio para o próximo nível</Eyebrow>
         </div>
-        <h1 className="l-display reveal" data-delay="1" style={{ fontSize: 56, lineHeight: 1.02, letterSpacing: '-0.03em', fontWeight: 600, margin: 0 }}>
+        <h1 className="l-display reveal" data-delay="1" style={{ fontSize: 'clamp(32px, 4vw, 56px)', lineHeight: 1.05, letterSpacing: '-0.03em', fontWeight: 600, margin: 0 }}>
           O sistema feito para você vender mais e aprovar mais alunos.
         </h1>
-        <p className="reveal" data-delay="2" style={{ fontSize: 18, lineHeight: 1.55, color: 'var(--ink-dim)', marginTop: 28, maxWidth: 520 }}>
+        <p className="reveal" data-delay="2" style={{ fontSize: 'clamp(15px, 1.2vw, 18px)', lineHeight: 1.55, color: 'var(--ink-dim)', marginTop: 24, maxWidth: 520 }}>
           Você não precisa de mais uma área de membros. Você precisa de um mecanismo que faça seu aluno estudar mais, permanecer mais e te dar clareza sobre o que está funcionando.
         </p>
-        <div className="reveal" data-delay="3" style={{ display: 'flex', gap: 14, marginTop: 36, flexWrap: 'wrap' }}>
+        <div className="reveal" data-delay="3" style={{ display: 'flex', gap: 12, marginTop: 32, flexWrap: 'wrap' }}>
           <Btn variant="primary" big>Quero essa infraestrutura</Btn>
           <Btn variant="ghost" big icon={false}><WaIcon /> WhatsApp</Btn>
         </div>
@@ -163,17 +159,17 @@ function HeroVariant3() {
     { t: '> infraestrutura: online', c: 'var(--accent-halo)' },
   ];
   return (
-    <div style={{ position: 'relative', maxWidth: 1360, margin: '0 auto', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 80, alignItems: 'center' }}>
+    <div className="l-hero-terminal" style={{ maxWidth: 1360, margin: '0 auto', width: '100%' }}>
       <GlowBG color="var(--accent)" size={700} opacity={0.14} bottom={-100} left={-100} />
       <div>
         <div className="reveal" style={{ marginBottom: 26 }}><Eyebrow>Concursos · v4.0</Eyebrow></div>
-        <h1 className="l-display reveal" data-delay="1" style={{ fontSize: 'clamp(44px,6vw,90px)', lineHeight: 1, letterSpacing: '-0.03em', fontWeight: 600, margin: 0 }}>
+        <h1 className="l-display reveal" data-delay="1" style={{ fontSize: 'clamp(32px,6vw,90px)', lineHeight: 1, letterSpacing: '-0.03em', fontWeight: 600, margin: 0 }}>
           O sistema que faz seu aluno <span style={{ color: 'var(--accent-halo)' }}>estudar mais</span> e você vender mais.
         </h1>
-        <p className="reveal" data-delay="2" style={{ marginTop: 28, color: 'var(--ink-dim)', fontSize: 18, lineHeight: 1.55, maxWidth: 460 }}>
+        <p className="reveal" data-delay="2" style={{ marginTop: 24, color: 'var(--ink-dim)', fontSize: 18, lineHeight: 1.55, maxWidth: 460 }}>
           A infraestrutura que transforma seus alunos em aprovados e seu negócio em máquina de receita recorrente.
         </p>
-        <div className="reveal" data-delay="3" style={{ display: 'flex', gap: 14, marginTop: 36, flexWrap: 'wrap' }}>
+        <div className="reveal" data-delay="3" style={{ display: 'flex', gap: 12, marginTop: 32, flexWrap: 'wrap' }}>
           <Btn variant="primary" big>Quero essa infraestrutura</Btn>
           <Btn variant="ghost" big icon={false}><WaIcon /> WhatsApp</Btn>
         </div>

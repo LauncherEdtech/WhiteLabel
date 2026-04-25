@@ -1,5 +1,4 @@
 'use client';
-import { useRef } from 'react';
 import { useReveal } from './_components/RevealObserver';
 import { Nav } from './_components/Nav';
 import { Hero } from './_components/Hero';

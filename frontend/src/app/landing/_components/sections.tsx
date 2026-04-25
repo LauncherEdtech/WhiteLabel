@@ -58,7 +58,7 @@ export function VSL() {
           </div>
         </div>
 
-        <div className="reveal" data-delay="3" style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 12, maxWidth: 1100, margin: '20px auto 0', fontFamily: 'JetBrains Mono', fontSize: 11, color: 'var(--ink-mute)' }}>
+        <div className="reveal l-vsl-chapters" data-delay="3">
           {['01 · Gancho', '02 · Problema', '03 · Solução', '04 · Prova', '05 · Oferta'].map((x) => (
             <div key={x} style={{ textAlign: 'center' }}>{x}</div>
           ))}
@@ -81,7 +81,7 @@ export function Comparison() {
           sub="A diferença entre hospedar conteúdo e construir uma operação de verdade."
           center
         />
-        <div className="reveal" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, marginTop: 40 }}>
+        <div className="reveal l-comparison-grid">
           {/* OTHERS */}
           <div style={{ background: 'color-mix(in srgb, #EF4444 8%, var(--bg-card))', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 20, padding: 36, position: 'relative', overflow: 'hidden' }}>
             <div style={{ position: 'absolute', top: -60, right: -60, width: 200, height: 200, background: 'radial-gradient(circle, rgba(239,68,68,0.25), transparent 70%)', filter: 'blur(30px)' }} />
@@ -152,7 +152,7 @@ export function Testimonials() {
     <section style={launcherStyles.section}>
       <div style={launcherStyles.container}>
         <SectionHeader eyebrow="Depoimentos" title="Quem usa, recomenda." />
-        <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 20 }}>
+        <div className="l-grid-2" style={{ alignItems: 'stretch' }}>
           <div className="reveal" style={{ position: 'relative', background: 'linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, var(--bg-card)), var(--bg-card))', border: '1px solid rgba(59,130,246,0.3)', borderRadius: 24, padding: 48, display: 'flex', flexDirection: 'column', justifyContent: 'space-between', overflow: 'hidden', minHeight: 480 }}>
             <GlowBG color="var(--accent)" size={400} opacity={0.2} top={-100} right={-100} />
             <div>
@@ -324,7 +324,7 @@ export function CTAFinal() {
 export function Footer() {
   return (
     <footer style={{ padding: '80px 7vw 40px', borderTop: '1px solid var(--line)', background: 'var(--bg-elev)' }}>
-      <div style={{ maxWidth: 1360, margin: '0 auto', display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 40, marginBottom: 60 }}>
+      <div className="l-footer-grid" style={{ maxWidth: 1360, margin: '0 auto' }}>
         <div>
           <LogoWordmark height={34} />
           <p style={{ marginTop: 16, fontSize: 14, color: 'var(--ink-dim)', lineHeight: 1.5, maxWidth: 320 }}>

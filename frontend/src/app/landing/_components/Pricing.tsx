@@ -201,7 +201,7 @@ function ROICalc() {
                 </p>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 40, position: 'relative' }}>
+            <div className="l-roi-grid" style={{ position: 'relative' }}>
                 {/* Inputs */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
                     <div>
@@ -294,7 +294,7 @@ export function Pricing() {
                     </div>
                 </div>
 
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 20, alignItems: 'stretch' }}>
+                <div className="l-grid-plans">
                     {PLANS.map((p, i) => <PlanCard key={p.id} p={p} i={i} />)}
                 </div>
 
