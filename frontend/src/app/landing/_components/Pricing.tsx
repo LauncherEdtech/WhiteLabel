@@ -201,7 +201,7 @@ function ROICalc() {
                 </p>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 40, position: 'relative' }}>
+            <div className="l-roi-grid" style={{ position: 'relative' }}>
                 {/* Inputs */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
                     <div>
@@ -227,9 +227,9 @@ function ROICalc() {
                         <input type="range" min={Math.ceil(meta.perStudentMonth)} max={197} step={1} value={repassRate}
                             onChange={(e) => setRepassRate(parseFloat(e.target.value))}
                             style={{ width: '100%', accentColor: 'var(--accent)' }} />
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 11, color: 'var(--ink-mute)', fontFamily: 'JetBrains Mono' }}>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 12px', marginTop: 6, fontSize: 11, color: 'var(--ink-mute)', fontFamily: 'JetBrains Mono' }}>
                             <span>mín. R$ {meta.perStudentMonth.toString().replace('.', ',')} (repasse puro)</span>
-                            <span>margem sua: <strong style={{ color: 'var(--success)' }}>R$ {(repassRate - meta.perStudentMonth).toFixed(2).replace('.', ',')}/mês</strong></span>
+                            <span>margem: <strong style={{ color: 'var(--success)' }}>R$ {(repassRate - meta.perStudentMonth).toFixed(2).replace('.', ',')}/mês</strong></span>
                         </div>
                     </div>
 
@@ -241,7 +241,7 @@ function ROICalc() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                     <div style={{ padding: '24px 24px', background: 'linear-gradient(135deg, rgba(59,130,246,0.22), rgba(59,130,246,0.06))', border: '1.5px solid rgba(59,130,246,0.55)', borderRadius: 16, boxShadow: '0 0 28px rgba(59,130,246,0.22)', position: 'relative', overflow: 'hidden' }}>
                         <div className="l-mono" style={{ fontSize: 10, color: 'var(--accent-halo)', letterSpacing: '0.14em', marginBottom: 6 }}>
-                            SEU LUCRO LÍQUIDO · {meta.months} MESES
+                            SEU LUCRO · {meta.months} MESES
                         </div>
                         <div style={{ fontFamily: 'Space Grotesk', fontSize: 44, fontWeight: 700, color: 'var(--ink)', letterSpacing: '-0.025em', lineHeight: 1 }}>
                             {fmt(netGain)}
@@ -283,7 +283,7 @@ export function Pricing() {
                             <div className="l-mono" style={{ fontSize: 11, color: 'var(--accent-halo)', letterSpacing: '0.14em', marginBottom: 8 }}>INCLUSO EM TODOS OS PLANOS</div>
                             <div style={{ fontFamily: 'Space Grotesk', fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em' }}>Tudo que seu aluno precisa para estudar com estrutura.</div>
                         </div>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(140px, 1fr))', gap: '8px 16px', flex: '1 1 280px' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(200px, 1fr))', gap: '8px 24px', flex: '1 1 420px' }}>
                             {FEATURES_INCLUDED.map((f) => (
                                 <div key={f} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13.5, color: 'var(--ink)' }}>
                                     <span style={{ width: 16, height: 16, borderRadius: 999, background: 'rgba(59,130,246,0.18)', color: 'var(--accent-halo)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, flexShrink: 0 }}>✓</span>
@@ -294,7 +294,7 @@ export function Pricing() {
                     </div>
                 </div>
 
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 20, alignItems: 'stretch' }}>
+                <div className="l-grid-plans">
                     {PLANS.map((p, i) => <PlanCard key={p.id} p={p} i={i} />)}
                 </div>
 
