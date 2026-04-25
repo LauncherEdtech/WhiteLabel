@@ -1104,12 +1104,11 @@ def _get_time_remaining(attempt: SimuladoAttempt, simulado: Simulado) -> int:
     except (ValueError, TypeError):
         return 0
 
-
 def _finalize_attempt(
     attempt: "SimuladoAttempt", simulado: "Simulado", timed_out: bool = False
 ) -> dict:
     """Finaliza a tentativa. Suporta simulados fixos e personalizados."""
-    from sqlalchemy import or_
+    from sqlalchemy import or_, text
 
     now = datetime.now(timezone.utc)
     answers = SimuladoAnswer.query.filter_by(
@@ -1141,6 +1140,8 @@ def _finalize_attempt(
 
     correct_count = 0
     by_discipline: dict = {}
+    # FIX: acumula stats de questões para UPDATE atômico no fim (evita deadlock)
+    question_stats_to_update: dict = {}  # {question_id: is_correct}
 
     for q in questions:
         answer = answers_map.get(q.id)
@@ -1156,12 +1157,14 @@ def _finalize_attempt(
         if answer:
             answer.is_correct = is_correct
 
-        existing_qa = QuestionAttempt.query.filter_by(
-            user_id=attempt.user_id,
-            question_id=q.id,
-            simulado_attempt_id=attempt.id,
-            is_deleted=False,
-        ).first()
+        # FIX: usa no_autoflush para evitar que o SELECT dispare UPDATE prematuro
+        with db.session.no_autoflush:
+            existing_qa = QuestionAttempt.query.filter_by(
+                user_id=attempt.user_id,
+                question_id=q.id,
+                simulado_attempt_id=attempt.id,
+                is_deleted=False,
+            ).first()
 
         if not existing_qa and chosen_key:
             db.session.add(
@@ -1178,9 +1181,9 @@ def _finalize_attempt(
                     simulado_attempt_id=attempt.id,
                 )
             )
-            q.total_attempts = (q.total_attempts or 0) + 1
-            if is_correct:
-                q.correct_attempts = (q.correct_attempts or 0) + 1
+            # FIX: não atualiza ORM inline (causava dirty + autoflush + deadlock)
+            # Acumula para UPDATE SQL atômico após o loop
+            question_stats_to_update[q.id] = is_correct
 
         disc = q.discipline or "Sem disciplina"
         if disc not in by_discipline:
@@ -1188,6 +1191,31 @@ def _finalize_attempt(
         by_discipline[disc]["total"] += 1
         if is_correct:
             by_discipline[disc]["correct"] += 1
+
+    # FIX: UPDATE atômico com SQL direto — sem locks ORM, sem deadlock
+    # Cada questão recebe um único UPDATE no fim, não no meio do loop
+    for qid, is_correct in question_stats_to_update.items():
+        if is_correct:
+            db.session.execute(
+                text(
+                    "UPDATE questions "
+                    "SET total_attempts = COALESCE(total_attempts, 0) + 1, "
+                    "    correct_attempts = COALESCE(correct_attempts, 0) + 1, "
+                    "    updated_at = NOW() "
+                    "WHERE id = :qid"
+                ),
+                {"qid": str(qid)},
+            )
+        else:
+            db.session.execute(
+                text(
+                    "UPDATE questions "
+                    "SET total_attempts = COALESCE(total_attempts, 0) + 1, "
+                    "    updated_at = NOW() "
+                    "WHERE id = :qid"
+                ),
+                {"qid": str(qid)},
+            )
 
     total_questions = len(questions)
     score = correct_count / total_questions if total_questions else 0
@@ -1244,7 +1272,6 @@ def _finalize_attempt(
             for disc, stats in by_discipline.items()
         ],
     }
-
 
 def _auto_select_questions(tenant_id: str, filters: dict) -> list:
     from app.middleware.tenant import get_current_tenant

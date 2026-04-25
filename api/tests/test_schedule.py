@@ -1,5 +1,5 @@
 # api/tests/test_schedule.py
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -70,34 +70,57 @@ def _get_ids(app):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestSchedule:
-
     def test_generate_schedule(self, client, student_headers, db, app):
         _enroll_student(db, app)
         course_id = _get_course_id(app)
-
-        res = client.post(
-            "/api/v1/schedule/generate",
-            json={"course_id": course_id},
-            headers=student_headers,
-        )
-        assert res.status_code in (200, 201)
+ 
+        mock_result = MagicMock()
+        mock_result.id = "test-task-id-abc123"
+ 
+        with patch("app.routes.schedule.generate_schedule_task") as mock_task:
+            mock_task.delay.return_value = mock_result
+ 
+            res = client.post(
+                "/api/v1/schedule/generate",
+                json={"course_id": course_id},
+                headers=student_headers,
+            )
+ 
+        assert res.status_code == 202
         data = res.json
-        assert "schedule" in data
-        assert data["schedule"]["status"] == "active"
+        assert data["status"] == "pending"
+        assert data["task_id"] == "test-task-id-abc123"
+        assert "poll_url" in data
+        # Confirma que o delay foi chamado com os argumentos corretos
+        mock_task.delay.assert_called_once()
+        call_kwargs = mock_task.delay.call_args.kwargs
+        assert call_kwargs["course_id"] == course_id
 
     def test_generate_schedule_with_target_date(self, client, student_headers, db, app):
         if _is_sqlite(db):
             import pytest as _pt; _pt.skip("SQLite bulk update DateTime incompatibility")
         _enroll_student(db, app)
         course_id = _get_course_id(app)
-
-        res = client.post(
-            "/api/v1/schedule/generate",
-            json={"course_id": course_id, "target_date": "2026-12-31"},
-            headers=student_headers,
-        )
-        assert res.status_code in (200, 201)
-        assert res.json["schedule"]["target_date"] == "2026-12-31"
+ 
+        mock_result = MagicMock()
+        mock_result.id = "test-task-id-with-date"
+ 
+        with patch("app.routes.schedule.generate_schedule_task") as mock_task:
+            mock_task.delay.return_value = mock_result
+ 
+            res = client.post(
+                "/api/v1/schedule/generate",
+                json={"course_id": course_id, "target_date": "2026-12-31"},
+                headers=student_headers,
+            )
+ 
+        assert res.status_code == 202
+        data = res.json
+        assert data["status"] == "pending"
+        assert "task_id" in data
+        # Confirma que target_date foi passado à task
+        call_kwargs = mock_task.delay.call_args.kwargs
+        assert call_kwargs.get("target_date") == "2026-12-31"
 
     def test_generate_schedule_not_enrolled(self, client, db, app):
         """Aluno não matriculado recebe 403."""

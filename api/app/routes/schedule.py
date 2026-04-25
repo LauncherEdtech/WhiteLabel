@@ -27,6 +27,7 @@ from app.middleware.tenant import (
     require_tenant,
     get_current_tenant,
 )
+from app.tasks.schedule_tasks import generate_schedule_task, get_task_status
 
 schedule_bp = Blueprint("schedule", __name__)
 
@@ -87,12 +88,11 @@ def before_request():
 @limiter.limit("1000 per hour")
 def generate_schedule():
     """
-    Enfileira geração do cronograma via Celery e retorna task_id imediatamente.
+    Enfileira geração do cronograma via Celery.
+    Retorna imediatamente com task_id para polling.
 
-    Response 202:
-      { "status": "pending", "task_id": "...", "poll_url": "/api/v1/schedule/status/<task_id>" }
-
-    Faça GET /schedule/status/<task_id> a cada 2s até status="ready".
+    Response 202: { "status": "pending", "task_id": "...", "poll_url": "..." }
+    Use GET /schedule/status/<task_id> a cada 2s até status="ready".
     """
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
@@ -124,8 +124,6 @@ def generate_schedule():
             403,
         )
 
-    from app.tasks.schedule_tasks import generate_schedule_task
-
     task = generate_schedule_task.delay(
         user_id=str(user_id),
         tenant_id=str(tenant.id),
@@ -152,16 +150,12 @@ def get_schedule_status(task_id: str):
     """
     Polling de status para geração assíncrona do cronograma.
 
-    Response:
       pending → { "status": "pending" }
-      ready   → { "status": "ready", "message": "...", "schedule": {...}, "abandonment_risk": 0.1 }
+      ready   → { "status": "ready", "message": "...", "schedule": {...}, ... }
       error   → { "status": "error", "message": "..." }
     """
-    from app.tasks.schedule_tasks import get_task_status
-
     state = get_task_status(task_id)
 
-    # Task ainda não foi pega pelo worker (fila cheia) ou key expirou
     if state is None:
         return jsonify({"status": "pending"}), 200
 
@@ -171,7 +165,7 @@ def get_schedule_status(task_id: str):
     if state["status"] == "ready":
         schedule_id = state.get("schedule_id")
         if not schedule_id:
-            return jsonify({"status": "error", "message": "schedule_id ausente no resultado"}), 500
+            return jsonify({"status": "error", "message": "schedule_id ausente"}), 500
 
         schedule = StudySchedule.query.filter_by(id=schedule_id, is_deleted=False).first()
         if not schedule:
@@ -188,7 +182,6 @@ def get_schedule_status(task_id: str):
 
         return jsonify(response_data), 200
 
-    # status == "pending"
     return jsonify({"status": "pending"}), 200
 
 
