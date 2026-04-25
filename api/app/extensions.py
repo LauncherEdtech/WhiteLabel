@@ -18,11 +18,27 @@ logger = logging.getLogger(__name__)
 db = SQLAlchemy()
 migrate = Migrate()
 jwt = JWTManager()
-limiter = Limiter(key_func=get_remote_address)
 cors = CORS()
 mail = Mail()
 celery_app = Celery(__name__)
 celery_app.conf.include = ["app.tasks"]
+
+
+def _get_rate_limit_key():
+    from flask import request
+    from flask_jwt_extended import decode_token
+    try:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            token = decode_token(auth.split(" ")[1])
+            return token.get("sub", get_remote_address())
+    except Exception:
+        pass
+    return get_remote_address()
+
+
+limiter = Limiter(key_func=_get_rate_limit_key)
+
 
 def _create_redis_client():
     url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
