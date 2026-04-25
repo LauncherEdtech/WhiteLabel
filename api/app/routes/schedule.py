@@ -86,7 +86,14 @@ def before_request():
 @require_tenant
 @limiter.limit("1000 per hour")
 def generate_schedule():
-    """Gera ou reorganiza o cronograma inteligente."""
+    """
+    Enfileira geração do cronograma via Celery e retorna task_id imediatamente.
+
+    Response 202:
+      { "status": "pending", "task_id": "...", "poll_url": "/api/v1/schedule/status/<task_id>" }
+
+    Faça GET /schedule/status/<task_id> a cada 2s até status="ready".
+    """
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
 
@@ -117,28 +124,72 @@ def generate_schedule():
             403,
         )
 
-    try:
-        engine = ScheduleEngine(
-            user_id=user_id, tenant_id=tenant.id, course_id=course_id
-        )
-        schedule = engine.generate(target_date=target_date)
-        risk = engine.calculate_abandonment_risk()
-        schedule.abandonment_risk_score = risk
-        db.session.commit()
-    except ValueError as e:
-        return jsonify({"error": "engine_error", "message": str(e)}), 400
+    from app.tasks.schedule_tasks import generate_schedule_task
 
-    response_data = {
-        "message": "Cronograma gerado com sucesso.",
-        "schedule": _serialize_schedule(schedule),
-        "abandonment_risk": risk,
-    }
+    task = generate_schedule_task.delay(
+        user_id=str(user_id),
+        tenant_id=str(tenant.id),
+        course_id=str(course_id),
+        target_date=target_date,
+    )
 
-    # v9.2: expõe coverage_gap se as aulas não couberem na janela até a prova
-    if engine.last_coverage_gap:
-        response_data["coverage_gap"] = engine.last_coverage_gap
+    return (
+        jsonify(
+            {
+                "status": "pending",
+                "task_id": task.id,
+                "poll_url": f"/api/v1/schedule/status/{task.id}",
+            }
+        ),
+        202,
+    )
 
-    return jsonify(response_data), 201
+
+@schedule_bp.route("/status/<string:task_id>", methods=["GET"])
+@jwt_required()
+@require_tenant
+def get_schedule_status(task_id: str):
+    """
+    Polling de status para geração assíncrona do cronograma.
+
+    Response:
+      pending → { "status": "pending" }
+      ready   → { "status": "ready", "message": "...", "schedule": {...}, "abandonment_risk": 0.1 }
+      error   → { "status": "error", "message": "..." }
+    """
+    from app.tasks.schedule_tasks import get_task_status
+
+    state = get_task_status(task_id)
+
+    # Task ainda não foi pega pelo worker (fila cheia) ou key expirou
+    if state is None:
+        return jsonify({"status": "pending"}), 200
+
+    if state["status"] == "error":
+        return jsonify({"status": "error", "message": state.get("message", "Erro desconhecido")}), 500
+
+    if state["status"] == "ready":
+        schedule_id = state.get("schedule_id")
+        if not schedule_id:
+            return jsonify({"status": "error", "message": "schedule_id ausente no resultado"}), 500
+
+        schedule = StudySchedule.query.filter_by(id=schedule_id, is_deleted=False).first()
+        if not schedule:
+            return jsonify({"status": "error", "message": "Cronograma não encontrado"}), 404
+
+        response_data = {
+            "status": "ready",
+            "message": "Cronograma gerado com sucesso.",
+            "schedule": _serialize_schedule(schedule),
+            "abandonment_risk": state.get("abandonment_risk", 0),
+        }
+        if state.get("coverage_gap"):
+            response_data["coverage_gap"] = state["coverage_gap"]
+
+        return jsonify(response_data), 200
+
+    # status == "pending"
+    return jsonify({"status": "pending"}), 200
 
 
 @schedule_bp.route("/", methods=["GET"])

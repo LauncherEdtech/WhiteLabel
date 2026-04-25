@@ -896,13 +896,15 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
 
   const saveMutation = useMutation({
     mutationFn: async () => {
+      // 1. Salva disponibilidade (síncrono, rápido)
       await scheduleApi.updateAvailability({
         days,
         hours_per_day: hours,
         preferred_start_time: startTime,
         break_minutes: breakMinutes,  // v11
       });
-      await scheduleApi.generate(courseId, targetDate || undefined);
+      // 2. Gera cronograma async: enfileira Celery + polling até "ready" (até 120s)
+      await scheduleApi.generateAndWait(courseId, targetDate || undefined);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["schedule", courseId] });
@@ -910,7 +912,7 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
       toast.success("Cronograma criado!", "Seu plano adaptativo está pronto.");
       onGenerated();
     },
-    onError: () => toast.error("Erro ao gerar cronograma"),
+    onError: (err: Error) => toast.error("Erro ao gerar cronograma", err.message),
   });
 
   const toggleDay = (d: number) =>
