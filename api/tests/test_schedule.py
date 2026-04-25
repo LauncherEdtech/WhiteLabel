@@ -917,6 +917,14 @@ class TestScheduleEngine:
 
             assert result is None
 
+    def test_schedule_status_unknown_task(self, client, student_headers):
+            """GET /schedule/status/<task_id> retorna pending para task inexistente (Redis indisponível em CI)."""
+            res = client.get(
+                "/api/v1/schedule/status/00000000-0000-0000-0000-000000000000",
+                headers=student_headers,
+            )
+            assert res.status_code == 200
+            assert res.json["status"] == "pending"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Simulados (preservado do original)
