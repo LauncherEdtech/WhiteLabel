@@ -11,9 +11,9 @@ class Config:
     SQLALCHEMY_ENGINE_OPTIONS = {
         "pool_pre_ping": True,
         "pool_recycle": 300,
-        "pool_size": 10,
-        "max_overflow": 20,
-    }
+        "pool_size": int(os.environ.get("SQLALCHEMY_POOL_SIZE", 10)),
+        "max_overflow": int(os.environ.get("SQLALCHEMY_MAX_OVERFLOW", 20)),
+    }    
 
     # ── Segurança Flask ──────────────────────────────────────────────────────
     SECRET_KEY = os.environ.get("SECRET_KEY")
