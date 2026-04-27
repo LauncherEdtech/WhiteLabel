@@ -41,6 +41,36 @@ def _set_task_status(task_id: str, payload: dict) -> None:
         logger.warning(f"[schedule_gen] Redis set falhou task={task_id}: {e}")
 
 
+def _get_app_context():
+    """
+    Retorna um context manager com o app context correto.
+    
+    Usa current_app se disponível (worker já tem contexto ativo — reutiliza
+    o mesmo SQLAlchemy pool sem criar novas conexões).
+    
+    Só cria novo app como último recurso (nunca deve acontecer em produção).
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _ctx():
+        from flask import current_app
+        try:
+            # Tenta usar o app do worker (reutiliza pool de conexões existente)
+            app = current_app._get_current_object()
+            with app.app_context():
+                yield
+        except RuntimeError:
+            # Fallback: worker não tem contexto (não deveria acontecer)
+            logger.warning("[schedule_gen] current_app indisponível, criando app temporário")
+            from app import create_app
+            tmp_app = create_app()
+            with tmp_app.app_context():
+                yield
+
+    return _ctx()
+
+
 # ── Task de geração assíncrona ────────────────────────────────────────────────
 
 
@@ -55,25 +85,14 @@ def generate_schedule_task(
     """
     Gera ou reorganiza o cronograma em background (Celery).
 
-    Fluxo:
-      1. POST /schedule/generate enfileira esta task → retorna task_id imediato (< 100ms)
-      2. Esta task executa ScheduleEngine.generate() sem bloquear Gunicorn
-      3. Status salvo no Redis: schedule_gen:{task_id}
-      4. Frontend faz GET /schedule/status/{task_id} a cada 2s até status="ready"
-
-    Estados no Redis:
-      { "status": "pending" }
-      { "status": "ready", "schedule_id": "uuid", "abandonment_risk": 0.1 }
-      { "status": "error", "message": "..." }
+    Usa current_app para reutilizar o SQLAlchemy pool do worker,
+    evitando esgotamento de conexões no RDS.
     """
-    from app import create_app  # FIX: app context explícito para o worker Celery
-
     task_id = self.request.id
     logger.info(f"[schedule_gen] task={task_id} user={user_id} course={course_id} START")
     _set_task_status(task_id, {"status": "pending"})
 
-    app = create_app()
-    with app.app_context():
+    with _get_app_context():
         try:
             from app.extensions import db
             from app.services.schedule_engine import ScheduleEngine
