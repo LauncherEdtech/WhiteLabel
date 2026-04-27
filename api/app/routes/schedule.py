@@ -9,6 +9,11 @@
 #
 # v8.1 — Serializer detecta prefixo [LONGA] em priority_reason e expõe
 #        flag is_long_lesson para o frontend exibir badge.
+#
+# MENTOR INTELIGENTE (v4 — invalidação por evento):
+#   - get_schedule_status "ready": invalida next_action ao confirmar geração
+#   - delete_schedule: invalida next_action ao deletar cronograma
+#   - reorganize_schedule: invalida next_action ao reorganizar
 
 from datetime import datetime, timezone, date, timedelta
 from flask import Blueprint, request, jsonify
@@ -54,7 +59,7 @@ class UpdateAvailabilitySchema(Schema):
         load_default=0,
         validate=validate.Range(min=0, max=15),
     )
- 
+
     class Meta:
         unknown = EXCLUDE
 
@@ -179,6 +184,14 @@ def get_schedule_status(task_id: str):
         }
         if state.get("coverage_gap"):
             response_data["coverage_gap"] = state["coverage_gap"]
+
+        # Invalida next_action — cronograma criado, mentor deve recalcular imediatamente
+        try:
+            from app.routes.analytics import _cache_delete, _dashboard_cache_key
+            _cache_delete(_dashboard_cache_key(schedule.user_id, schedule.tenant_id))
+            _cache_delete(f"next_action:{schedule.tenant_id}:{schedule.user_id}")
+        except Exception:
+            pass
 
         return jsonify(response_data), 200
 
@@ -494,6 +507,14 @@ def reorganize_schedule():
     schedule.abandonment_risk_score = risk
     db.session.commit()
 
+    # Invalida next_action — após reorganização o cronograma mudou
+    try:
+        from app.routes.analytics import _cache_delete, _dashboard_cache_key
+        _cache_delete(_dashboard_cache_key(user_id, tenant.id))
+        _cache_delete(f"next_action:{tenant.id}:{user_id}")
+    except Exception:
+        pass
+
     return (
         jsonify(
             {
@@ -549,6 +570,14 @@ def delete_schedule():
     schedule.soft_delete()
     db.session.commit()
 
+    # Invalida next_action — sem cronograma, mentor deve voltar para "create_schedule"
+    try:
+        from app.routes.analytics import _cache_delete, _dashboard_cache_key
+        _cache_delete(_dashboard_cache_key(user_id, tenant.id))
+        _cache_delete(f"next_action:{tenant.id}:{user_id}")
+    except Exception:
+        pass
+
     return (
         jsonify(
             {
@@ -560,26 +589,25 @@ def delete_schedule():
     )
 
 
-
 @schedule_bp.route("/availability", methods=["PUT"])
 @jwt_required()
 @require_tenant
 def update_availability():
     tenant = get_current_tenant()
     user_id = get_jwt_identity()
- 
+
     schema = UpdateAvailabilitySchema()
     try:
         data = schema.load(request.get_json(force=True) or {})
     except ValidationError as e:
         return jsonify({"error": "validation_error", "details": e.messages}), 400
- 
+
     user = User.query.filter_by(
         id=user_id, tenant_id=tenant.id, is_deleted=False
     ).first()
     if not user:
         return jsonify({"error": "not_found"}), 404
- 
+
     user.study_availability = {
         "days": data["days"],
         "hours_per_day": data["hours_per_day"],
@@ -587,14 +615,14 @@ def update_availability():
         "break_minutes": data.get("break_minutes", 0),  # v11
     }
     db.session.commit()
- 
+
     schedules = StudySchedule.query.filter_by(
         user_id=user_id,
         tenant_id=tenant.id,
         status="active",
         is_deleted=False,
     ).all()
- 
+
     reorganized = 0
     for schedule in schedules:
         try:
@@ -607,7 +635,7 @@ def update_availability():
             reorganized += 1
         except Exception:
             pass
- 
+
     return (
         jsonify(
             {
@@ -617,7 +645,6 @@ def update_availability():
         ),
         200,
     )
- 
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -625,7 +652,6 @@ def update_availability():
 # ══════════════════════════════════════════════════════════════════════════════
 
 
- 
 def _serialize_schedule(schedule: StudySchedule) -> dict:
     snapshot = schedule.availability_snapshot or {}
     return {
@@ -641,6 +667,7 @@ def _serialize_schedule(schedule: StudySchedule) -> dict:
         "days": snapshot.get("days"),
         "break_minutes": snapshot.get("break_minutes", 0),  # v11
     }
+
 
 def _serialize_item(
     item: ScheduleItem,

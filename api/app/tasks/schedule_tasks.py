@@ -41,41 +41,11 @@ def _set_task_status(task_id: str, payload: dict) -> None:
         logger.warning(f"[schedule_gen] Redis set falhou task={task_id}: {e}")
 
 
-# ── App Flask cacheado por processo worker ────────────────────────────────────
-# CRÍTICO: cachear em nível de módulo garante que cada processo worker cria
-# apenas 1 Flask app (1 connection pool), não 1 por invocação de task.
-
-_cached_flask_app = None
-
-
-def _get_flask_app():
-    """
-    Retorna o Flask app para uso no Celery worker.
-
-    Tenta usar current_app (contexto já ativo — reutiliza pool existente).
-    Caso não disponível, cria 1 app por processo worker e reutiliza sempre
-    (evita criar centenas de pools que esgotam o RDS).
-    """
-    global _cached_flask_app
-
-    # Tenta usar o app já ativo no worker
-    try:
-        from flask import current_app
-        return current_app._get_current_object()
-    except RuntimeError:
-        pass
-
-    # Cria ou reutiliza o app cacheado para este processo
-    if _cached_flask_app is None:
-        logger.info("[schedule_gen] Criando Flask app para este worker process")
-        from app import create_app
-        _cached_flask_app = create_app()
-
-    return _cached_flask_app
-
-
 # ── Task de geração assíncrona ────────────────────────────────────────────────
-
+# NOTA: Com o ContextTask definido em celery_worker.py, todas as tasks já
+# recebem app_context automaticamente. O bloco `with app.app_context()` abaixo
+# é mantido por compatibilidade (nested context é inofensivo) e como garantia
+# extra caso a task seja chamada fora do worker padrão.
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
 def generate_schedule_task(
@@ -87,50 +57,48 @@ def generate_schedule_task(
 ):
     """
     Gera ou reorganiza o cronograma em background (Celery).
-
-    Usa _get_flask_app() que cacheia o app por processo worker,
-    garantindo um único SQLAlchemy pool por worker (não por task).
+    O ContextTask do celery_worker.py já provê o app_context.
     """
     task_id = self.request.id
     logger.info(f"[schedule_gen] task={task_id} user={user_id} course={course_id} START")
     _set_task_status(task_id, {"status": "pending"})
 
-    app = _get_flask_app()
-    with app.app_context():
-        try:
-            from app.extensions import db
-            from app.services.schedule_engine import ScheduleEngine
+    try:
+        from app.extensions import db
+        from app.services.schedule_engine import ScheduleEngine
 
-            engine = ScheduleEngine(
-                user_id=user_id,
-                tenant_id=tenant_id,
-                course_id=course_id,
-            )
-            schedule = engine.generate(target_date=target_date)
-            risk = engine.calculate_abandonment_risk()
-            schedule.abandonment_risk_score = risk
-            db.session.commit()
+        engine = ScheduleEngine(
+            user_id=user_id,
+            tenant_id=tenant_id,
+            course_id=course_id,
+        )
+        schedule = engine.generate(target_date=target_date)
+        risk = engine.calculate_abandonment_risk()
+        schedule.abandonment_risk_score = risk
+        db.session.commit()
 
-            result: dict = {
-                "status": "ready",
-                "schedule_id": str(schedule.id),
-                "abandonment_risk": round(risk, 4),
-            }
-            if engine.last_coverage_gap:
-                result["coverage_gap"] = engine.last_coverage_gap
+        result: dict = {
+            "status": "ready",
+            "schedule_id": str(schedule.id),
+            "abandonment_risk": round(risk, 4),
+        }
+        if engine.last_coverage_gap:
+            result["coverage_gap"] = engine.last_coverage_gap
 
-            _set_task_status(task_id, result)
-            logger.info(f"[schedule_gen] task={task_id} DONE schedule={schedule.id}")
-            return result
+        _set_task_status(task_id, result)
+        logger.info(f"[schedule_gen] task={task_id} DONE schedule={schedule.id}")
+        return result
 
-        except Exception as exc:
-            _set_task_status(task_id, {"status": "error", "message": str(exc)})
-            logger.error(f"[schedule_gen] task={task_id} ERRO: {exc}")
-            raise self.retry(exc=exc)
+    except Exception as exc:
+        _set_task_status(task_id, {"status": "error", "message": str(exc)})
+        logger.error(f"[schedule_gen] task={task_id} ERRO: {exc}")
+        raise self.retry(exc=exc)
 
 
-# ── Tasks existentes (sem alteração) ─────────────────────────────────────────
-
+# ── Tasks de adaptação ────────────────────────────────────────────────────────
+# ANTES: importavam serviços diretamente sem app_context → RuntimeError em workers.
+# DEPOIS: ContextTask (celery_worker.py) injeta contexto antes de __call__.
+#         Os imports de models/db/services agora funcionam corretamente.
 
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=30)
 def adapt_after_checkin(

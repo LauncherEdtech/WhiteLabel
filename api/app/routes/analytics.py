@@ -14,6 +14,11 @@
 #   8. _get_student_quick_stats    → REESCRITO: era 4 queries/aluno, agora batch único
 #   9. _get_student_rankings       → REESCRITO: usa batch stats, sem loop de queries
 #  10. _get_class_discipline_stats → REESCRITO: era .all() + lazy load, agora JOIN + GROUP BY
+#
+# MENTOR INTELIGENTE (v4 — invalidação por evento):
+#  - next_action TTL: 15min → 4h (14400s)
+#  - Invalidação por evento: resposta de questão, checkin/uncheckin de aula/item
+#  - _maybe_invalidate_insights(): invalida insights apenas quando disciplina muda de faixa
 
 import json
 from datetime import datetime, timezone, timedelta
@@ -102,6 +107,64 @@ def _set_cached_insights(user_id: str, tenant_id: str, insights: list):
 
 def _delete_cached_insights(user_id: str, tenant_id: str):
     _cache_delete(_insights_cache_key(user_id, tenant_id))
+
+
+def _maybe_invalidate_insights(user_id: str, tenant_id: str, discipline: str) -> None:
+    """
+    Invalida o cache de insights apenas se o desempenho na disciplina
+    mudou de faixa de performance:
+      crítico  → accuracy < 40%
+      fraco    → 40% ≤ accuracy < 70%
+      forte    → accuracy ≥ 70%
+
+    Estratégia: compara a faixa atual com a última faixa salva no Redis.
+    Só chama _delete_cached_insights quando a faixa efetivamente mudou,
+    evitando regeneração desnecessária do Gemini a cada questão respondida.
+
+    Requisito mínimo: 5 tentativas na disciplina para detectar mudança confiável.
+    """
+    if not discipline:
+        return
+    try:
+        from app.extensions import redis_client
+
+        recent = (
+            db.session.query(QuestionAttempt.is_correct)
+            .join(Question, Question.id == QuestionAttempt.question_id)
+            .filter(
+                QuestionAttempt.user_id == user_id,
+                QuestionAttempt.tenant_id == tenant_id,
+                Question.discipline == discipline,
+                QuestionAttempt.is_deleted == False,
+            )
+            .order_by(QuestionAttempt.created_at.desc())
+            .limit(20)
+            .all()
+        )
+
+        if len(recent) < 5:
+            return  # dados insuficientes para detectar mudança de faixa
+
+        accuracy = sum(1 for r in recent if r.is_correct) / len(recent) * 100
+        faixa_atual = "critico" if accuracy < 40 else "fraco" if accuracy < 70 else "forte"
+
+        # Chave de faixa por disciplina — TTL de 24h (reset diário)
+        faixa_key = f"insight_faixa:{tenant_id}:{user_id}:{discipline}"
+        faixa_anterior_raw = redis_client.get(faixa_key)
+        faixa_anterior = faixa_anterior_raw.decode() if faixa_anterior_raw else None
+
+        redis_client.setex(faixa_key, 86400, faixa_atual)
+
+        if faixa_anterior and faixa_anterior != faixa_atual:
+            _delete_cached_insights(user_id, tenant_id)
+            current_app.logger.info(
+                f"[INSIGHTS] Invalidado — {discipline} mudou {faixa_anterior}→{faixa_atual} "
+                f"user={user_id}"
+            )
+    except Exception as e:
+        current_app.logger.debug(
+            f"[INSIGHTS] _maybe_invalidate_insights falhou silenciosamente: {e}"
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1153,7 +1216,6 @@ def _get_batch_student_stats(student_ids: list, tenant_id: str) -> dict:
 
     seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
 
-    # Query 1: total e acertos por aluno
     q_rows = (
         db.session.query(
             QuestionAttempt.user_id,
@@ -1179,7 +1241,6 @@ def _get_batch_student_stats(student_ids: list, tenant_id: str) -> dict:
         for r in q_rows
     }
 
-    # Query 2: aulas assistidas por aluno
     l_rows = (
         db.session.query(
             LessonProgress.user_id,
@@ -1197,7 +1258,6 @@ def _get_batch_student_stats(student_ids: list, tenant_id: str) -> dict:
 
     lessons_by_user = {str(r.user_id): r.watched for r in l_rows}
 
-    # Monta resultado
     result = {}
     for sid in student_ids:
         sid_str = str(sid)
@@ -1228,7 +1288,6 @@ def _get_student_quick_stats(user_id: str, tenant_id: str) -> dict:
 
 # ══════════════════════════════════════════════════════════════════════════════
 # AT RISK STUDENTS
-# OTIMIZAÇÃO v3: era 5+ queries por aluno. Agora 3 queries para todos.
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -1240,14 +1299,11 @@ def _get_at_risk_students(student_ids: list, tenant_id: str) -> list:
     seven_days_ago = now - timedelta(days=7)
     three_days_ago = now - timedelta(days=3)
 
-    # Busca todos os alunos de uma vez
     students = User.query.filter(User.id.in_(student_ids)).all()
     student_map = {str(s.id): s for s in students}
 
-    # Stats batch
     batch = _get_batch_student_stats(student_ids, tenant_id)
 
-    # Query: atividade recente (últimos 7 dias)
     recent_rows = (
         db.session.query(
             QuestionAttempt.user_id,
@@ -1271,7 +1327,6 @@ def _get_at_risk_students(student_ids: list, tenant_id: str) -> list:
         if not student:
             continue
 
-        # Salvaguarda 1: conta nova
         created_at = student.created_at
         if created_at:
             if created_at.tzinfo is None:
@@ -1279,7 +1334,6 @@ def _get_at_risk_students(student_ids: list, tenant_id: str) -> list:
             if created_at >= three_days_ago:
                 continue
 
-        # Salvaguarda 2: atividade recente alta
         if recent_by_user.get(sid_str, 0) >= 10:
             continue
 
@@ -1299,7 +1353,6 @@ def _get_at_risk_students(student_ids: list, tenant_id: str) -> list:
             risk_score += min(0.4, days_inactive * 0.05)
             risk_reasons.append(f"Inativo há {days_inactive} dias")
 
-        # Salvaguarda 3: accuracy baixa com volume razoável
         if total >= 10:
             correct = round(stats.get("accuracy_rate", 0) * total / 100)
             accuracy = correct / total if total else 0
@@ -1323,7 +1376,6 @@ def _get_at_risk_students(student_ids: list, tenant_id: str) -> list:
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CLASS DISCIPLINE STATS
-# OTIMIZAÇÃO v3: era .all() + lazy load question. Agora JOIN + GROUP BY.
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -1384,7 +1436,6 @@ def _get_hardest_questions(tenant_id: str) -> list:
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STUDENT RANKINGS
-# OTIMIZAÇÃO v3: usa _get_batch_student_stats em vez de loop de queries.
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -1566,7 +1617,10 @@ def student_next_action():
         return jsonify({"error": "user_not_found"}), 404
 
     action = _determine_next_action(user_id, tenant.id, user, tenant)
-    _cache_set(cache_key, action, ttl_seconds=900)
+    # TTL aumentado de 15min (900s) para 4h (14400s).
+    # A invalidação agora é orientada por eventos (criar/deletar cronograma,
+    # responder questão, checkin/uncheckin de aula), tornando o TTL longo seguro.
+    _cache_set(cache_key, action, ttl_seconds=14400)
     return jsonify(action), 200
 
 

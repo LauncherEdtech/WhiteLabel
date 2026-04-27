@@ -14,6 +14,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from marshmallow import Schema, fields, validate, ValidationError, EXCLUDE
 from sqlalchemy import and_, or_
+from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db, limiter
 from app.models.question import (
@@ -548,8 +549,8 @@ def delete_question(question_id: str):
 # ══════════════════════════════════════════════════════════════════════════════
 # RESPONDER QUESTÃO (aluno)
 # ══════════════════════════════════════════════════════════════════════════════
-
-
+# SUBSTITUIR apenas a função answer_question em api/app/routes/questions.py
+# As demais funções do arquivo permanecem inalteradas.
 @questions_bp.route("/<string:question_id>/answer", methods=["POST"])
 @jwt_required()
 @require_tenant
@@ -575,6 +576,7 @@ def answer_question(question_id: str):
     is_correct = chosen_key == question.correct_alternative_key.upper()
     context = data.get("context", "practice")
 
+    # ── Busca tentativa existente ─────────────────────────────────────────────
     existing_attempt = QuestionAttempt.query.filter_by(
         user_id=user_id,
         question_id=question.id,
@@ -586,6 +588,7 @@ def answer_question(question_id: str):
     is_new_attempt = existing_attempt is None
 
     if existing_attempt:
+        # Atualiza tentativa existente
         existing_attempt.chosen_alternative_key = chosen_key
         existing_attempt.is_correct = is_correct
         existing_attempt.response_time_seconds = data.get("response_time_seconds")
@@ -603,6 +606,43 @@ def answer_question(question_id: str):
         )
         db.session.add(attempt)
 
+    # ── Flush antecipado para capturar violação de unique constraint ──────────
+    # PROBLEMA ORIGINAL: com 1.000 usuários concorrentes, dois requests
+    # simultâneos para o mesmo (user_id, question_id, context) passavam
+    # pelo filter_by acima sem encontrar nada (ambos viam is_new_attempt=True),
+    # tentavam inserir ao mesmo tempo e um deles explodava com IntegrityError
+    # não tratado → 500 ou transação corrompida → CatchResponseError('Erro 0').
+    #
+    # SOLUÇÃO: flush() antes do commit detecta a violação imediatamente.
+    # No except, rollback + busca o registro inserido pelo request concurrent
+    # e atualiza em vez de inserir. Idempotente e seguro.
+    # ─────────────────────────────────────────────────────────────────────────
+    try:
+        db.session.flush()
+    except IntegrityError:
+        db.session.rollback()
+        is_new_attempt = False  # não incrementar contadores
+
+        # Busca o attempt criado pelo request concorrente (sem filtro is_deleted
+        # para garantir que encontra mesmo em edge cases de soft-delete)
+        attempt = QuestionAttempt.query.filter_by(
+            user_id=user_id,
+            question_id=question.id,
+            tenant_id=tenant.id,
+            context=context,
+        ).first()
+
+        if not attempt:
+            # Situação inesperada — retorna 409 em vez de 500
+            return jsonify({"error": "conflict", "message": "Tente novamente."}), 409
+
+        # Atualiza o registro existente com os dados desta tentativa
+        attempt.chosen_alternative_key = chosen_key
+        attempt.is_correct = is_correct
+        attempt.response_time_seconds = data.get("response_time_seconds")
+        attempt.created_at = datetime.now(timezone.utc)
+
+    # ── Atualiza contadores apenas para novas tentativas ──────────────────────
     if is_new_attempt:
         question.total_attempts += 1
         if is_correct:
@@ -610,6 +650,7 @@ def answer_question(question_id: str):
 
     db.session.commit()
 
+    # ── Invalida caches ───────────────────────────────────────────────────────
     try:
         from app.routes.analytics import _cache_delete, _dashboard_cache_key
         _cache_delete(_dashboard_cache_key(user_id, tenant.id))
@@ -617,8 +658,7 @@ def answer_question(question_id: str):
     except Exception:
         pass
 
-    # Monta resposta com justificativas
-    # FIX: normaliza case para comparação — banco pode ter "a" ou "A"
+    # ── Monta resposta com justificativas ─────────────────────────────────────
     alternatives_with_feedback = []
     for alt in sorted(question.alternatives, key=lambda a: a.key):
         alt_key_upper = alt.key.upper()
@@ -638,6 +678,7 @@ def answer_question(question_id: str):
 
     xp_gained = 10 if is_correct else 2
 
+    # ── Tasks async ───────────────────────────────────────────────────────────
     try:
         from app.tasks import update_gamification_after_answer
         update_gamification_after_answer.delay(
@@ -670,7 +711,6 @@ def answer_question(question_id: str):
         ),
         200,
     )
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HISTÓRICO DO ALUNO
