@@ -266,14 +266,22 @@ def create_course():
         201,
     )
 
-
 @courses_bp.route("/<string:course_id>", methods=["GET"])
 @jwt_required()
 @require_tenant
 def get_course(course_id: str):
     """
-    Retorna detalhes do curso com toda a árvore de conteúdo:
-    Disciplinas → Módulos → Aulas.
+    Retorna detalhes do curso com disciplinas e módulos (SEM aulas por padrão).
+
+    FIX 2.1: aulas são carregadas separadamente via:
+      GET /courses/modules/<module_id>/lessons/paginated?page=1&per_page=20
+
+    Antes: carregava Course → Subjects → Modules → Lessons de uma vez.
+    Para cada lesson com video_s3_key fazia 1 chamada HTTP à AWS.
+    Resultado: 274 KB + P50 de 38s.
+
+    Depois: retorna só a estrutura com total_lessons por módulo.
+    Resposta < 5 KB, P50 esperado < 500ms.
     """
     tenant = get_current_tenant()
     claims = get_jwt()
@@ -283,21 +291,12 @@ def get_course(course_id: str):
     if not course:
         return jsonify({"error": "not_found", "message": "Curso não encontrado."}), 404
 
-    # Aluno só acessa cursos em que está
     if _is_student(claims) and not course.is_active:
         return jsonify({"error": "not_found", "message": "Curso não encontrado."}), 404
 
-    # Busca progresso do aluno para incluir na resposta
-    progress_map = {}
-    if _is_student(claims):
-        progress_records = LessonProgress.query.filter_by(
-            user_id=user_id,
-            tenant_id=tenant.id,
-            is_deleted=False,
-        ).all()
-        progress_map = {p.lesson_id: p for p in progress_records}
+    # FIX: progresso não é mais carregado aqui — aulas são lazy
+    # Será carregado em GET /modules/<id>/lessons/paginated por página
 
-    # Monta árvore completa
     subjects_data = []
     for subject in sorted(course.subjects, key=lambda s: s.order):
         if subject.is_deleted:
@@ -308,16 +307,22 @@ def get_course(course_id: str):
             if module.is_deleted:
                 continue
 
-            lessons_data = []
-            for lesson in sorted(module.lessons, key=lambda l: l.order):
-                if lesson.is_deleted:
-                    continue
-                # Aluno vê apenas aulas publicadas (ou preview gratuitas)
-                if _is_student(claims) and not lesson.is_published:
-                    continue
-
-                progress = progress_map.get(lesson.id)
-                lessons_data.append(_serialize_lesson(lesson, progress))
+            # FIX: substituído o loop de lessons por um COUNT SQL
+            # Antes: carregava todos os objetos Lesson em memória só para contar
+            # Depois: 1 query COUNT por módulo — sem carregar dados de aula
+            if _is_student(claims):
+                total_lessons = Lesson.query.filter_by(
+                    module_id=module.id,
+                    tenant_id=tenant.id,
+                    is_deleted=False,
+                    is_published=True,
+                ).count()
+            else:
+                total_lessons = Lesson.query.filter_by(
+                    module_id=module.id,
+                    tenant_id=tenant.id,
+                    is_deleted=False,
+                ).count()
 
             modules_data.append(
                 {
@@ -325,8 +330,9 @@ def get_course(course_id: str):
                     "name": module.name,
                     "description": module.description,
                     "order": module.order,
-                    "lessons": lessons_data,
-                    "total_lessons": len(lessons_data),
+                    "total_lessons": total_lessons,
+                    # lessons[] omitido intencionalmente
+                    # use GET /courses/modules/<id>/lessons/paginated
                 }
             )
 
@@ -352,7 +358,6 @@ def get_course(course_id: str):
         ),
         200,
     )
-
 
 @courses_bp.route("/<string:course_id>", methods=["PUT"])
 @jwt_required()
@@ -731,7 +736,55 @@ def reorder_lessons(module_id: str):
 
     return jsonify({"message": "Aulas reordenadas.", "count": len(ordered_ids)}), 200
 
+@courses_bp.route("/modules/<string:module_id>/lessons/paginated", methods=["GET"])
+@jwt_required()
+@require_tenant
+def get_module_lessons(module_id: str):
+    """Aulas de um módulo paginadas — substitui o carregamento em bloco."""
+    tenant = get_current_tenant()
+    claims = get_jwt()
+    user_id = get_jwt_identity()
 
+    module = Module.query.filter_by(
+        id=module_id, tenant_id=tenant.id, is_deleted=False,
+    ).first()
+    if not module:
+        return jsonify({"error": "not_found"}), 404
+
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+        per_page = min(50, max(1, int(request.args.get("per_page", 20))))
+    except (ValueError, TypeError):
+        page, per_page = 1, 20
+
+    query = Lesson.query.filter_by(
+        module_id=module.id, tenant_id=tenant.id, is_deleted=False,
+    )
+    if _is_student(claims):
+        query = query.filter_by(is_published=True)
+
+    total = query.count()
+    lessons = query.order_by(Lesson.order).offset((page - 1) * per_page).limit(per_page).all()
+
+    progress_map = {}
+    if _is_student(claims) and lessons:
+        lesson_ids = [l.id for l in lessons]
+        progress_records = LessonProgress.query.filter(
+            LessonProgress.lesson_id.in_(lesson_ids),
+            LessonProgress.user_id == user_id,
+            LessonProgress.tenant_id == tenant.id,
+        ).all()
+        progress_map = {p.lesson_id: p for p in progress_records}
+
+    return jsonify({
+        "lessons": [_serialize_lesson(l, progress_map.get(l.id)) for l in lessons],
+        "pagination": {
+            "page": page, "per_page": per_page, "total": total,
+            "total_pages": (total + per_page - 1) // per_page,
+            "has_next": (page * per_page) < total,
+            "has_prev": page > 1,
+        },
+    }), 200
 # ══════════════════════════════════════════════════════════════════════════════
 # LESSONS (aulas)
 # ══════════════════════════════════════════════════════════════════════════════

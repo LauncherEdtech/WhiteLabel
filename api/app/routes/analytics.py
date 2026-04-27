@@ -1623,9 +1623,40 @@ def student_next_action():
     _cache_set(cache_key, action, ttl_seconds=14400)
     return jsonify(action), 200
 
-
 def _determine_next_action(user_id, tenant_id, user, tenant) -> dict:
     context = _build_student_context_for_action(user_id, tenant_id)
+
+    # Gate de prioridade absoluta — cronograma sempre vence, sem precisar do Gemini
+    sched = context["schedule"]
+    if not sched["has_schedule"]:
+        # Sem cronograma → Gemini decide (provavelmente create_schedule)
+        pass
+    elif sched["today_pending"]:
+        # Tem item pendente hoje → retorna diretamente sem chamar Gemini
+        first = sched["today_pending"][0]
+        if first["item_type"] == "lesson":
+            base = _NEXT_ACTION_MAP["watch_lesson"]
+            return {
+                **base,
+                "action_type": "watch_lesson",
+                "cta_params": {},
+                "priority": "high",
+                "title": "Sua aula de hoje te espera",
+                "message": f'"{first["lesson_title"]}" está no cronograma de hoje. Assista antes de praticar questões.',
+            }
+        else:
+            disc = first.get("subject_name")
+            base = _NEXT_ACTION_MAP["do_questions"]
+            return {
+                **base,
+                "action_type": "do_questions",
+                "cta_params": {"discipline": disc} if disc else {},
+                "priority": "high",
+                "title": "Questões do cronograma de hoje",
+                "message": f"Questões programadas{f' de {disc}' if disc else ''}. Siga o cronograma!",
+            }
+
+    # Só chega aqui se: tem cronograma mas sem pendências hoje
     api_key = current_app.config.get("GEMINI_API_KEY", "")
     if api_key:
         try:

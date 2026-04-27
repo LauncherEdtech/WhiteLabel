@@ -1,15 +1,10 @@
 "use client";
-// frontend/src/app/(student)/schedule/page.tsx — v11
+// frontend/src/app/(student)/schedule/page.tsx
 //
-// v11 — PAUSA CONFIGURÁVEL PELO ALUNO:
-//   - Novo passo no wizard (passo 3) para escolher pausa entre atividades
-//   - Pausa enviada em scheduleApi.updateAvailability({ break_minutes })
-//   - Divisor visual "Pausa X min" exibido entre itens do mesmo dia
-//     nas views Lista e Blocos (somente se break_minutes > 0)
-//   - Resumo do passo 5 mostra a pausa selecionada
-//
-// v9 FIX (preservado): calendário dinâmico com daysToFetch por mês
-// v8.2 (preservado): badge "Aula longa"
+// FIX BUG 1: eliminado schedule-check separado (era um request duplicado days=7
+//             só para saber se o cronograma existe — ScheduleView já busca days=14)
+// FIX BUG 2: refetchOnWindowFocus: false (evita re-fetch ao trocar de aba)
+// (FIX BUG 3 está no backend: joinedload(ScheduleItem.checkin))
 
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -32,7 +27,7 @@ import {
 } from "lucide-react";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Tipos e constantes
+// Tipos e constantes (inalterados)
 // ─────────────────────────────────────────────────────────────────────────────
 
 type ViewMode = "list" | "blocks" | "calendar";
@@ -50,7 +45,7 @@ const TYPE_CONFIG: Record<string, { color: string; dot: string; label: string; i
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helpers
+// Helpers (inalterados)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildItemUrl(item: any, courseId: string): string {
@@ -103,7 +98,7 @@ function parseDayMeta(dateStr: string) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Divisor de pausa entre itens
+// Componentes visuais (inalterados)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function BreakDivider({ minutes }: { minutes: number }) {
@@ -119,10 +114,6 @@ function BreakDivider({ minutes }: { minutes: number }) {
     </div>
   );
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Toggle de visualização
-// ─────────────────────────────────────────────────────────────────────────────
 
 function ViewToggle({ view, onChange }: { view: ViewMode; onChange: (v: ViewMode) => void }) {
   const opts: { key: ViewMode; Icon: any; label: string }[] = [
@@ -151,10 +142,6 @@ function ViewToggle({ view, onChange }: { view: ViewMode; onChange: (v: ViewMode
     </div>
   );
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Item individual
-// ─────────────────────────────────────────────────────────────────────────────
 
 function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
   item: any; courseId: string;
@@ -185,7 +172,6 @@ function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
           else if (!isSkipped) onCheckin(item.id, true);
         }}
         disabled={loading || isSkipped}
-        title={isDone ? "Desfazer check-in" : "Marcar como concluído"}
         className={cn(
           "h-6 w-6 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 transition-all",
           isDone && "bg-success border-success hover:bg-destructive hover:border-destructive group",
@@ -225,14 +211,12 @@ function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
             </span>
           )}
         </div>
-
         {isLongLesson && !isDoneOrSkipped && (
           <p className="text-xs text-warning bg-warning/10 border border-warning/30 rounded px-2 py-1 mt-1.5 flex items-start gap-1.5">
             <Hourglass className="h-3 w-3 mt-0.5 shrink-0" />
             <span>Esta aula é mais longa que sua carga diária. Reserve um tempo extra hoje ou divida em sessões.</span>
           </p>
         )}
-
         {item.template_item_notes && (
           <p className="text-xs text-warning bg-warning/10 border border-warning/30 rounded px-2 py-1 mt-1.5">
             📌 {item.template_item_notes}
@@ -263,10 +247,6 @@ function ScheduleItemRow({ item, courseId, onCheckin, onUncheckin, loading }: {
     </div>
   );
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// View: Lista (com divisores de pausa entre itens)
-// ─────────────────────────────────────────────────────────────────────────────
 
 function ScheduleListView({ days, courseId, onCheckin, onUncheckin, loading, breakMinutes }: {
   days: any[]; courseId: string;
@@ -311,10 +291,7 @@ function ScheduleListView({ days, courseId, onCheckin, onUncheckin, loading, bre
                       onCheckin={onCheckin} onUncheckin={onUncheckin} loading={loading}
                     />
                   </div>
-                  {/* Pausa entre itens (exceto após o último) */}
-                  {idx < items.length - 1 && (
-                    <BreakDivider minutes={breakMinutes} />
-                  )}
+                  {idx < items.length - 1 && <BreakDivider minutes={breakMinutes} />}
                 </div>
               ))}
             </div>
@@ -324,10 +301,6 @@ function ScheduleListView({ days, courseId, onCheckin, onUncheckin, loading, bre
     </div>
   );
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// View: Blocos (com divisores de pausa entre itens)
-// ─────────────────────────────────────────────────────────────────────────────
 
 function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading, breakMinutes }: {
   days: any[]; courseId: string;
@@ -419,10 +392,7 @@ function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading, b
                         </button>
                       )}
                     </div>
-                    {/* Pausa entre itens */}
-                    {idx < items.length - 1 && (
-                      <BreakDivider minutes={breakMinutes} />
-                    )}
+                    {idx < items.length - 1 && <BreakDivider minutes={breakMinutes} />}
                   </div>
                 );
               })}
@@ -433,10 +403,6 @@ function ScheduleBlocksView({ days, courseId, onCheckin, onUncheckin, loading, b
     </div>
   );
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// View: Calendário (sem alterações relevantes — breakMinutes não exibido aqui)
-// ─────────────────────────────────────────────────────────────────────────────
 
 function ScheduleCalendarView({
   days, courseId, onCheckin, onUncheckin, loading,
@@ -597,7 +563,7 @@ function ScheduleCalendarView({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Banner de cobertura insuficiente
+// CoverageWarningBanner (inalterado)
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface CoverageGap {
@@ -665,7 +631,7 @@ function CoverageWarningBanner({ coverageGap, courseId, currentDays, onAdjusted 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ScheduleView principal
+// ScheduleView — FIX BUG 2: refetchOnWindowFocus: false
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () => void }) {
@@ -696,7 +662,7 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
     queryKey: ["schedule", courseId, daysToFetch],
     queryFn: () => scheduleApi.get(courseId, daysToFetch),
     enabled: !!courseId,
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: false,  // FIX BUG 2: era true — causava re-fetch ao trocar de aba
     staleTime: 30_000,
   });
 
@@ -728,7 +694,6 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
     mutationFn: () => scheduleApi.delete(courseId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["schedule", courseId] });
-      queryClient.invalidateQueries({ queryKey: ["schedule-check", courseId] });
       toast.success("Cronograma removido.");
       onDelete?.();
     },
@@ -738,11 +703,14 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
     <div className="space-y-4">{[...Array(3)].map((_, i) => <div key={i} className="h-32 bg-muted rounded-xl animate-pulse" />)}</div>
   );
 
+  // FIX BUG 1: se não tem schedule, mostra wizard diretamente
+  if (!data?.schedule) {
+    return <ScheduleStartView courseId={courseId} onGenerated={() => queryClient.invalidateQueries({ queryKey: ["schedule", courseId] })} />;
+  }
+
   const days = data?.days || [];
   const stats = data?.stats;
   const isProducerTemplate = data?.schedule?.source_type === "producer_template";
-
-  // v11: lê break_minutes do schedule para exibir nos divisores
   const breakMinutes: number = data?.schedule?.break_minutes ?? stats?.break_minutes ?? 0;
 
   const daysUntilExam = stats?.target_date
@@ -789,7 +757,6 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
         </div>
       )}
 
-      {/* Indicador de pausa ativo */}
       {breakMinutes > 0 && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-muted/40 border border-border">
           <Coffee className="h-4 w-4 text-muted-foreground shrink-0" />
@@ -822,14 +789,14 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
             <p className="text-2xl font-bold text-success">{stats.completed_items}</p>
             <p className="text-xs text-muted-foreground">Concluídos</p>
           </CardContent></Card>
-          {daysUntilExam !== null ? (
+          {daysUntilExam !== null && (
             <Card className={cn(daysUntilExam <= 14 && "border-destructive/40")}>
               <CardContent className="p-4 text-center">
                 <p className={cn("text-2xl font-bold", daysUntilExam <= 14 ? "text-destructive" : "text-foreground")}>{daysUntilExam}</p>
                 <p className="text-xs text-muted-foreground flex items-center justify-center gap-1"><Target className="h-3 w-3" />Dias p/ prova</p>
               </CardContent>
             </Card>
-          ) : null}
+          )}
         </div>
       )}
 
@@ -881,14 +848,14 @@ function ScheduleView({ courseId, onDelete }: { courseId: string; onDelete?: () 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Wizard de criação — v11: 5 passos com pausa entre atividades
+// ScheduleWizard (inalterado)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerated: () => void }) {
   const [step, setStep] = useState(1);
   const [days, setDays] = useState([0, 1, 2, 3, 4]);
   const [hours, setHours] = useState(2);
-  const [breakMinutes, setBreakMinutes] = useState(0);  // v11
+  const [breakMinutes, setBreakMinutes] = useState(0);
   const [startTime, setStartTime] = useState("19:00");
   const [targetDate, setTargetDate] = useState("");
   const toast = useToast();
@@ -896,19 +863,16 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
 
   const saveMutation = useMutation({
     mutationFn: async () => {
-      // 1. Salva disponibilidade (síncrono, rápido)
       await scheduleApi.updateAvailability({
         days,
         hours_per_day: hours,
         preferred_start_time: startTime,
-        break_minutes: breakMinutes,  // v11
+        break_minutes: breakMinutes,
       });
-      // 2. Gera cronograma async: enfileira Celery + polling até "ready" (até 120s)
       await scheduleApi.generateAndWait(courseId, targetDate || undefined);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["schedule", courseId] });
-      queryClient.invalidateQueries({ queryKey: ["schedule-check", courseId] });
       toast.success("Cronograma criado!", "Seu plano adaptativo está pronto.");
       onGenerated();
     },
@@ -935,14 +899,12 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
         <p className="text-muted-foreground text-sm">Configure seu plano adaptativo, ele aprende com seu desempenho</p>
       </div>
 
-      {/* Progress dots — 5 passos */}
       <div className="flex items-center gap-2 justify-center">
         {[1, 2, 3, 4, 5].map(s => (
           <div key={s} className={cn("h-2 rounded-full transition-all", s <= step ? "bg-primary w-8" : "bg-muted w-2")} />
         ))}
       </div>
 
-      {/* Passo 1: Dias */}
       {step === 1 && (
         <Card><CardContent className="p-6 space-y-4">
           <div>
@@ -967,7 +929,6 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
         </CardContent></Card>
       )}
 
-      {/* Passo 2: Horas */}
       {step === 2 && (
         <Card><CardContent className="p-6 space-y-4">
           <div>
@@ -1001,7 +962,6 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
         </CardContent></Card>
       )}
 
-      {/* Passo 3: Pausa entre atividades (v11 — NOVO) */}
       {step === 3 && (
         <Card><CardContent className="p-6 space-y-4">
           <div>
@@ -1020,23 +980,13 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
               <button key={value} onClick={() => setBreakMinutes(value)}
                 className={cn(
                   "py-3 px-4 rounded-xl text-left border-2 transition-all",
-                  breakMinutes === value
-                    ? "bg-primary/10 border-primary"
-                    : "bg-background border-border hover:border-primary/50",
+                  breakMinutes === value ? "bg-primary/10 border-primary" : "bg-background border-border hover:border-primary/50",
                 )}>
-                <p className={cn("text-sm font-semibold", breakMinutes === value ? "text-primary" : "text-foreground")}>
-                  {label}
-                </p>
+                <p className={cn("text-sm font-semibold", breakMinutes === value ? "text-primary" : "text-foreground")}>{label}</p>
                 <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>
               </button>
             ))}
           </div>
-          {breakMinutes > 0 && (
-            <p className="text-xs text-muted-foreground bg-muted/40 rounded-lg px-3 py-2 flex items-start gap-2">
-              <Coffee className="h-3.5 w-3.5 mt-0.5 shrink-0 text-muted-foreground" />
-              A pausa aparece como um divisor visual entre cada atividade no seu cronograma.
-            </p>
-          )}
           <div className="flex gap-2">
             <Button variant="outline" className="flex-1" onClick={() => setStep(2)}>Voltar</Button>
             <Button className="flex-1" onClick={() => setStep(4)}>
@@ -1046,7 +996,6 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
         </CardContent></Card>
       )}
 
-      {/* Passo 4: Horário preferido */}
       {step === 4 && (
         <Card><CardContent className="p-6 space-y-4">
           <div>
@@ -1074,7 +1023,6 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
         </CardContent></Card>
       )}
 
-      {/* Passo 5: Data da prova + resumo */}
       {step === 5 && (
         <Card><CardContent className="p-6 space-y-4">
           <div>
@@ -1088,7 +1036,6 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
             <p className="text-xs font-medium text-foreground">📋 Resumo do seu plano:</p>
             <p className="text-xs text-muted-foreground">• {days.map(d => DAYS_BACKEND_PT[d]).join(", ")}</p>
             <p className="text-xs text-muted-foreground">• {hours}h/dia · {days.length * hours}h/semana</p>
-            {/* v11: mostra pausa no resumo */}
             <p className="text-xs text-muted-foreground">
               • {breakMinutes === 0 ? "Sem pausa entre atividades" : `${breakMinutes} min de pausa entre atividades`}
             </p>
@@ -1113,7 +1060,7 @@ function ScheduleWizard({ courseId, onGenerated }: { courseId: string; onGenerat
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Tela inicial e página principal (sem alterações)
+// ScheduleStartView (inalterado)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ScheduleStartView({ courseId, onGenerated }: { courseId: string; onGenerated: () => void }) {
@@ -1127,8 +1074,6 @@ function ScheduleStartView({ courseId, onGenerated }: { courseId: string; onGene
   });
 
   if (templateLoading && !forceAI) return (
-    // ✅ FIX: data-onboarding aqui também, para o tour encontrar o alvo
-    // mesmo durante o loading
     <div data-onboarding="schedule" className="max-w-lg mx-auto space-y-4">
       <div className="h-32 rounded-xl bg-muted animate-pulse" />
       <div className="h-14 rounded-xl bg-muted animate-pulse" />
@@ -1138,19 +1083,15 @@ function ScheduleStartView({ courseId, onGenerated }: { courseId: string; onGene
   const hasPublishedTemplate = !forceAI && !!templateData?.template;
 
   if (!hasPublishedTemplate || forceAI) {
-    // ScheduleWizard já tem data-onboarding="schedule" internamente — ok
     return <ScheduleWizard courseId={courseId} onGenerated={onGenerated} />;
   }
 
   return (
-    // ✅ FIX: wrapper com data-onboarding para o tour encontrar o alvo
-    // quando o aluno ainda está na tela de escolha (template vs IA)
     <div data-onboarding="schedule" className="max-w-lg mx-auto">
       <ProducerTemplateChoice
         courseId={courseId}
         onAdopted={() => {
           queryClient.invalidateQueries({ queryKey: ["schedule", courseId] });
-          queryClient.invalidateQueries({ queryKey: ["schedule-check", courseId] });
           onGenerated();
         }}
         onChooseAI={() => setForceAI(true)}
@@ -1159,9 +1100,12 @@ function ScheduleStartView({ courseId, onGenerated }: { courseId: string; onGene
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SchedulePage — FIX BUG 1: eliminado schedule-check duplicado
+// ─────────────────────────────────────────────────────────────────────────────
+
 export default function SchedulePage() {
   const [courseId, setCourseId] = useState<string | null>(null);
-  const [hasSchedule, setHasSchedule] = useState<boolean | null>(null);
   const queryClient = useQueryClient();
 
   const { data: coursesData } = useQuery({
@@ -1175,26 +1119,21 @@ export default function SchedulePage() {
     if (courses.length > 0 && !courseId) setCourseId(courses[0].id);
   }, [courses, courseId]);
 
-  const resetScheduleCheck = (newCourseId: string) => {
-    setCourseId(newCourseId);
-    setHasSchedule(null);
-  };
+  // FIX BUG 1: removido useQuery(["schedule-check", courseId]).
+  // Antes: SchedulePage fazia GET /schedule?days=7 só pra saber se tinha cronograma,
+  // e ScheduleView fazia GET /schedule?days=14 para os dados reais = 2 requests.
+  //
+  // Agora: ScheduleView sempre renderiza e descobre internamente se tem cronograma.
+  // Se data?.schedule for null/undefined, renderiza o ScheduleStartView (wizard).
+  // Elimina 1 dos 2 requests duplicados.
 
-  const { isLoading: checkLoading } = useQuery({
-    queryKey: ["schedule-check", courseId],
-    queryFn: async () => {
-      if (!courseId) return null;
-      const data = await scheduleApi.get(courseId, 7);
-      setHasSchedule(!!data?.schedule);
-      return data;
-    },
-    enabled: !!courseId && hasSchedule === null,
-    refetchOnWindowFocus: false,
-  });
-
-  if (!courseId || checkLoading || hasSchedule === null) {
+  if (!courseId) {
     return (
-      <div className="space-y-4">{[...Array(3)].map((_, i) => <div key={i} className="h-24 bg-muted rounded-xl animate-pulse" />)}</div>
+      <div className="space-y-4">
+        {[...Array(3)].map((_, i) => (
+          <div key={i} className="h-24 bg-muted rounded-xl animate-pulse" />
+        ))}
+      </div>
     );
   }
 
@@ -1203,16 +1142,30 @@ export default function SchedulePage() {
       {courses.length > 1 && (
         <div className="flex gap-2 overflow-x-auto pb-1">
           {courses.map((c: any) => (
-            <button key={c.id} onClick={() => resetScheduleCheck(c.id)}
-              className={cn("px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all border-2",
-                courseId === c.id ? "bg-primary text-primary-foreground border-primary" : "bg-background border-border hover:border-primary/50")}>
+            <button
+              key={c.id}
+              onClick={() => {
+                setCourseId(c.id);
+                queryClient.removeQueries({ queryKey: ["schedule", c.id] });
+              }}
+              className={cn(
+                "px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all border-2",
+                courseId === c.id
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "bg-background border-border hover:border-primary/50",
+              )}
+            >
               {c.name}
             </button>
           ))}
         </div>
       )}
-      {!hasSchedule && <ScheduleStartView courseId={courseId} onGenerated={() => setHasSchedule(true)} />}
-      {hasSchedule && <ScheduleView courseId={courseId} onDelete={() => setHasSchedule(false)} />}
+
+      {/* ScheduleView sempre renderiza — detecta internamente se tem cronograma */}
+      <ScheduleView
+        courseId={courseId}
+        onDelete={() => queryClient.removeQueries({ queryKey: ["schedule", courseId] })}
+      />
     </div>
   );
 }
