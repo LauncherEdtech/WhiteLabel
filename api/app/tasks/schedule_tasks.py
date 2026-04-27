@@ -41,34 +41,37 @@ def _set_task_status(task_id: str, payload: dict) -> None:
         logger.warning(f"[schedule_gen] Redis set falhou task={task_id}: {e}")
 
 
-def _get_app_context():
-    """
-    Retorna um context manager com o app context correto.
-    
-    Usa current_app se disponível (worker já tem contexto ativo — reutiliza
-    o mesmo SQLAlchemy pool sem criar novas conexões).
-    
-    Só cria novo app como último recurso (nunca deve acontecer em produção).
-    """
-    from contextlib import contextmanager
+# ── App Flask cacheado por processo worker ────────────────────────────────────
+# CRÍTICO: cachear em nível de módulo garante que cada processo worker cria
+# apenas 1 Flask app (1 connection pool), não 1 por invocação de task.
 
-    @contextmanager
-    def _ctx():
+_cached_flask_app = None
+
+
+def _get_flask_app():
+    """
+    Retorna o Flask app para uso no Celery worker.
+
+    Tenta usar current_app (contexto já ativo — reutiliza pool existente).
+    Caso não disponível, cria 1 app por processo worker e reutiliza sempre
+    (evita criar centenas de pools que esgotam o RDS).
+    """
+    global _cached_flask_app
+
+    # Tenta usar o app já ativo no worker
+    try:
         from flask import current_app
-        try:
-            # Tenta usar o app do worker (reutiliza pool de conexões existente)
-            app = current_app._get_current_object()
-            with app.app_context():
-                yield
-        except RuntimeError:
-            # Fallback: worker não tem contexto (não deveria acontecer)
-            logger.warning("[schedule_gen] current_app indisponível, criando app temporário")
-            from app import create_app
-            tmp_app = create_app()
-            with tmp_app.app_context():
-                yield
+        return current_app._get_current_object()
+    except RuntimeError:
+        pass
 
-    return _ctx()
+    # Cria ou reutiliza o app cacheado para este processo
+    if _cached_flask_app is None:
+        logger.info("[schedule_gen] Criando Flask app para este worker process")
+        from app import create_app
+        _cached_flask_app = create_app()
+
+    return _cached_flask_app
 
 
 # ── Task de geração assíncrona ────────────────────────────────────────────────
@@ -85,14 +88,15 @@ def generate_schedule_task(
     """
     Gera ou reorganiza o cronograma em background (Celery).
 
-    Usa current_app para reutilizar o SQLAlchemy pool do worker,
-    evitando esgotamento de conexões no RDS.
+    Usa _get_flask_app() que cacheia o app por processo worker,
+    garantindo um único SQLAlchemy pool por worker (não por task).
     """
     task_id = self.request.id
     logger.info(f"[schedule_gen] task={task_id} user={user_id} course={course_id} START")
     _set_task_status(task_id, {"status": "pending"})
 
-    with _get_app_context():
+    app = _get_flask_app()
+    with app.app_context():
         try:
             from app.extensions import db
             from app.services.schedule_engine import ScheduleEngine
@@ -183,11 +187,7 @@ def adapt_after_question_attempt(self, user_id: str, tenant_id: str, subject_id:
                 func.count(QuestionAttempt.id).label("total"),
                 func.sum(sql_case((QuestionAttempt.is_correct == True, 1), else_=0)).label("correct"),
             )
-            .filter_by(
-                user_id=user_id,
-                tenant_id=tenant_id,
-                is_deleted=False,
-            )
+            .filter_by(user_id=user_id, tenant_id=tenant_id, is_deleted=False)
             .join(Question)
             .filter_by(subject_id=subject_id)
             .one()
@@ -214,11 +214,7 @@ def adapt_after_question_attempt(self, user_id: str, tenant_id: str, subject_id:
         results = []
         for schedule in active_schedules:
             try:
-                engine = ScheduleEngine(
-                    user_id=user_id,
-                    tenant_id=tenant_id,
-                    course_id=schedule.course_id,
-                )
+                engine = ScheduleEngine(user_id=user_id, tenant_id=tenant_id, course_id=schedule.course_id)
 
                 if accuracy < engine.ADAPTIVE_INJECT_THRESHOLD:
                     injected = engine.inject_subject_reviews(subject_id=subject_id)
@@ -273,11 +269,7 @@ def nightly_schedule_check(self):
                     ScheduleItem.is_deleted == False,
                 ).count()
 
-                engine = ScheduleEngine(
-                    user_id=schedule.user_id,
-                    tenant_id=schedule.tenant_id,
-                    course_id=schedule.course_id,
-                )
+                engine = ScheduleEngine(user_id=schedule.user_id, tenant_id=schedule.tenant_id, course_id=schedule.course_id)
 
                 if overdue >= 5:
                     engine.reorganize(schedule)
@@ -314,20 +306,13 @@ def recalculate_schedule_after_lesson(self, user_id: str, tenant_id: str):
         from app.services.schedule_engine import ScheduleEngine
 
         schedules = StudySchedule.query.filter_by(
-            user_id=user_id,
-            tenant_id=tenant_id,
-            status="active",
-            is_deleted=False,
+            user_id=user_id, tenant_id=tenant_id, status="active", is_deleted=False
         ).all()
 
         reorganized = 0
         for schedule in schedules:
             try:
-                engine = ScheduleEngine(
-                    user_id=user_id,
-                    tenant_id=tenant_id,
-                    course_id=schedule.course_id,
-                )
+                engine = ScheduleEngine(user_id=user_id, tenant_id=tenant_id, course_id=schedule.course_id)
                 engine.reorganize(schedule)
                 reorganized += 1
             except Exception as e:
