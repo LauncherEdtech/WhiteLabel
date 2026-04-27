@@ -323,7 +323,7 @@ function ROICalc() {
         </div>
         <h3 style={{ fontFamily: 'Space Grotesk', fontSize: 32, fontWeight: 600, letterSpacing: '-0.025em', margin: 0, lineHeight: 1.1 }}>A Launcher pode virar uma nova linha de receita.</h3>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 40, position: 'relative' }}>
+      <div className="l-roi-grid" style={{ position: 'relative' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
           <div>
             <div style={{ fontSize: 13, color: 'var(--ink-dim)', marginBottom: 10 }}>1. Qual plano você contrata?</div>
@@ -377,7 +377,7 @@ export function Pricing() {
               <div className="l-mono" style={{ fontSize: 11, color: 'var(--accent-halo)', letterSpacing: '0.14em', marginBottom: 8 }}>INCLUSO EM TODOS OS PLANOS</div>
               <div style={{ fontFamily: 'Space Grotesk', fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em' }}>Tudo que seu aluno precisa para estudar com estrutura.</div>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(200px, 1fr))', gap: '8px 24px', flex: '1 1 420px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(140px, 1fr))', gap: '8px 16px', flex: '1 1 280px' }}>
               {FEATURES_INCLUDED.map((f) => (
                 <div key={f} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13.5 }}>
                   <span style={{ width: 16, height: 16, borderRadius: 999, background: 'rgba(59,130,246,0.18)', color: 'var(--accent-halo)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, flexShrink: 0 }}>✓</span>{f}
@@ -386,7 +386,7 @@ export function Pricing() {
             </div>
           </div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 20, alignItems: 'stretch' }}>
+        <div className="l-grid-plans">
           {PLANS.map((p, i) => <PlanCard key={p.id} p={p} i={i} />)}
         </div>
         <ROICalc />
