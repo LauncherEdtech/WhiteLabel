@@ -9,7 +9,7 @@
 #
 # Endpoints:
 #   GET /heatmap        — uso por evento × dia
-#   GET /funnel         — funil de uma feature
+#   GET /funnel         — funil de uma feature (usuários únicos sequenciais)
 #   GET /cohort         — retenção D0/D1/D3/D7/D14/D30 por semana
 #   GET /user-journey/<user_id> — timeline raw de 1 aluno
 
@@ -42,7 +42,6 @@ def _require_super_admin():
 # ── Helpers de data ──────────────────────────────────────────────────────────
 
 def _parse_date(s: str | None, default: date) -> date:
-    """Parse YYYY-MM-DD ou retorna default."""
     if not s:
         return default
     try:
@@ -58,31 +57,20 @@ def _today_brt() -> date:
 
 
 def _day_range_utc(d: date) -> tuple[datetime, datetime]:
-    """Janela UTC para o dia 'd' em BRT.
-
-    Dia X em BRT = X 03:00 UTC até X+1 03:00 UTC.
-    """
+    """Janela UTC para o dia 'd' em BRT."""
     start = datetime.combine(d, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=3)
     end = start + timedelta(days=1)
     return start, end
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# HEATMAP — uso por evento × dia
+# HEATMAP
 # ═══════════════════════════════════════════════════════════════════════════
 
 @admin_event_metrics_bp.route("/heatmap", methods=["GET"])
 @jwt_required()
 def heatmap():
-    """
-    Retorna matriz de uso por evento × dia.
-
-    Query params:
-      - start_date=YYYY-MM-DD (default: 30 dias atrás)
-      - end_date=YYYY-MM-DD (default: hoje)
-      - tenant_id=uuid (opcional, default: consolidado de todos)
-      - top=N (default: 30, limita aos N eventos com maior volume)
-    """
+    """Retorna matriz de uso por evento × dia."""
     forbidden = _require_super_admin()
     if forbidden:
         return forbidden
@@ -96,14 +84,11 @@ def heatmap():
     if start > end:
         return jsonify({"error": "bad_request", "message": "start_date > end_date"}), 400
 
-    # ── 1. Lê dados históricos do rollup (até ontem) ─────────────────────
+    # 1. Histórico (rollup)
     historical_end = min(end, today - timedelta(days=1))
     historical_data = []
     if start <= historical_end:
-        params = {
-            "start": start,
-            "end": historical_end,
-        }
+        params = {"start": start, "end": historical_end}
         tenant_filter = ""
         if tenant_id:
             tenant_filter = "AND tenant_id = :tid"
@@ -118,9 +103,12 @@ def heatmap():
             {tenant_filter}
             GROUP BY rollup_date, event_type, feature_name
         """)
-        historical_data = db.session.execute(sql, params).fetchall()
+        historical_data = [
+            (r[0], r[1], r[2], r[3], r[4])
+            for r in db.session.execute(sql, params).fetchall()
+        ]
 
-    # ── 2. Lê dados de HOJE direto da user_events (se entra na janela) ───
+    # 2. Hoje (raw)
     today_data = []
     if start <= today <= end:
         day_start, day_end = _day_range_utc(today)
@@ -139,38 +127,32 @@ def heatmap():
             {tenant_filter}
             GROUP BY event_type, feature_name
         """)
-        today_rows = db.session.execute(sql, params).fetchall()
-        today_data = [(today, *row) for row in today_rows]
+        today_data = [
+            (today, r[0], r[1], r[2], r[3])
+            for r in db.session.execute(sql, params).fetchall()
+        ]
 
-    # ── 3. Combina e estrutura por (event_type, feature_name) ────────────
-    # buckets[(event_type, feature_name)] = {date: {total, users}, totals: {total, users}}
+    # 3. Combina por (event_type, feature_name)
     buckets: dict[tuple, dict] = {}
-    all_data = list(historical_data) + today_data
-
-    for row in all_data:
-        if len(row) == 5:
-            d, event_type, feature_name, total, users = row
-        else:
-            d, event_type, feature_name, total, users = row[0], row[1], row[2], row[3], row[4]
-
+    for d, event_type, feature_name, total, users in historical_data + today_data:
         key = (event_type, feature_name)
         if key not in buckets:
             buckets[key] = {"daily": {}, "total": 0, "users_max": 0}
 
-        buckets[key]["daily"][d.isoformat() if hasattr(d, "isoformat") else d] = {
+        iso = d.isoformat() if hasattr(d, "isoformat") else d
+        buckets[key]["daily"][iso] = {
             "total": int(total),
             "unique_users": int(users),
         }
         buckets[key]["total"] += int(total)
         buckets[key]["users_max"] = max(buckets[key]["users_max"], int(users))
 
-    # ── 4. Ordena por total desc e limita a top N ────────────────────────
+    # 4. Top N + preenche zeros
     sorted_keys = sorted(buckets.keys(), key=lambda k: buckets[k]["total"], reverse=True)[:top]
 
     rows = []
     for event_type, feature_name in sorted_keys:
         b = buckets[(event_type, feature_name)]
-        # Preenche dias sem dados com zero
         daily = []
         cur = start
         while cur <= end:
@@ -198,11 +180,11 @@ def heatmap():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# FUNNEL — funil de uma feature
+# FUNNEL — usuários únicos sequenciais
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Mapeamento feature_name → stages do funil.
-# Cada stage tem nome amigável + lista de event_types que contam.
+# Cada stage tem: nome, label, event_types (lista) + ordem cronológica esperada.
+# O funnel conta apenas usuários que passaram por TODOS os stages anteriores.
 FUNNEL_DEFINITIONS = {
     "mentor": [
         {"name": "viewed", "label": "Viu o widget", "event_types": ["mentor_click"]},
@@ -214,7 +196,6 @@ FUNNEL_DEFINITIONS = {
         {"name": "explained", "label": "Leu explicação", "event_types": ["explanation_read"]},
     ],
     "simulados": [
-        {"name": "started", "label": "Iniciou simulado", "event_types": ["page_view"]},  # placeholder
         {"name": "completed", "label": "Viu resultado", "event_types": ["result_viewed"]},
         {"name": "abandoned", "label": "Abandonou", "event_types": ["simulado_abandon"]},
     ],
@@ -241,14 +222,7 @@ FUNNEL_DEFINITIONS = {
 @admin_event_metrics_bp.route("/funnel", methods=["GET"])
 @jwt_required()
 def funnel():
-    """
-    Retorna funil de uma feature.
-
-    Query params:
-      - feature_name=mentor (obrigatório)
-      - start_date, end_date (opcionais)
-      - tenant_id=uuid (opcional)
-    """
+    """Funil sequencial de usuários únicos por feature."""
     forbidden = _require_super_admin()
     if forbidden:
         return forbidden
@@ -267,29 +241,96 @@ def funnel():
 
     stages = FUNNEL_DEFINITIONS[feature_name]
 
-    # Para cada stage, conta eventos no período (rollup + hoje direto)
+    # Janela em UTC
+    start_utc, _ = _day_range_utc(start)
+    _, end_utc = _day_range_utc(end)
+
+    # ── Funnel correto: para cada stage, conta users únicos que tiveram
+    # eventos de TODOS os stages anteriores + deste stage.
+    #
+    # Ex: stage 0 = "mentor_click", stage 1 = "mentor_response_received",
+    # stage 2 = "insight_followed".
+    # - Stage 0: COUNT(DISTINCT user_id) WHERE event_type IN (mentor_click)
+    # - Stage 1: COUNT(DISTINCT user_id) WHERE user passou no stage 0 E
+    #            tem evento mentor_response_received
+    # - Stage 2: COUNT(DISTINCT user_id) WHERE user passou nos stages 0 e 1 E
+    #            tem evento insight_followed
+    #
+    # SQL com EXISTS encadeados é a forma mais limpa de expressar isso.
+
+    def _build_stage_query(stage_idx: int) -> tuple[str, dict]:
+        """Constrói SQL e params para contar users únicos no stage_idx,
+        respeitando a sequência de stages anteriores."""
+        params = {
+            "start": start_utc,
+            "end": end_utc,
+        }
+        tenant_filter = ""
+        if tenant_id:
+            tenant_filter = "AND tenant_id = :tid"
+            params["tid"] = tenant_id
+
+        # Stage atual
+        params[f"types_{stage_idx}"] = tuple(stages[stage_idx]["event_types"])
+
+        # WHERE base do stage atual
+        base_where = f"""
+            event_type IN :types_{stage_idx}
+            AND created_at >= :start AND created_at < :end
+            {tenant_filter}
+        """
+
+        # Para cada stage anterior, adiciona um EXISTS
+        exists_clauses = []
+        for prev_idx in range(stage_idx):
+            params[f"types_{prev_idx}"] = tuple(stages[prev_idx]["event_types"])
+            exists_clauses.append(f"""
+                EXISTS (
+                    SELECT 1 FROM user_events ue{prev_idx}
+                    WHERE ue{prev_idx}.user_id = ue.user_id
+                      AND ue{prev_idx}.event_type IN :types_{prev_idx}
+                      AND ue{prev_idx}.created_at >= :start
+                      AND ue{prev_idx}.created_at < :end
+                      AND ue{prev_idx}.created_at <= ue.created_at
+                      {tenant_filter.replace("tenant_id", f"ue{prev_idx}.tenant_id")}
+                )
+            """)
+
+        exists_sql = ""
+        if exists_clauses:
+            exists_sql = "AND " + "\nAND ".join(exists_clauses)
+
+        sql = f"""
+            SELECT COUNT(DISTINCT ue.user_id)
+            FROM user_events ue
+            WHERE {base_where}
+            {exists_sql}
+        """
+        return sql, params
+
     stage_results = []
-    for stage in stages:
-        total = _count_events_in_range(stage["event_types"], start, end, tenant_id)
+    for idx, stage in enumerate(stages):
+        sql, params = _build_stage_query(idx)
+        count = int(db.session.execute(text(sql), params).scalar() or 0)
         stage_results.append({
             "name": stage["name"],
             "label": stage["label"],
             "event_types": stage["event_types"],
-            "count": total,
+            "unique_users": count,
         })
 
-    # Calcula percentuais relativos ao primeiro stage
-    base = stage_results[0]["count"] if stage_results else 0
+    # Pcts relativos ao primeiro stage (base)
+    base = stage_results[0]["unique_users"] if stage_results else 0
     for r in stage_results:
-        r["pct_of_base"] = round(100.0 * r["count"] / base, 1) if base > 0 else 0.0
+        r["pct_of_base"] = round(100.0 * r["unique_users"] / base, 1) if base > 0 else 0.0
 
-    # Drop-off entre stages consecutivos
+    # Drop-off entre stages consecutivos (sempre >= 0 porque é sequencial)
     drop_off = []
     for i in range(1, len(stage_results)):
         prev = stage_results[i - 1]
         curr = stage_results[i]
-        lost = prev["count"] - curr["count"]
-        pct = round(100.0 * lost / prev["count"], 1) if prev["count"] > 0 else 0.0
+        lost = max(0, prev["unique_users"] - curr["unique_users"])
+        pct = round(100.0 * lost / prev["unique_users"], 1) if prev["unique_users"] > 0 else 0.0
         drop_off.append({
             "from": prev["name"],
             "to": curr["name"],
@@ -307,52 +348,8 @@ def funnel():
     }), 200
 
 
-def _count_events_in_range(event_types: list[str], start: date, end: date, tenant_id: str | None) -> int:
-    """Conta total de eventos de tipos específicos numa janela. Híbrido rollup + user_events."""
-    today = _today_brt()
-    historical_end = min(end, today - timedelta(days=1))
-    total = 0
-
-    # Rollup (datas passadas)
-    if start <= historical_end:
-        params = {"start": start, "end": historical_end, "types": tuple(event_types)}
-        tenant_filter = ""
-        if tenant_id:
-            tenant_filter = "AND tenant_id = :tid"
-            params["tid"] = tenant_id
-
-        sql = text(f"""
-            SELECT COALESCE(SUM(total_count), 0)
-            FROM user_event_daily_rollup
-            WHERE rollup_date >= :start AND rollup_date <= :end
-              AND event_type IN :types
-              {tenant_filter}
-        """)
-        total += int(db.session.execute(sql, params).scalar() or 0)
-
-    # Hoje (raw)
-    if start <= today <= end:
-        day_start, day_end = _day_range_utc(today)
-        params = {"start": day_start, "end": day_end, "types": tuple(event_types)}
-        tenant_filter = ""
-        if tenant_id:
-            tenant_filter = "AND tenant_id = :tid"
-            params["tid"] = tenant_id
-
-        sql = text(f"""
-            SELECT COUNT(*)
-            FROM user_events
-            WHERE created_at >= :start AND created_at < :end
-              AND event_type IN :types
-              {tenant_filter}
-        """)
-        total += int(db.session.execute(sql, params).scalar() or 0)
-
-    return total
-
-
 # ═══════════════════════════════════════════════════════════════════════════
-# COHORT — retenção por semana
+# COHORT — retenção semanal
 # ═══════════════════════════════════════════════════════════════════════════
 
 @admin_event_metrics_bp.route("/cohort", methods=["GET"])
@@ -361,11 +358,14 @@ def cohort():
     """
     Retenção D0/D1/D3/D7/D14/D30 por cohort semanal.
 
-    Query params:
-      - weeks=12 (default: últimas 12 semanas completas)
-      - tenant_id=uuid (opcional)
+    Cohort week = início ISO da semana (segunda-feira) em que o usuário fez
+    seu primeiro evento.
 
-    Resultado é cacheado no Redis com TTL de 1h por (weeks, tenant_id).
+    D0 = sempre 100% (todos os users têm pelo menos o primeiro evento).
+    Dn = % de users do cohort com QUALQUER evento entre os dias [first_at, first_at + n].
+       (cumulativo até n dias após primeiro evento, NÃO no dia exato n)
+
+    Cacheado no Redis com TTL de 1h por (weeks, tenant_id).
     """
     forbidden = _require_super_admin()
     if forbidden:
@@ -374,7 +374,6 @@ def cohort():
     weeks = min(int(request.args.get("weeks", 12)), 52)
     tenant_id = request.args.get("tenant_id")
 
-    # Cache key
     cache_key = f"cohort:{weeks}:{tenant_id or 'all'}"
     try:
         cached = redis_client.get(cache_key)
@@ -384,14 +383,8 @@ def cohort():
         logger.warning(f"[cohort] Redis get falhou: {e}")
 
     today = _today_brt()
-    # Cohort se baseia em data do PRIMEIRO evento do usuário.
-    # Vamos pegar usuários cujo primeiro evento foi nas últimas N semanas.
     earliest = today - timedelta(weeks=weeks)
     earliest_dt, _ = _day_range_utc(earliest)
-
-    # Para cohort precisamos olhar a user_events diretamente
-    # (rollup não preserva user_id × first_event_date).
-    # Otimização: query única pega first_event_date por user, agrupa por semana.
 
     params = {"earliest": earliest_dt}
     tenant_filter = ""
@@ -399,65 +392,67 @@ def cohort():
         tenant_filter = "AND tenant_id = :tid"
         params["tid"] = tenant_id
 
-    # Step 1: identifica primeiro evento de cada user e seu cohort week (segunda-feira)
-    sql_first_events = text(f"""
+    # ── Query única: para cada usuário, calcula primeira data + dias com atividade
+    # CTE 1: first_event = primeira aparição de cada user no período
+    # CTE 2: activity_days = lista de dias distintos com eventos por user
+    # Final: cruza para saber, para cada user, em quais dias depois do primeiro
+    #        ele teve atividade. Agrupa por cohort_week.
+
+    sql = text(f"""
         WITH first_events AS (
             SELECT
                 user_id,
                 MIN(created_at) AS first_at,
+                MIN(created_at)::DATE AS first_date,
                 DATE_TRUNC('week', MIN(created_at) AT TIME ZONE 'America/Sao_Paulo')::DATE AS cohort_week
             FROM user_events
             WHERE created_at >= :earliest
             {tenant_filter}
             GROUP BY user_id
+        ),
+        user_activity AS (
+            SELECT
+                ue.user_id,
+                fe.cohort_week,
+                fe.first_date,
+                (ue.created_at::DATE - fe.first_date) AS days_since_first
+            FROM user_events ue
+            JOIN first_events fe ON fe.user_id = ue.user_id
+            WHERE ue.created_at >= :earliest
+            {tenant_filter.replace('tenant_id', 'ue.tenant_id')}
         )
-        SELECT user_id, cohort_week
-        FROM first_events
+        SELECT
+            cohort_week,
+            COUNT(DISTINCT user_id) AS cohort_size,
+            COUNT(DISTINCT CASE WHEN days_since_first <= 0 THEN user_id END) AS active_d0,
+            COUNT(DISTINCT CASE WHEN days_since_first BETWEEN 1 AND 1 THEN user_id END) AS active_d1,
+            COUNT(DISTINCT CASE WHEN days_since_first BETWEEN 1 AND 3 THEN user_id END) AS active_d3,
+            COUNT(DISTINCT CASE WHEN days_since_first BETWEEN 1 AND 7 THEN user_id END) AS active_d7,
+            COUNT(DISTINCT CASE WHEN days_since_first BETWEEN 1 AND 14 THEN user_id END) AS active_d14,
+            COUNT(DISTINCT CASE WHEN days_since_first BETWEEN 1 AND 30 THEN user_id END) AS active_d30
+        FROM user_activity
+        GROUP BY cohort_week
+        ORDER BY cohort_week DESC
     """)
-    first_events = db.session.execute(sql_first_events, params).fetchall()
 
-    # Agrupa users por cohort week
-    cohorts_users: dict[date, list[str]] = {}
-    for row in first_events:
-        user_id, cohort_week = row.user_id, row.cohort_week
-        cohorts_users.setdefault(cohort_week, []).append(user_id)
+    rows = db.session.execute(sql, params).fetchall()
 
-    # Step 2: para cada cohort, calcula retenção em D1, D3, D7, D14, D30
-    retention_days = [0, 1, 3, 7, 14, 30]
     cohorts_result = []
-
-    for cohort_week in sorted(cohorts_users.keys(), reverse=True):
-        users = cohorts_users[cohort_week]
-        cohort_size = len(users)
+    for row in rows:
+        cohort_size = int(row.cohort_size)
         if cohort_size == 0:
             continue
-
-        retention = {}
-        for d in retention_days:
-            window_start = cohort_week + timedelta(days=d)
-            window_end = window_start + timedelta(days=1)
-            # window em UTC
-            ws_utc = datetime.combine(window_start, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=3)
-            we_utc = datetime.combine(window_end, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=3)
-
-            # Conta quantos users do cohort tiveram evento nesse dia
-            count_sql = text(f"""
-                SELECT COUNT(DISTINCT user_id)
-                FROM user_events
-                WHERE user_id = ANY(:users)
-                  AND created_at >= :ws AND created_at < :we
-                  {tenant_filter}
-            """)
-            count_params = {"users": users, "ws": ws_utc, "we": we_utc}
-            if tenant_id:
-                count_params["tid"] = tenant_id
-            active = int(db.session.execute(count_sql, count_params).scalar() or 0)
-            retention[f"d{d}"] = round(100.0 * active / cohort_size, 1)
-
         cohorts_result.append({
-            "cohort_week": cohort_week.isoformat(),
+            "cohort_week": row.cohort_week.isoformat(),
             "size": cohort_size,
-            "retention": retention,
+            "retention": {
+                "d0": round(100.0 * row.active_d0 / cohort_size, 1),
+                "d1": round(100.0 * row.active_d1 / cohort_size, 1),
+                "d3": round(100.0 * row.active_d3 / cohort_size, 1),
+                "d7": round(100.0 * row.active_d7 / cohort_size, 1),
+                "d14": round(100.0 * row.active_d14 / cohort_size, 1),
+                "d30": round(100.0 * row.active_d30 / cohort_size, 1),
+            },
         })
 
     response = {
@@ -466,7 +461,6 @@ def cohort():
         "cohorts": cohorts_result,
     }
 
-    # Cacheia 1h
     try:
         redis_client.setex(cache_key, 3600, json.dumps(response))
     except Exception as e:
@@ -476,19 +470,13 @@ def cohort():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# USER JOURNEY — timeline raw de 1 aluno
+# USER JOURNEY
 # ═══════════════════════════════════════════════════════════════════════════
 
 @admin_event_metrics_bp.route("/user-journey/<string:user_id>", methods=["GET"])
 @jwt_required()
 def user_journey(user_id: str):
-    """
-    Retorna timeline cronológica de eventos de um usuário específico.
-
-    Query params:
-      - limit=200 (default, max 1000)
-      - start_date, end_date (opcionais)
-    """
+    """Timeline cronológica de eventos de um usuário específico."""
     forbidden = _require_super_admin()
     if forbidden:
         return forbidden
@@ -501,7 +489,6 @@ def user_journey(user_id: str):
     start_utc, _ = _day_range_utc(start)
     _, end_utc = _day_range_utc(end)
 
-    # Busca info do usuário
     user_info_sql = text("""
         SELECT u.id, u.name, u.email, u.tenant_id, t.name AS tenant_name
         FROM users u
@@ -512,7 +499,6 @@ def user_journey(user_id: str):
     if not user_row:
         return jsonify({"error": "not_found", "message": "Usuário não encontrado."}), 404
 
-    # Busca eventos (mais recentes primeiro)
     events_sql = text("""
         SELECT
             id, event_type, feature_name, target_id,
@@ -527,7 +513,6 @@ def user_journey(user_id: str):
         "uid": user_id, "start": start_utc, "end": end_utc, "limit": limit,
     }).fetchall()
 
-    # Estatísticas básicas
     stats_sql = text("""
         SELECT
             COUNT(*) AS total,
