@@ -10,6 +10,7 @@ from .schedule import StudySchedule, ScheduleItem, ScheduleCheckIn
 from .simulado import Simulado, SimuladoQuestion, SimuladoAttempt, SimuladoAnswer
 from .gamification import LessonRating, StudentBadge
 from .notification import Notification
+from .user_event import UserEvent
 
 __all__ = [
     "Tenant",
@@ -34,4 +35,5 @@ __all__ = [
     "ProducerScheduleTemplate",
     "ProducerScheduleTemplateItem",
     "Notification",
+    "UserEvent",
 ]

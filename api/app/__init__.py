@@ -105,6 +105,8 @@ def _register_blueprints(app: Flask) -> None:
     from .routes.producer.questions import producer_questions_bp
     from .routes.admin.questions import admin_questions_bp
     from .routes.notifications import notifications_bp
+    from .routes.events import events_bp
+
 
     app.register_blueprint(health_bp)
     app.register_blueprint(auth_bp, url_prefix="/api/v1/auth")
@@ -123,6 +125,7 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(producer_questions_bp, url_prefix="/api/v1/producer")
     app.register_blueprint(admin_questions_bp, url_prefix="/api/v1/admin")
     app.register_blueprint(notifications_bp, url_prefix="/api/v1/notifications")
+    app.register_blueprint(events_bp, url_prefix="/api/v1/events")
 
 def _register_error_handlers(app: Flask) -> None:
     @app.errorhandler(400)
