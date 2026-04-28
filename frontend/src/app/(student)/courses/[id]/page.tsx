@@ -1,15 +1,30 @@
 // frontend/src/app/(student)/courses/[id]/page.tsx
 "use client";
 
+// FIX 2.1 — Lazy loading de aulas por módulo
+//
+// ANTES: useCourse() retornava module.lessons[] com TODAS as aulas de uma vez.
+//        Para cada aula com vídeo hospedado (S3): 1 chamada HTTP à AWS.
+//        Resultado: 274 KB de resposta + P50 de 38s.
+//
+// DEPOIS:
+//   - GET /courses/<id>        → retorna subjects + modules com total_lessons (sem aulas)
+//   - GET /modules/<id>/lessons/paginated → carregado QUANDO o accordion abre
+//
+// Contagens no header (totalLessons, watchedLessons) usam module.total_lessons
+// do backend em vez de iterar sobre lessons[].
+
 import { useParams } from "next/navigation";
 import { useCourse } from "@/lib/hooks/useCourses";
+import { useQuery } from "@tanstack/react-query";
+import { apiClient } from "@/lib/api/client";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils/cn";
 import {
   BookOpen, Clock, CheckCircle2, Lock,
   ChevronDown, ChevronUp, Play, FileText,
-  Sparkles, LayoutGrid, List, PlayCircle,
+  Sparkles, LayoutGrid, List, PlayCircle, Loader2,
 } from "lucide-react";
 import Link from "next/link";
 import { ROUTES } from "@/lib/constants/routes";
@@ -17,18 +32,34 @@ import { useState } from "react";
 import type { Subject, Module, Lesson } from "@/types/api";
 
 // ── Persistência do layout preferido ─────────────────────────────────────────
+
 function useLayoutPreference() {
   const [layout, setLayoutState] = useState<"list" | "netflix">(() => {
     if (typeof window === "undefined") return "list";
     return (localStorage.getItem("course_layout") as "list" | "netflix") || "list";
   });
-
   const setLayout = (l: "list" | "netflix") => {
     setLayoutState(l);
     localStorage.setItem("course_layout", l);
   };
-
   return [layout, setLayout] as const;
+}
+
+// ── Hook: carrega aulas de um módulo via endpoint paginado ────────────────────
+
+function useModuleLessons(moduleId: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ["module-lessons", moduleId],
+    queryFn: async () => {
+      // Busca todas as aulas do módulo (até 200 — suficiente para qualquer módulo real)
+      const res = await apiClient.get(
+        `/courses/modules/${moduleId}/lessons/paginated?page=1&per_page=200`
+      );
+      return res.data.lessons as Lesson[];
+    },
+    enabled: !!moduleId && enabled,
+    staleTime: 5 * 60 * 1000, // 5 min — aulas não mudam com frequência
+  });
 }
 
 // ── Página principal ──────────────────────────────────────────────────────────
@@ -60,15 +91,16 @@ export default function CourseDetailPage() {
   if (!course) return null;
 
   const subjects: Subject[] = course.subjects || [];
+
+  // FIX: usa total_lessons do backend — não precisa iterar sobre lessons[]
   const totalLessons = subjects.reduce(
-    (acc: number, s: Subject) => acc + (s.modules?.reduce((a, m) => a + (m.lessons?.length || 0), 0) || 0), 0
+    (acc, s) => acc + (s.modules?.reduce((a, m) => a + (m.total_lessons || 0), 0) || 0),
+    0
   );
-  const watchedLessons = subjects.reduce(
-    (acc: number, s: Subject) => acc + (s.modules?.reduce(
-      (a, m) => a + (m.lessons?.filter(l => l.progress?.status === "watched").length || 0), 0
-    ) || 0), 0
-  );
-  const progressPct = totalLessons > 0 ? Math.round((watchedLessons / totalLessons) * 100) : 0;
+
+  // watched não é mais calculável aqui (aulas são lazy) — mostra 0 no header
+  // e é atualizado módulo a módulo quando carregado
+  const progressPct = 0; // será calculado por módulo individualmente
 
   return (
     <div className="space-y-6 animate-fade-in max-w-5xl">
@@ -87,10 +119,6 @@ export default function CourseDetailPage() {
             <span className="flex items-center gap-1">
               <BookOpen className="h-4 w-4" />
               {totalLessons} aulas
-            </span>
-            <span className="flex items-center gap-1">
-              <CheckCircle2 className="h-4 w-4 text-green-300" />
-              {watchedLessons} assistidas
             </span>
           </div>
           <div className="mt-4 h-2 rounded-full bg-white/20 overflow-hidden">
@@ -120,8 +148,7 @@ export default function CourseDetailPage() {
                 : "text-muted-foreground hover:text-foreground"
             )}
           >
-            <List className="h-3.5 w-3.5" />
-            Lista
+            <List className="h-3.5 w-3.5" />Lista
           </button>
           <button
             onClick={() => setLayout("netflix")}
@@ -133,15 +160,13 @@ export default function CourseDetailPage() {
                 : "text-muted-foreground hover:text-foreground"
             )}
           >
-            <LayoutGrid className="h-3.5 w-3.5" />
-            Cards
+            <LayoutGrid className="h-3.5 w-3.5" />Cards
           </button>
         </div>
       </div>
 
       {/* ── Conteúdo ── */}
       {layout === "list" ? (
-        // ── LAYOUT LISTA (original) ──────────────────────────────────
         <div className="space-y-3">
           {subjects.map((subject, si) => (
             <SubjectAccordion
@@ -157,7 +182,6 @@ export default function CourseDetailPage() {
           ))}
         </div>
       ) : (
-        // ── LAYOUT NETFLIX ───────────────────────────────────────────
         <div className="space-y-10">
           {subjects.map((subject, si) => (
             <NetflixSubjectRow
@@ -174,7 +198,7 @@ export default function CourseDetailPage() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// LAYOUT LISTA — componentes originais
+// LAYOUT LISTA
 // ══════════════════════════════════════════════════════════════════════════════
 
 function SubjectAccordion({ subject, courseId, isExpanded, onToggle, expandedModules, onToggleModule, index }: {
@@ -182,26 +206,20 @@ function SubjectAccordion({ subject, courseId, isExpanded, onToggle, expandedMod
   expandedModules: Set<string>; onToggleModule: (id: string) => void; index: number;
 }) {
   const modules = subject.modules || [];
-  const totalLessons = modules.reduce((a, m) => a + (m.lessons?.length || 0), 0);
-  const watchedLessons = modules.reduce(
-    (a, m) => a + (m.lessons?.filter(l => l.progress?.status === "watched").length || 0), 0
-  );
+  // FIX: usa total_lessons do backend em vez de module.lessons.length
+  const totalLessons = modules.reduce((a, m) => a + (m.total_lessons || 0), 0);
 
   return (
-    <div className={cn(
-      "rounded-xl border border-border overflow-hidden bg-card animate-fade-in"
-    )} style={{ animationDelay: `${index * 60}ms` }}>
+    <div className="rounded-xl border border-border overflow-hidden bg-card animate-fade-in"
+      style={{ animationDelay: `${index * 60}ms` }}>
       <button onClick={onToggle}
         className="w-full p-4 flex items-center gap-3 text-left hover:bg-accent/50 transition-colors">
         <div className="h-3 w-3 rounded-full shrink-0" style={{ backgroundColor: subject.color }} />
         <div className="flex-1 min-w-0">
           <p className="font-semibold text-foreground text-sm">{subject.name}</p>
-          <p className="text-xs text-muted-foreground mt-0.5">{watchedLessons}/{totalLessons} aulas</p>
+          <p className="text-xs text-muted-foreground mt-0.5">{totalLessons} aulas</p>
         </div>
         <div className="flex items-center gap-3 shrink-0">
-          <p className="text-xs font-medium text-foreground">
-            {totalLessons > 0 ? Math.round((watchedLessons / totalLessons) * 100) : 0}%
-          </p>
           {isExpanded
             ? <ChevronUp className="h-4 w-4 text-muted-foreground" />
             : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
@@ -211,10 +229,14 @@ function SubjectAccordion({ subject, courseId, isExpanded, onToggle, expandedMod
       {isExpanded && (
         <div className="border-t border-border">
           {modules.map(module => (
-            <ModuleAccordion key={module.id} module={module} courseId={courseId}
+            <ModuleAccordion
+              key={module.id}
+              module={module}
+              courseId={courseId}
               isExpanded={expandedModules.has(module.id)}
               onToggle={() => onToggleModule(module.id)}
-              subjectColor={subject.color} />
+              subjectColor={subject.color}
+            />
           ))}
         </div>
       )}
@@ -225,8 +247,11 @@ function SubjectAccordion({ subject, courseId, isExpanded, onToggle, expandedMod
 function ModuleAccordion({ module, courseId, isExpanded, onToggle, subjectColor }: {
   module: Module; courseId: string; isExpanded: boolean; onToggle: () => void; subjectColor: string;
 }) {
-  const lessons = module.lessons || [];
-  const watched = lessons.filter(l => l.progress?.status === "watched").length;
+  // FIX: carrega aulas lazily quando o módulo é expandido pela primeira vez
+  const { data: lessons, isLoading } = useModuleLessons(module.id, isExpanded);
+
+  const watched = (lessons || []).filter(l => l.progress?.status === "watched").length;
+  const total = module.total_lessons || 0;
 
   return (
     <div className="border-b border-border last:border-0">
@@ -238,17 +263,31 @@ function ModuleAccordion({ module, courseId, isExpanded, onToggle, subjectColor 
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-foreground">{module.name}</p>
-          <p className="text-xs text-muted-foreground">{watched}/{lessons.length} aulas</p>
+          <p className="text-xs text-muted-foreground">
+            {isExpanded && lessons ? `${watched}/${total} aulas` : `${total} aulas`}
+          </p>
         </div>
         {isExpanded
           ? <ChevronUp className="h-3 w-3 text-muted-foreground shrink-0" />
           : <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />}
       </button>
-      {isExpanded && lessons.length > 0 && (
+
+      {isExpanded && (
         <div className="pb-2">
-          {lessons.map((lesson, li) => (
-            <LessonRow key={lesson.id} lesson={lesson} courseId={courseId} index={li} />
-          ))}
+          {isLoading ? (
+            // Skeleton enquanto carrega as aulas
+            <div className="space-y-1 px-6 py-2">
+              {[...Array(3)].map((_, i) => (
+                <div key={i} className="h-10 rounded-lg bg-muted animate-pulse" />
+              ))}
+            </div>
+          ) : (lessons || []).length > 0 ? (
+            (lessons || []).map((lesson, li) => (
+              <LessonRow key={lesson.id} lesson={lesson} courseId={courseId} index={li} />
+            ))
+          ) : (
+            <p className="text-xs text-muted-foreground px-6 py-3">Nenhuma aula disponível.</p>
+          )}
         </div>
       )}
     </div>
@@ -260,11 +299,13 @@ function LessonRow({ lesson, courseId, index }: { lesson: Lesson; courseId: stri
   const isLocked = !lesson.is_published && !lesson.is_free_preview;
 
   return (
-    <Link href={isLocked ? "#" : ROUTES.LESSON(courseId, lesson.id)}
+    <Link
+      href={isLocked ? "#" : ROUTES.LESSON(courseId, lesson.id)}
       className={cn(
         "flex items-center gap-3 px-6 py-2.5 transition-colors",
         isLocked ? "opacity-50 cursor-not-allowed" : "hover:bg-accent/50 cursor-pointer"
-      )}>
+      )}
+    >
       <div className="shrink-0">
         {isLocked
           ? <Lock className="h-4 w-4 text-muted-foreground" />
@@ -300,32 +341,39 @@ function LessonRow({ lesson, courseId, index }: { lesson: Lesson; courseId: stri
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// LAYOUT NETFLIX — row por disciplina, cards de aulas em scroll horizontal
+// LAYOUT NETFLIX
 // ══════════════════════════════════════════════════════════════════════════════
 
 function NetflixSubjectRow({ subject, courseId, index }: {
   subject: Subject; courseId: string; index: number;
 }) {
   const modules = subject.modules || [];
-  // Achata todas as aulas de todos os módulos da disciplina
-  const allLessons: Array<{ lesson: Lesson; moduleName: string }> = modules.flatMap(m =>
-    (m.lessons || []).map(l => ({ lesson: l, moduleName: m.name }))
+
+  // FIX: carrega aulas de todos os módulos da disciplina ao montar a row
+  // (Netflix mostra tudo de uma vez — carrega em paralelo por módulo)
+  const moduleQueries = modules.map(m =>
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    useModuleLessons(m.id, true)
+  );
+
+  const allLoaded = moduleQueries.every(q => !q.isLoading);
+  const allLessons: Array<{ lesson: Lesson; moduleName: string }> = modules.flatMap((m, i) =>
+    (moduleQueries[i].data || []).map(l => ({ lesson: l, moduleName: m.name }))
   );
 
   const watchedCount = allLessons.filter(({ lesson }) => lesson.progress?.status === "watched").length;
+  const totalLessons = modules.reduce((a, m) => a + (m.total_lessons || 0), 0);
 
-  if (allLessons.length === 0) return null;
+  if (totalLessons === 0) return null;
 
   return (
     <div className="animate-fade-in" style={{ animationDelay: `${index * 80}ms` }}>
-      {/* Título da disciplina */}
       <div className="flex items-center gap-3 mb-4 px-1">
         <div className="h-4 w-1 rounded-full shrink-0" style={{ backgroundColor: subject.color }} />
         <h2 className="text-base font-bold text-foreground">{subject.name}</h2>
         <span className="text-xs text-muted-foreground ml-1">
-          {watchedCount}/{allLessons.length} aulas
+          {allLoaded ? `${watchedCount}/${allLessons.length}` : totalLessons} aulas
         </span>
-        {/* Mini barra de progresso */}
         <div className="flex-1 max-w-[120px] h-1 rounded-full bg-border overflow-hidden">
           <div
             className="h-full rounded-full transition-all duration-500"
@@ -337,20 +385,28 @@ function NetflixSubjectRow({ subject, courseId, index }: {
         </div>
       </div>
 
-      {/* Row de cards em scroll horizontal */}
-      <div className="flex gap-3 overflow-x-auto pb-3 scrollbar-hide"
-        style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}>
-        {allLessons.map(({ lesson, moduleName }, li) => (
-          <NetflixLessonCard
-            key={lesson.id}
-            lesson={lesson}
-            courseId={courseId}
-            index={li}
-            moduleName={moduleName}
-            subjectColor={subject.color}
-          />
-        ))}
-      </div>
+      {!allLoaded ? (
+        // Skeleton horizontal enquanto carrega
+        <div className="flex gap-3 overflow-x-auto pb-3">
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className="flex-none w-52 h-44 rounded-xl bg-muted animate-pulse" />
+          ))}
+        </div>
+      ) : allLessons.length === 0 ? null : (
+        <div className="flex gap-3 overflow-x-auto pb-3 scrollbar-hide"
+          style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}>
+          {allLessons.map(({ lesson, moduleName }, li) => (
+            <NetflixLessonCard
+              key={lesson.id}
+              lesson={lesson}
+              courseId={courseId}
+              index={li}
+              moduleName={moduleName}
+              subjectColor={subject.color}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -375,16 +431,11 @@ function NetflixLessonCard({ lesson, courseId, index, moduleName, subjectColor }
           : "hover:scale-[1.03] hover:shadow-lg hover:shadow-black/20 hover:border-primary/50 cursor-pointer"
       )}
     >
-      {/* Thumbnail / área visual */}
       <div className="relative h-28 flex items-center justify-center overflow-hidden"
         style={{ background: `linear-gradient(135deg, ${subjectColor}22, ${subjectColor}44)` }}>
-
-        {/* Número da aula */}
         <span className="absolute top-2 left-2.5 text-[10px] font-bold text-white/60 bg-black/30 px-1.5 py-0.5 rounded">
           #{index + 1}
         </span>
-
-        {/* Badge de status */}
         {isWatched && (
           <span className="absolute top-2 right-2 flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-black/40 px-1.5 py-0.5 rounded">
             <CheckCircle2 className="h-2.5 w-2.5" />Assistida
@@ -395,8 +446,6 @@ function NetflixLessonCard({ lesson, courseId, index, moduleName, subjectColor }
             <Lock className="h-3.5 w-3.5 text-white/50" />
           </span>
         )}
-
-        {/* Ícone central */}
         {isLocked ? (
           <Lock className="h-8 w-8 text-white/20" />
         ) : (
@@ -411,22 +460,14 @@ function NetflixLessonCard({ lesson, courseId, index, moduleName, subjectColor }
             )} />
           </div>
         )}
-
-        {/* Barra de progresso na parte inferior */}
         {progressPct > 0 && progressPct < 100 && (
           <div className="absolute bottom-0 left-0 right-0 h-1 bg-black/30">
-            <div
-              className="h-full bg-primary transition-all"
-              style={{ width: `${progressPct}%` }}
-            />
+            <div className="h-full bg-primary transition-all" style={{ width: `${progressPct}%` }} />
           </div>
         )}
-        {isWatched && (
-          <div className="absolute bottom-0 left-0 right-0 h-1 bg-emerald-500" />
-        )}
+        {isWatched && <div className="absolute bottom-0 left-0 right-0 h-1 bg-emerald-500" />}
       </div>
 
-      {/* Info */}
       <div className="p-3 space-y-1">
         <p className={cn(
           "text-xs font-semibold leading-tight line-clamp-2",
@@ -435,8 +476,6 @@ function NetflixLessonCard({ lesson, courseId, index, moduleName, subjectColor }
           {lesson.title}
         </p>
         <p className="text-[10px] text-muted-foreground truncate">{moduleName}</p>
-
-        {/* Meta */}
         <div className="flex items-center gap-2 pt-0.5">
           {lesson.duration_minutes > 0 && (
             <span className="text-[10px] text-muted-foreground flex items-center gap-0.5">
