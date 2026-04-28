@@ -59,6 +59,7 @@ ALLOWED_EVENT_TYPES = {
     "lesson_paused",
     "lesson_resumed",
     "material_downloaded",
+    "lesson_completed",
     "lesson_rated",
     # Onboarding
     "onboarding_step_view",
