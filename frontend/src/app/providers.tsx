@@ -8,6 +8,7 @@ import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 import { useState } from "react";
 import { ThemeProvider } from "@/lib/theme/ThemeProvider";
 import { Toaster } from "@/components/ui/toaster";
+import { TrackingProvider } from "@/components/TrackingProvider";
 
 export function Providers({ children }: { children: React.ReactNode }) {
     // QueryClient por instância (evita compartilhar estado entre usuários no SSR)
@@ -27,7 +28,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
     return (
         <QueryClientProvider client={queryClient}>
             <ThemeProvider>
-                {children}
+                <TrackingProvider>
+                    {children}
+                </TrackingProvider>
                 <Toaster />
             </ThemeProvider>
             {process.env.NODE_ENV === "development" && (
