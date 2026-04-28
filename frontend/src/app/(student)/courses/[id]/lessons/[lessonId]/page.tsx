@@ -1,12 +1,13 @@
 // frontend/src/app/(student)/courses/[id]/lessons/[lessonId]/page.tsx
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { coursesApi } from "@/lib/api/courses";
 import { apiClient } from "@/lib/api/client";
 import { useCheckinLesson } from "@/lib/hooks/useCourses";
+import { useTrack } from "@/lib/hooks/useTrack";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -28,6 +29,7 @@ type Difficulty = "easy" | "ok" | "hard";
 export default function LessonPage() {
   const { id: courseId, lessonId } = useParams<{ id: string; lessonId: string }>();
   const toast = useToast();
+  const track = useTrack();
   const [checkinDone, setCheckinDone] = useState(false);
   const [selectedDifficulty, setSelectedDifficulty] = useState<Difficulty | null>(null);
   const [showAiSummary, setShowAiSummary] = useState(false);
@@ -40,10 +42,52 @@ export default function LessonPage() {
 
   const checkin = useCheckinLesson();
 
+  // ── TRACK: lesson_started ────────────────────────────────────────────────
+  // Dispara quando a aula carrega — sinal de que o aluno chegou na página
+  // de aula com conteúdo disponível. Não captura "play" do iframe (não dá),
+  // mas captura intenção de assistir, que é o sinal de produto que importa.
+  // Disparado uma vez por lessonId — não repete em re-renders.
+  useEffect(() => {
+    if (!lesson || !lessonId) return;
+    track({
+      event_type: "lesson_started",
+      feature_name: "aulas",
+      target_id: lessonId,
+      metadata: {
+        course_id: courseId,
+        lesson_title: lesson.title,
+        duration_minutes: lesson.duration_minutes ?? null,
+        has_video: !!lesson.video_url,
+        has_external_url: !!lesson.external_url,
+        has_materials: !!(lesson.materials?.length),
+        is_free_preview: !!lesson.is_free_preview,
+        already_watched: lesson.progress?.status === "watched",
+      },
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lessonId, lesson?.title]);
+
   const handleCheckin = async (completed: boolean, difficulty?: Difficulty) => {
     try {
       await checkin.mutateAsync({ lessonId, completed, perceived_difficulty: difficulty });
       setCheckinDone(true);
+
+      // ── TRACK: lesson_completed (sinal mais limpo de consumo até o fim) ──
+      // Dispara só no checkin POSITIVO. Evento separado de lesson_started:
+      // a razão entre os dois te dá taxa de conclusão real.
+      if (completed) {
+        track({
+          event_type: "lesson_completed",
+          feature_name: "aulas",
+          target_id: lessonId,
+          metadata: {
+            course_id: courseId,
+            perceived_difficulty: difficulty ?? null,
+            duration_minutes: lesson?.duration_minutes ?? null,
+          },
+        });
+      }
+
       toast.success(
         completed ? "Aula concluída! ✓" : "Registrado.",
         completed ? "Continue assim!" : "Você pode revisitar quando quiser."
@@ -51,6 +95,22 @@ export default function LessonPage() {
     } catch {
       toast.error("Erro ao registrar progresso");
     }
+  };
+
+  // ── TRACK: material_downloaded ───────────────────────────────────────────
+  // Wrapper para o clique nos materiais de apoio. Dispara antes do navegador
+  // abrir o PDF/anexo na aba nova.
+  const handleMaterialClick = (mat: { id: string; url: string; filename: string }) => {
+    track({
+      event_type: "material_downloaded",
+      feature_name: "aulas",
+      target_id: lessonId,
+      metadata: {
+        course_id: courseId,
+        material_id: mat.id,
+        filename: mat.filename,
+      },
+    });
   };
 
   if (isLoading) return <LessonSkeleton />;
@@ -186,48 +246,56 @@ export default function LessonPage() {
                 MATERIAL{lesson.materials.length > 1 ? "IS" : ""} DE APOIO
               </p>
               {lesson.materials.map((mat: { id: string; url: string; filename: string }) => (
-                <a key={mat.id} href={mat.url} target="_blank" rel="noopener noreferrer">
-                  <Button variant="outline" className="w-full gap-2 text-sm justify-start">
-                    <FileText className="h-4 w-4 shrink-0" />
-                    <span className="truncate flex-1 text-left">{mat.filename}</span>
-                    <ExternalLink className="h-3 w-3 ml-auto shrink-0" />
-                  </Button>
-                </a>
+
+                key = { mat.id }
+                  href = { mat.url }
+                  target = "_blank"
+                  rel = "noopener noreferrer"
+                  onClick = {() => handleMaterialClick(mat)}
+                >
+              <Button variant="outline" className="w-full gap-2 text-sm justify-start">
+                <FileText className="h-4 w-4 shrink-0" />
+                <span className="truncate flex-1 text-left">{mat.filename}</span>
+                <ExternalLink className="h-3 w-3 ml-auto shrink-0" />
+              </Button>
+            </a>
               ))}
-            </CardContent>
+          </CardContent>
           </Card>
         )}
-      </div>
-
-      {/* Avaliação */}
-      <LessonRating lessonId={lessonId} />
-
-      {/* Resumo IA */}
-      {lesson.has_ai_summary && lesson.ai_summary && (
-        <Card>
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm flex items-center gap-2">
-                <Sparkles className="h-4 w-4 text-primary" />Resumo gerado por IA
-              </CardTitle>
-              <button onClick={() => setShowAiSummary(v => !v)} className="text-xs text-primary hover:underline">
-                {showAiSummary ? "Ocultar" : "Ver resumo"}
-              </button>
-            </div>
-          </CardHeader>
-          {showAiSummary && (
-            <CardContent className="pt-0">
-              <div className="p-4 rounded-xl bg-primary/5 border border-primary/10">
-                <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">{lesson.ai_summary}</p>
-              </div>
-            </CardContent>
-          )}
-        </Card>
-      )}
-
-      {/* ── Questões da aula ── */}
-      <LessonQuestionsSection lessonId={lessonId} />
     </div>
+
+      {/* Avaliação */ }
+  <LessonRating lessonId={lessonId} />
+
+  {/* Resumo IA */ }
+  {
+    lesson.has_ai_summary && lesson.ai_summary && (
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-primary" />Resumo gerado por IA
+            </CardTitle>
+            <button onClick={() => setShowAiSummary(v => !v)} className="text-xs text-primary hover:underline">
+              {showAiSummary ? "Ocultar" : "Ver resumo"}
+            </button>
+          </div>
+        </CardHeader>
+        {showAiSummary && (
+          <CardContent className="pt-0">
+            <div className="p-4 rounded-xl bg-primary/5 border border-primary/10">
+              <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">{lesson.ai_summary}</p>
+            </div>
+          </CardContent>
+        )}
+      </Card>
+    )
+  }
+
+  {/* ── Questões da aula ── */ }
+  <LessonQuestionsSection lessonId={lessonId} />
+    </div >
   );
 }
 

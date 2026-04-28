@@ -14,6 +14,7 @@ import { apiClient } from "@/lib/api/client";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuthStore } from "@/lib/stores/authStore";
 import { AUTH_KEYS } from "@/lib/hooks/useAuth";
+import { useTrack } from "@/lib/hooks/useTrack";
 
 // ── Step definitions ──────────────────────────────────────────────────────────
 
@@ -189,6 +190,7 @@ export function OnboardingTour({ initialStep = 0, onComplete }: OnboardingTourPr
     const pathname = usePathname();
     const queryClient = useQueryClient();
     const { user } = useAuthStore();
+    const track = useTrack();
 
     const [step, setStep] = useState(initialStep);
     const [navigating, setNavigating] = useState(false);
@@ -223,6 +225,25 @@ export function OnboardingTour({ initialStep = 0, onComplete }: OnboardingTourPr
         }
     }, [pathname, current.route]);
 
+    // ── TRACK: onboarding_step_view ──────────────────────────────────────────
+    // Dispara cada vez que um step novo é exibido. Usa step (índice) como dep
+    // estável — se o usuário ficar 5 minutos no mesmo step, dispara só 1 vez.
+    // Também cobre o welcome (step 0).
+    useEffect(() => {
+        track({
+            event_type: "onboarding_step_view",
+            feature_name: "onboarding",
+            metadata: {
+                step_index: step,
+                step_id: current.id,
+                total_steps: STEPS.length,
+                route: current.route,
+                is_welcome: isWelcome,
+                is_last: isLast,
+            },
+        });
+    }, [step, current.id, current.route, isWelcome, isLast, track]);
+
     const completeOnboarding = useCallback(async () => {
         try { await apiClient.post("/auth/onboarding/complete"); } catch { }
     }, []);
@@ -230,6 +251,18 @@ export function OnboardingTour({ initialStep = 0, onComplete }: OnboardingTourPr
     // Substituir handleNext inteiro:
     const handleNext = useCallback(async () => {
         if (isLast) {
+            // ── TRACK: onboarding_completed ───────────────────────────────────
+            // Aluno percorreu até o fim e clicou no CTA do último step.
+            // Disparado ANTES da request de completar — captura intenção mesmo
+            // se a request falhar.
+            track({
+                event_type: "onboarding_completed",
+                feature_name: "onboarding",
+                metadata: {
+                    total_steps: STEPS.length,
+                    final_step_id: current.id,
+                },
+            });
             await completeOnboarding();
             // Atualiza authStore optimisticamente — evita o tour reaparecer
             const currentUser = useAuthStore.getState().user;
@@ -250,10 +283,24 @@ export function OnboardingTour({ initialStep = 0, onComplete }: OnboardingTourPr
         } else {
             setStep(s => s + 1);
         }
-    }, [isLast, onComplete, queryClient, completeOnboarding]);
+    }, [isLast, onComplete, queryClient, completeOnboarding, current.id, track]);
 
     // Substituir handleSkip inteiro:
     const handleSkip = useCallback(async () => {
+        // ── TRACK: onboarding_skipped ─────────────────────────────────────────
+        // Aluno desistiu do tour antes de concluir. step_index revela em qual
+        // momento desistiu — sinal forte de UX (ex: muitos saem no step 3?).
+        track({
+            event_type: "onboarding_skipped",
+            feature_name: "onboarding",
+            metadata: {
+                step_index: step,
+                step_id: current.id,
+                total_steps: STEPS.length,
+                completed_steps: step,
+                is_welcome: isWelcome,
+            },
+        });
         try {
             await apiClient.post("/auth/onboarding/skip");
         } catch { }
@@ -270,7 +317,7 @@ export function OnboardingTour({ initialStep = 0, onComplete }: OnboardingTourPr
         }
         queryClient.invalidateQueries({ queryKey: AUTH_KEYS.me });
         onComplete();
-    }, [onComplete, queryClient]);
+    }, [onComplete, queryClient, step, current.id, isWelcome, track]);
 
     // ── Progress dots ─────────────────────────────────────────────────────────
     const ProgressDots = ({ size = "md" }: { size?: "sm" | "md" }) => (

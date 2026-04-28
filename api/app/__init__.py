@@ -210,7 +210,8 @@ def _configure_celery(app: Flask) -> None:
         worker_prefetch_multiplier=1,
         result_expires=300,
     )
-
+    
+    from celery.schedules import crontab
     celery_app.conf.beat_schedule = {
         "nightly-schedule-check": {
             "task": "app.tasks.schedule_tasks.nightly_schedule_check",
@@ -219,6 +220,17 @@ def _configure_celery(app: Flask) -> None:
         "publish-cloudwatch-metrics": {
             "task": "app.tasks.cloudwatch_metrics.publish_active_users_metric",
             "schedule": 300,
+        },
+        # ── Event tracking jobs ──────────────────────────────────────────────
+        # Aggregação: 03:00 BRT → 06:00 UTC. Processa eventos do dia anterior.
+        "aggregate-user-events-daily": {
+            "task": "app.tasks.aggregate_user_events_daily",
+            "schedule": crontab(hour=6, minute=0),  # 03:00 BRT
+        },
+        # Cleanup: 03:30 BRT → 06:30 UTC. Roda DEPOIS da agregação.
+        "cleanup-old-user-events": {
+            "task": "app.tasks.cleanup_old_user_events",
+            "schedule": crontab(hour=6, minute=30),  # 03:30 BRT
         },
     }
 

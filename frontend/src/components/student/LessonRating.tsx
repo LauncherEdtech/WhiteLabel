@@ -8,6 +8,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toaster";
+import { useTrack } from "@/lib/hooks/useTrack";
 import { cn } from "@/lib/utils/cn";
 import { Star, Send } from "lucide-react";
 
@@ -18,6 +19,7 @@ interface LessonRatingProps {
 export function LessonRating({ lessonId }: LessonRatingProps) {
     const toast = useToast();
     const queryClient = useQueryClient();
+    const track = useTrack();
     const [stars, setStars] = useState(0);
     const [hovered, setHovered] = useState(0);
     const [comment, setComment] = useState("");
@@ -32,10 +34,27 @@ export function LessonRating({ lessonId }: LessonRatingProps) {
     const existingRating = existing?.rating;
 
     const submitMutation = useMutation({
-        mutationFn: () => apiClient.post(`/gamification/ratings/lessons/${lessonId}`, {
-            rating: stars,
-            comment: comment.trim() || null,
-        }),
+        // ── TRACK: lesson_rated ───────────────────────────────────────────────
+        // Disparado ANTES da request — captura intenção mesmo se a API falhar.
+        // Inclui has_comment como sinal: alunos que escrevem texto têm
+        // engajamento muito mais alto que os que só clicam estrelas.
+        mutationFn: () => {
+            const trimmedComment = comment.trim();
+            track({
+                event_type: "lesson_rated",
+                feature_name: "aulas",
+                target_id: lessonId,
+                metadata: {
+                    stars,
+                    has_comment: trimmedComment.length > 0,
+                    comment_length: trimmedComment.length,
+                },
+            });
+            return apiClient.post(`/gamification/ratings/lessons/${lessonId}`, {
+                rating: stars,
+                comment: trimmedComment || null,
+            });
+        },
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ["lesson-rating", lessonId] });
             toast.success("Avaliação enviada!", "Obrigado pelo seu feedback.");

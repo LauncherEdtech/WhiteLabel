@@ -11,6 +11,7 @@ from .simulado import Simulado, SimuladoQuestion, SimuladoAttempt, SimuladoAnswe
 from .gamification import LessonRating, StudentBadge
 from .notification import Notification
 from .user_event import UserEvent
+from .user_event_rollup import UserEventDailyRollup
 
 __all__ = [
     "Tenant",
@@ -36,4 +37,5 @@ __all__ = [
     "ProducerScheduleTemplateItem",
     "Notification",
     "UserEvent",
+    "UserEventDailyRollup",
 ]

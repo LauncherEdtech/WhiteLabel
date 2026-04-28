@@ -5,6 +5,7 @@ import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter, usePathname } from "next/navigation";
 import { apiClient } from "@/lib/api/client";
+import { useTrack } from "@/lib/hooks/useTrack";
 import { X, ArrowRight, Brain } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
 import type { NextAction } from "@/types/api";
@@ -70,6 +71,7 @@ const PRIORITY_CONFIG = {
 export function FloatingCoachWidget() {
     const router = useRouter();
     const pathname = usePathname();
+    const track = useTrack();
 
     const [open, setOpen] = useState(false);
     const [dismissed, setDismissed] = useState(false);
@@ -82,12 +84,41 @@ export function FloatingCoachWidget() {
         refetchOnWindowFocus: false,     // não refaz ao ganhar foco
     });
 
-    // Checa dismiss quando a ação muda
+    // ── TRACK 1: Mentor respondeu (action_type recebido) ─────────────────────
+    // Dispara quando o backend devolve uma nova recomendação. Usa action_type
+    // como chave para não duplicar entre re-renders com mesmo dado.
+    useEffect(() => {
+        if (!data?.action_type) return;
+        track({
+            event_type: "mentor_response_received",
+            feature_name: "mentor",
+            metadata: {
+                action_type: data.action_type,
+                priority: data.priority,
+            },
+        });
+    }, [data?.action_type, data?.priority, track]);
+
+    // ── TRACK 2: Insight visualizado (apareceu para o usuário) ───────────────
+    // Combinado com a checagem de dismiss: só conta como "visto" se o card
+    // efetivamente vai ser renderizado.
     useEffect(() => {
         if (!data) return;
         const d = getDismissed();
-        setDismissed(!!d && d.action_type === data.action_type);
-    }, [data?.action_type]);
+        const isDismissed = !!d && d.action_type === data.action_type;
+        setDismissed(isDismissed);
+
+        if (!isDismissed) {
+            track({
+                event_type: "insight_view",
+                feature_name: "mentor",
+                metadata: {
+                    action_type: data.action_type,
+                    priority: data.priority,
+                },
+            });
+        }
+    }, [data?.action_type, data?.priority, track]);
 
     // Quando o aluno navega (aceitou uma sugestão), fecha o card e refetch após 3s
     useEffect(() => {
@@ -115,8 +146,19 @@ export function FloatingCoachWidget() {
         setOpen(false);
     };
 
+    // ── TRACK 3: Insight seguido (clicou no CTA) ─────────────────────────────
     const handleAccept = () => {
         if (!data) return;
+        track({
+            event_type: "insight_followed",
+            feature_name: "mentor",
+            metadata: {
+                action_type: data.action_type,
+                priority: data.priority,
+                cta_label: data.cta_label,
+                cta_url: data.cta_url,
+            },
+        });
         setOpen(false);
         const params = new URLSearchParams(data.cta_params).toString();
         router.push(params ? `${data.cta_url}?${params}` : data.cta_url);
@@ -202,9 +244,23 @@ export function FloatingCoachWidget() {
             )}
 
             {/* ── Botão flutuante ─────────────────────────────────────────── */}
+            {/* TRACK 4: Mentor click — só conta quando ABRE o widget, não quando fecha */}
             <button
                 data-onboarding="coach"
-                onClick={() => setOpen(v => !v)}
+                onClick={() => {
+                    if (!open) {
+                        track({
+                            event_type: "mentor_click",
+                            feature_name: "mentor",
+                            metadata: {
+                                action_type: data?.action_type,
+                                priority: data?.priority,
+                                trigger: "floating_button",
+                            },
+                        });
+                    }
+                    setOpen(v => !v);
+                }}
                 className={cn(
                     "relative h-14 w-14 rounded-full shadow-xl shadow-black/30 pointer-events-auto",
                     "bg-card border-2 flex items-center justify-center",

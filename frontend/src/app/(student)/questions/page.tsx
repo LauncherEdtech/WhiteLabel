@@ -1,11 +1,12 @@
 "use client";
 // frontend/src/app/(student)/questions/page.tsx
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { questionsApi } from "@/lib/api/questions";
 import { apiClient } from "@/lib/api/client";
+import { useTrack } from "@/lib/hooks/useTrack";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils/cn";
@@ -134,6 +135,93 @@ function QuestionsContent() {
         setStartTime(Date.now());
     }, [currentIndex]);
 
+    // ── Tracking ─────────────────────────────────────────────────────────────
+    const track = useTrack();
+
+    // Helper: aplica setFilters E dispara question_filter_used.
+    // Uso para mudanças de filtros significativas (disciplina, tópico, dificuldade,
+    // histórico). Mudanças de paginação continuam usando setFilters direto para
+    // não gerar ruído de tracking.
+    const setFiltersAndTrack = useCallback(
+        (updater: (f: Filters) => Filters, source: string) => {
+            setFilters((prev) => {
+                const next = updater(prev);
+                track({
+                    event_type: "question_filter_used",
+                    feature_name: "questoes",
+                    metadata: {
+                        source,
+                        difficulty: next.difficulty || null,
+                        discipline: next.discipline || null,
+                        topic: next.topic || null,
+                        history_filter: next.historyFilter || null,
+                    },
+                });
+                return next;
+            });
+        },
+        [track]
+    );
+
+    // TRACK: explanation_read (modo bloco) — dispara 3s depois da resposta
+    // chegar. Sinal de que o aluno parou para ler a explicação em vez de só
+    // clicar e seguir. Cancela se ele mudar de questão antes dos 3s.
+    useEffect(() => {
+        if (!answerResult || !currentQuestion) return;
+        const timer = setTimeout(() => {
+            track({
+                event_type: "explanation_read",
+                feature_name: "questoes",
+                target_id: currentQuestion.id,
+                metadata: {
+                    is_correct: answerResult.is_correct,
+                    discipline: currentQuestion.discipline ?? null,
+                    difficulty: currentQuestion.difficulty ?? null,
+                    view_mode: "block",
+                },
+            });
+        }, 3000);
+        return () => clearTimeout(timer);
+    }, [answerResult, currentQuestion?.id, track]);
+
+    // TRACK: explanation_read (modo lista) — dispara para cada resposta nova
+    // em listAnswers. Mesma lógica de 3s para confirmar leitura real.
+    const [trackedListIds, setTrackedListIds] = useState<Set<string>>(new Set());
+    useEffect(() => {
+        const newAnswers = Object.entries(listAnswers).filter(
+            ([qid]) => !trackedListIds.has(qid)
+        );
+        if (newAnswers.length === 0) return;
+
+        const timers: ReturnType<typeof setTimeout>[] = [];
+        newAnswers.forEach(([qid, result]) => {
+            const q = questions.find((x) => x.id === qid);
+            if (!q) return;
+            const timer = setTimeout(() => {
+                track({
+                    event_type: "explanation_read",
+                    feature_name: "questoes",
+                    target_id: qid,
+                    metadata: {
+                        is_correct: result.is_correct,
+                        discipline: q.discipline ?? null,
+                        difficulty: q.difficulty ?? null,
+                        view_mode: "list",
+                    },
+                });
+                setTrackedListIds((prev) => new Set(prev).add(qid));
+            }, 3000);
+            timers.push(timer);
+        });
+
+        return () => timers.forEach(clearTimeout);
+    }, [listAnswers, questions, trackedListIds, track]);
+
+    // Reset dos IDs rastreados quando filtros mudam
+    useEffect(() => {
+        setTrackedListIds(new Set());
+    }, [filters]);
+
     const answerMutation = useMutation({
         mutationFn: ({ questionId, key }: { questionId: string; key: string }) =>
             questionsApi.answer(questionId, {
@@ -189,7 +277,7 @@ function QuestionsContent() {
                 <div className="relative">
                     <select
                         value={filters.discipline}
-                        onChange={e => setFilters(f => ({ ...f, discipline: e.target.value, topic: "", page: 1 }))}
+                        onChange={e => setFiltersAndTrack(f => ({ ...f, discipline: e.target.value, topic: "", page: 1 }), "discipline_select")}
                         className="w-full h-9 px-3 pr-8 rounded-lg border border-input bg-background text-sm appearance-none focus:outline-none focus:ring-2 focus:ring-ring"
                     >
                         <option value="">Todas</option>
@@ -205,7 +293,7 @@ function QuestionsContent() {
                     <div className="relative">
                         <select
                             value={filters.topic}
-                            onChange={e => setFilters(f => ({ ...f, topic: e.target.value, page: 1 }))}
+                            onChange={e => setFiltersAndTrack(f => ({ ...f, topic: e.target.value, page: 1 }), "topic_select")}
                             className="w-full h-9 px-3 pr-8 rounded-lg border border-input bg-background text-sm appearance-none focus:outline-none focus:ring-2 focus:ring-ring"
                         >
                             <option value="">Todos</option>
@@ -222,7 +310,7 @@ function QuestionsContent() {
                     {DIFFICULTIES.map(({ value, label, color }) => (
                         <button
                             key={value}
-                            onClick={() => setFilters(f => ({ ...f, difficulty: value, page: 1 }))}
+                            onClick={() => setFiltersAndTrack(f => ({ ...f, difficulty: value, page: 1 }), "difficulty_button")}
                             className={cn(
                                 "w-full text-left px-3 py-1.5 rounded-lg text-sm border transition-all",
                                 filters.difficulty === value
@@ -242,7 +330,7 @@ function QuestionsContent() {
                     {HISTORY_FILTERS.map(({ key, label }) => (
                         <button
                             key={key}
-                            onClick={() => setFilters(f => ({ ...f, historyFilter: key, page: 1 }))}
+                            onClick={() => setFiltersAndTrack(f => ({ ...f, historyFilter: key, page: 1 }), "history_button")}
                             className={cn(
                                 "w-full text-left px-3 py-1.5 rounded-lg text-sm border transition-all",
                                 filters.historyFilter === key
@@ -258,7 +346,7 @@ function QuestionsContent() {
 
             {activeFilterCount > 0 && (
                 <button
-                    onClick={() => setFilters(blankFilters())}
+                    onClick={() => setFiltersAndTrack(() => blankFilters(), "clear_all")}
                     className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
                 >
                     <RotateCcw className="h-3 w-3" /> Limpar filtros

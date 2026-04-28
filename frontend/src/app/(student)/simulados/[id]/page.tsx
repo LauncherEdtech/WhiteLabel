@@ -1,10 +1,11 @@
 // frontend/src/app/(student)/simulados/[id]/page.tsx
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useSimulado, useStartAttempt, useAnswerSimulado, useFinishAttempt } from "@/lib/hooks/useSimulados";
 import { useTimer } from "@/lib/hooks/useTimer";
+import { useTrack } from "@/lib/hooks/useTrack";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -141,6 +142,7 @@ function DisciplinePanel({
 export default function SimuladoPage() {
     const { id } = useParams<{ id: string }>();
     const router = useRouter();
+    const track = useTrack();
 
     const { data: simulado, isLoading } = useSimulado(id);
     const startAttempt = useStartAttempt();
@@ -155,6 +157,32 @@ export default function SimuladoPage() {
     const [started, setStarted] = useState(false);
     const [attemptQuestions, setAttemptQuestions] = useState<SimuladoQuestion[]>([]);
     const [showDisciplines, setShowDisciplines] = useState(false);
+
+    // ── Tracking de abandono ──────────────────────────────────────────────────
+    // isFinishingRef vira true quando handleFinish é chamado (manual ou timeout).
+    // Usado para distinguir "finalizou e foi pro resultado" de "abandonou".
+    //
+    // attemptStartedAtRef guarda o timestamp do início para calcular elapsed_seconds.
+    //
+    // simuladoAbandonStateRef mantém uma referência viva ao estado mais recente
+    // do simulado. Como o cleanup do useEffect captura apenas o estado da
+    // PRIMEIRA renderização (closure stale), precisamos de um ref que é
+    // atualizado a cada render para ter os dados certos no momento do unmount.
+    const isFinishingRef = useRef(false);
+    const attemptStartedAtRef = useRef<number | null>(null);
+    const simuladoAbandonStateRef = useRef<{
+        attemptId: string | null;
+        started: boolean;
+        answeredCount: number;
+        totalQuestions: number;
+        currentIndex: number;
+    }>({
+        attemptId: null,
+        started: false,
+        answeredCount: 0,
+        totalQuestions: 0,
+        currentIndex: 0,
+    });
 
     const timeLimit = simulado?.time_limit_minutes ? simulado.time_limit_minutes * 60 : 3600;
 
@@ -185,6 +213,7 @@ export default function SimuladoPage() {
             setAnswers(preAnswered);
             setStarted(true);
             setStartTime(Date.now());
+            attemptStartedAtRef.current = Date.now();
         }
     };
 
@@ -203,9 +232,72 @@ export default function SimuladoPage() {
 
     const handleFinish = async (timedOut = false) => {
         if (!attemptId) return;
+        // Marca que está finalizando ANTES da await — garante que se o usuário
+        // fechar a aba durante a request de finish, não conta como abandon
+        isFinishingRef.current = true;
         await finishAttempt.mutateAsync(attemptId);
         router.push(`/simulados/${id}/result?attempt=${attemptId}`);
     };
+
+    // ── Atualiza ref de estado a cada render (combate closure stale) ──────────
+    // O cleanup do useEffect abaixo só captura valores do primeiro render.
+    // Esse ref garante que, no momento do unmount, lemos o estado MAIS RECENTE.
+    useEffect(() => {
+        simuladoAbandonStateRef.current = {
+            attemptId,
+            started,
+            answeredCount: Object.keys(answers).length,
+            totalQuestions: attemptQuestions.length,
+            currentIndex,
+        };
+    });
+
+    // ── Detecta abandono ──────────────────────────────────────────────────────
+    // Cobertura:
+    //  1. Fechar aba/navegador → beforeunload
+    //  2. Trocar de aba prolongadamente → visibilitychange (apenas track, não finaliza)
+    //  3. Navegar para outra página interna → cleanup do useEffect
+    //  4. Logout, refresh → também cai no cleanup
+    //
+    // Em todos os casos, NÃO dispara se isFinishingRef.current === true
+    // (handleFinish já foi chamado — aluno completou o simulado).
+    useEffect(() => {
+        const fireAbandonEvent = (trigger: string) => {
+            const state = simuladoAbandonStateRef.current;
+            if (!state.started || !state.attemptId || isFinishingRef.current) return;
+
+            const elapsedSeconds = attemptStartedAtRef.current
+                ? Math.floor((Date.now() - attemptStartedAtRef.current) / 1000)
+                : null;
+
+            track({
+                event_type: "simulado_abandon",
+                feature_name: "simulados",
+                target_id: state.attemptId,
+                metadata: {
+                    answered_count: state.answeredCount,
+                    total_questions: state.totalQuestions,
+                    progress_percent: state.totalQuestions
+                        ? Math.round((state.answeredCount / state.totalQuestions) * 100)
+                        : 0,
+                    current_index: state.currentIndex,
+                    elapsed_seconds: elapsedSeconds,
+                    trigger,
+                },
+            });
+        };
+
+        const onBeforeUnload = () => fireAbandonEvent("beforeunload");
+        window.addEventListener("beforeunload", onBeforeUnload);
+
+        return () => {
+            window.removeEventListener("beforeunload", onBeforeUnload);
+            // Unmount = navegação interna ou trocou de página
+            fireAbandonEvent("unmount");
+        };
+        // Sem deps — esse effect roda 1x no mount e o cleanup roda no unmount
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     if (isLoading) {
         return (

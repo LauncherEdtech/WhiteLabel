@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils/cn";
 import { useToast } from "@/components/ui/toaster";
+import { useTrack } from "@/lib/hooks/useTrack";
 import { studentScheduleTemplateApi } from "@/lib/api/producer-schedule";
 import type { ProducerScheduleTemplate, TemplateItemType } from "@/types/producer-schedule";
 
@@ -65,6 +66,7 @@ export function ProducerTemplateChoice({
 }: ProducerTemplateChoiceProps) {
     const toast = useToast();
     const qc = useQueryClient();
+    const track = useTrack();
     const [previewOpen, setPreviewOpen] = useState(false);
 
     const { data, isLoading } = useQuery({
@@ -73,7 +75,23 @@ export function ProducerTemplateChoice({
     });
 
     const adoptMut = useMutation({
-        mutationFn: () => studentScheduleTemplateApi.adoptTemplate(courseId),
+        // ── TRACK: schedule_choice_made (escolha = template do produtor) ──────
+        // Disparado ANTES da request começar — captura intenção mesmo se a
+        // mutation falhar. Idêntico ao padrão usado no capsule_shared.
+        mutationFn: () => {
+            track({
+                event_type: "schedule_choice_made",
+                feature_name: "cronograma",
+                metadata: {
+                    choice: "producer_template",
+                    course_id: courseId,
+                    template_id: data?.template?.id ?? null,
+                    template_total_days: data?.template?.total_days ?? null,
+                    template_items_count: data?.template?.items_count ?? null,
+                },
+            });
+            return studentScheduleTemplateApi.adoptTemplate(courseId);
+        },
         onSuccess: () => {
             toast.success("Cronograma do professor adotado!");
             qc.invalidateQueries({ queryKey: ["schedule", courseId] });
@@ -99,6 +117,23 @@ export function ProducerTemplateChoice({
     if (!template) {
         return null; // Renderiza nada; a página exibirá o botão de gerar cronograma IA normal
     }
+
+    // ── TRACK: schedule_choice_made (escolha = cronograma IA) ─────────────────
+    // Wrapper que dispara o evento ANTES de chamar o handler externo.
+    // Mantém onChooseAI inalterado — apenas adiciona o tracking.
+    const handleChooseAI = () => {
+        track({
+            event_type: "schedule_choice_made",
+            feature_name: "cronograma",
+            metadata: {
+                choice: "ai_generated",
+                course_id: courseId,
+                template_available: true,
+                template_id: template?.id ?? null,
+            },
+        });
+        onChooseAI();
+    };
 
     return (
         <div className="space-y-4 animate-fade-in">
@@ -196,7 +231,7 @@ export function ProducerTemplateChoice({
             {/* Opção: Cronograma IA próprio */}
             {allowCustom && (
                 <button
-                    onClick={onChooseAI}
+                    onClick={handleChooseAI}
                     className="w-full flex items-center justify-between p-4 rounded-xl border border-border hover:border-primary/30 hover:bg-muted/30 transition-all group"
                 >
                     <div className="flex items-center gap-3">

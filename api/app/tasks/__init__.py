@@ -62,12 +62,20 @@ def _load_submodule(submod_name: str):
 
 _schedule_tasks = _load_submodule("schedule_tasks")
 _cloudwatch_metrics = _load_submodule("cloudwatch_metrics")
+_event_aggregation = _load_submodule("event_aggregation")
+_event_cleanup = _load_submodule("event_cleanup")
 
 # Re-exporta para que `from app.tasks import generate_schedule_task` funcione
 # mesmo quando app.tasks é o módulo monolítico (sem __path__)
 if _schedule_tasks:
     generate_schedule_task = _schedule_tasks.generate_schedule_task
     get_task_status = _schedule_tasks.get_task_status
+
+if _event_aggregation:
+    aggregate_user_events_daily = _event_aggregation.aggregate_user_events_daily
+
+if _event_cleanup:
+    cleanup_old_user_events = _event_cleanup.cleanup_old_user_events
 
 __all__ = [
     "send_broadcast_email",
@@ -80,4 +88,6 @@ __all__ = [
     "run_reprocess_gemini_job",
     "generate_schedule_task",
     "get_task_status",
+    "aggregate_user_events_daily",
+    "cleanup_old_user_events",
 ]

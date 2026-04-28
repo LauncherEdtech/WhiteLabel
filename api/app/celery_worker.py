@@ -56,6 +56,9 @@ celery_app.conf.task_routes = {
     "app.tasks.scheduled_insights_refresh":                       {"queue": "slow"},
     "app.tasks.run_reprocess_gemini_job":                         {"queue": "slow"},
     "app.tasks.process_xlsx_import_job":                          {"queue": "slow"},
+    # Event tracking — fila slow porque pode demorar (full table scan da user_events)
+    "app.tasks.aggregate_user_events_daily": {"queue": "slow"},
+    "app.tasks.cleanup_old_user_events": {"queue": "slow"},
 }
 
 

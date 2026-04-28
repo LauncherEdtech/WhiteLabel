@@ -3,6 +3,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
+import { useTrack } from "@/lib/hooks/useTrack";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils/cn";
 import { useState, useEffect } from "react";
@@ -208,6 +209,7 @@ function BadgeItem({ badge }: { badge: BadgeDef }) {
 export default function HallOfFamePage() {
     const [activeCategory, setActiveCategory] = useState<string | null>(null);
     const [newBadges, setNewBadges] = useState<BadgeDef[]>([]);
+    const track = useTrack();
 
     const { data, isLoading } = useQuery<HallData>({
         queryKey: ["hall-of-fame"],
@@ -218,6 +220,42 @@ export default function HallOfFamePage() {
     useEffect(() => {
         if (data?.new_badges && data.new_badges.length > 0) setNewBadges(data.new_badges);
     }, [data]);
+
+    // ── TRACK: hall_of_fame_view (página visualizada) ─────────────────────────
+    // Dispara uma vez por carregamento de dados — usa total_points como dep
+    // estável para não duplicar em re-renders sem mudança real.
+    useEffect(() => {
+        if (!data) return;
+        track({
+            event_type: "hall_of_fame_view",
+            feature_name: "hall_of_fame",
+            metadata: {
+                total_points: data.total_points,
+                badges_earned: data.badges_earned,
+                badges_total: data.badges_total,
+                current_rank: data.current_rank.key,
+            },
+        });
+    }, [data?.total_points, data?.current_rank.key, track]);
+
+    // ── TRACK: badge_view para cada badge recém-conquistado exibido ───────────
+    // Dispara apenas para os badges em "Recém conquistadas" — sinal forte
+    // de engajamento (badge novo apareceu para o usuário).
+    useEffect(() => {
+        if (!data?.recent_badges?.length) return;
+        data.recent_badges.forEach((badge) => {
+            track({
+                event_type: "badge_view",
+                feature_name: "gamificacao",
+                metadata: {
+                    badge_key: badge.key,
+                    badge_name: badge.name,
+                    category: badge.category,
+                    points: badge.points,
+                },
+            });
+        });
+    }, [data?.recent_badges, track]);
 
     if (isLoading) return (
         <div className="space-y-6 max-w-3xl">

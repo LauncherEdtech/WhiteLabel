@@ -1,8 +1,10 @@
 // frontend/src/app/(student)/simulados/[id]/result/page.tsx
 "use client";
 
+import { useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useAttemptResult } from "@/lib/hooks/useSimulados";
+import { useTrack } from "@/lib/hooks/useTrack";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -20,6 +22,29 @@ export default function SimuladoResultPage() {
     const [expandedAnswers, setExpandedAnswers] = useState(false);
 
     const { data, isLoading } = useAttemptResult(attemptId);
+
+    // ── TRACK: result_viewed (página de resultado carregou com dados) ─────────
+    // Dispara uma vez por attemptId — sinal forte de que o aluno chegou
+    // até o final do simulado e está vendo a nota. Diferenciado de
+    // simulado_abandon (não terminou) e simulado_finish (back-end já trackeia).
+    const track = useTrack();
+    useEffect(() => {
+        if (!data || !attemptId) return;
+        track({
+            event_type: "result_viewed",
+            feature_name: "simulados",
+            target_id: attemptId,
+            metadata: {
+                score_percent: data.score.score_percent,
+                passed: data.score.passed,
+                correct_answers: data.score.correct_answers,
+                wrong_answers: data.score.wrong_answers,
+                skipped: data.score.skipped,
+                total_time_seconds: data.attempt.total_time_seconds ?? null,
+                status: data.attempt.status ?? null,
+            },
+        });
+    }, [attemptId, data?.score.score_percent, track]);
 
     if (isLoading) {
         return (

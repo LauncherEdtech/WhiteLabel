@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
 import { useTenantStore } from "@/lib/stores/tenantStore";
+import { useTrack } from "@/lib/hooks/useTrack";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Download, Share2, ChevronLeft, ChevronRight, ArrowLeft } from "lucide-react";
@@ -253,7 +254,7 @@ function CardRelatorio({ d, logoDataUrl }: { d: StudyCapsule; logoDataUrl: strin
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
-                {([["questões", String(d.questions_answered), "respondidas"], ["acerto", `${d.accuracy_rate}%`, "geral"]] as [string,string,string][]).map(([l,v,s]) => (
+                {([["questões", String(d.questions_answered), "respondidas"], ["acerto", `${d.accuracy_rate}%`, "geral"]] as [string, string, string][]).map(([l, v, s]) => (
                     <div key={l} style={{ background: "rgba(255,255,255,0.05)", borderRadius: 8, padding: "10px" }}>
                         <div style={{ fontSize: 7, color: "rgba(255,255,255,0.25)", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 3 }}>{l}</div>
                         <div style={{ fontSize: 20, fontWeight: 800, lineHeight: 1 }}>{v}</div>
@@ -326,7 +327,7 @@ function CardNeon({ d, logoDataUrl }: { d: StudyCapsule; logoDataUrl: string | n
                 {([
                     ["questões", String(d.questions_answered)],
                     ["acerto", `${d.accuracy_rate}%`],
-                ] as [string,string][]).map(([l,v]) => (
+                ] as [string, string][]).map(([l, v]) => (
                     <div key={l} style={{ border: `1px solid ${accent}22`, borderRadius: 10, padding: "10px 12px", background: `${accent}08` }}>
                         <div style={{ fontSize: 8, color: `${accent}88`, textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 4 }}>{l}</div>
                         <div style={{ fontSize: 22, fontWeight: 900, color: accent, textShadow: glow }}>{v}</div>
@@ -398,7 +399,7 @@ function CardBold({ d, logoDataUrl }: { d: StudyCapsule; logoDataUrl: string | n
                     [String(d.questions_answered), "questões"],
                     [`${d.accuracy_rate}%`, "acerto"],
                     [String(d.lessons_watched), "aulas"],
-                ] as [string,string][]).map(([v,l], i) => (
+                ] as [string, string][]).map(([v, l], i) => (
                     <div key={i} style={{ flex: 1, padding: "10px 8px", textAlign: "center", borderRight: i < 2 ? "1px solid #1a1a1a" : "none" }}>
                         <div style={{ fontSize: 20, fontWeight: 900, color: i === 1 ? accent : "#fff" }}>{v}</div>
                         <div style={{ fontSize: 8, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{l}</div>
@@ -456,7 +457,7 @@ function CardElegante({ d, logoDataUrl }: { d: StudyCapsule; logoDataUrl: string
             <div style={{ fontSize: 11, color: "#888", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 20 }}>minutos</div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 18 }}>
-                {([["questões", String(d.questions_answered)], ["acerto geral", `${d.accuracy_rate}%`]] as [string,string][]).map(([l,v]) => (
+                {([["questões", String(d.questions_answered)], ["acerto geral", `${d.accuracy_rate}%`]] as [string, string][]).map(([l, v]) => (
                     <div key={l} style={{ borderTop: `2px solid ${accent}`, paddingTop: 8 }}>
                         <div style={{ fontSize: 7, color: "#888", textTransform: "uppercase", letterSpacing: "0.15em", marginBottom: 4 }}>{l}</div>
                         <div style={{ fontSize: 22, fontWeight: 700, color: "#1a1a1a", fontStyle: "italic" }}>{v}</div>
@@ -494,12 +495,12 @@ function CardElegante({ d, logoDataUrl }: { d: StudyCapsule; logoDataUrl: string
 function CapsuleCard({ data, logoDataUrl }: { data: StudyCapsule; logoDataUrl: string | null }) {
     const props = { d: data, logoDataUrl };
     switch (data.capsule_style) {
-        case "campeao":  return <CardCampeao  {...props} />;
+        case "campeao": return <CardCampeao  {...props} />;
         case "relatorio": return <CardRelatorio {...props} />;
-        case "neon":     return <CardNeon     {...props} />;
-        case "bold":     return <CardBold     {...props} />;
+        case "neon": return <CardNeon     {...props} />;
+        case "bold": return <CardBold     {...props} />;
         case "elegante": return <CardElegante {...props} />;
-        default:         return <CardOperativo {...props} />;
+        default: return <CardOperativo {...props} />;
     }
 }
 
@@ -522,7 +523,7 @@ export default function StudyCapsulePage() {
     const logoDataUrl = useLogoDataUrl(data?.tenant_logo_url);
 
     const sinceMonth = data?.user_since?.month;
-    const sinceYear  = data?.user_since?.year;
+    const sinceYear = data?.user_since?.year;
     const isFirstMonth = !!sinceMonth && !!sinceYear && year === sinceYear && month === sinceMonth;
     const isCurrentMonth = (() => { const n = currentMonthYear(); return month === n.month && year === n.year; })();
 
@@ -557,17 +558,48 @@ export default function StudyCapsulePage() {
         } finally { setIsExporting(false); }
     }, [cardRef, month, year, isExporting]);
 
+    const track = useTrack();
     const handleShare = useCallback(async () => {
-        if (!cardRef.current) return;
+        if (!cardRef.current || isExporting) return;
+
+        // ── TRACK: capsule_shared (aluno iniciou compartilhamento/download) ───
+        // Disparado no clique — antes do html2canvas processar — para garantir
+        // que o evento seja registrado mesmo se o canvas falhar.
+        const willUseNativeShare =
+            typeof navigator !== "undefined" && typeof navigator.canShare === "function";
+        track({
+            event_type: "capsule_shared",
+            feature_name: "gamificacao",
+            metadata: {
+                month,
+                year,
+                method: willUseNativeShare ? "native_share" : "download",
+                tenant_name: tenant?.name ?? null,
+            },
+        });
+
         setIsExporting(true);
         try {
             const html2canvas = (await import("html2canvas")).default;
-            const canvas = await html2canvas(cardRef.current, { scale: 3, backgroundColor: null, useCORS: false });
+            const canvas = await html2canvas(cardRef.current, {
+                scale: 3,
+                backgroundColor: null,
+                useCORS: false,
+                logging: false,
+            });
             canvas.toBlob(async (blob: Blob | null) => {
                 if (!blob) return;
-                const file = new File([blob], `capsula-${month}-${year}.png`, { type: "image/png" });
+                const file = new File(
+                    [blob],
+                    `capsula-${month}-${year}.png`,
+                    { type: "image/png" }
+                );
                 if (navigator.canShare?.({ files: [file] })) {
-                    await navigator.share({ files: [file], title: "Minha Cápsula de Estudos", text: `Confira meu desempenho em ${monthLabel(month, year)} na ${tenant?.name ?? "plataforma"}!` });
+                    await navigator.share({
+                        files: [file],
+                        title: "Minha Cápsula de Estudos",
+                        text: `Confira meu desempenho em ${monthLabel(month, year)} na ${tenant?.name ?? "plataforma"}!`,
+                    });
                 } else {
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement("a");
@@ -577,9 +609,10 @@ export default function StudyCapsulePage() {
                     URL.revokeObjectURL(url);
                 }
             }, "image/png");
-        } finally { setIsExporting(false); }
-    }, [cardRef, month, year, tenant]);
-
+        } finally {
+            setIsExporting(false);
+        }
+    }, [cardRef, month, year, tenant, track, isExporting]);
     return (
         <div className="max-w-xl mx-auto space-y-6 animate-fade-in pb-10">
             <div>
