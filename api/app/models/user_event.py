@@ -7,16 +7,20 @@
 # - Hard delete via job Celery noturno (retenção 365 dias — passo 4).
 # - JSONB em event_metadata permite filtros eficientes via GIN se necessário.
 #
+# COMPATIBILIDADE TESTES:
+# - Em produção (Postgres) usa JSONB.
+# - Em testes (SQLite) cai automaticamente para JSON via with_variant.
+# - O banco real (RDS) já está com JSONB — variant só afeta create_all() em testes.
+#
 # SEGURANÇA:
 # - tenant_id e user_id sempre vêm do JWT — cliente nunca os envia no payload.
 # - event_type e feature_name validados contra whitelist no endpoint.
 #
 # PERFORMANCE:
 # - 4 índices compostos cobrem 95% das queries do painel.
-# - PRIMARY KEY (id) já é índice único — não duplicado.
 
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, ForeignKey, Index
+from sqlalchemy import Column, String, DateTime, ForeignKey, Index, JSON
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 
 from app.extensions import db
@@ -51,9 +55,13 @@ class UserEvent(db.Model, TenantMixin):
     # ID do recurso afetado (lesson_id, question_id, simulado_id, etc.)
     target_id = Column(UUID(as_uuid=False), nullable=True)
 
-    # Metadados livres do evento — limitado a 2 KB no endpoint
-    # Nome `event_metadata` (não `metadata`) porque `metadata` é reservado em SQLAlchemy
-    event_metadata = Column(JSONB, nullable=True)
+    # Metadados livres do evento — limitado a 2 KB no endpoint.
+    # Nome `event_metadata` (não `metadata`) porque `metadata` é reservado em SQLAlchemy.
+    # JSONB em Postgres (produção) e JSON em SQLite (testes) — variant transparente.
+    event_metadata = Column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=True,
+    )
 
     # Quando o evento aconteceu no cliente (pode estar fora de ordem do server)
     client_timestamp = Column(DateTime(timezone=True), nullable=True)
