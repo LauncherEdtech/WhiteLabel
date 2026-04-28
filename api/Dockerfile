@@ -17,6 +17,7 @@ FROM base AS production
 RUN groupadd --gid 1001 appgroup && \
     useradd --uid 1001 --gid appgroup --shell /bin/bash appuser
 
+COPY --chown=appuser:appgroup migrations/ ./migrations/
 COPY --chown=appuser:appgroup . .
 USER appuser
 
