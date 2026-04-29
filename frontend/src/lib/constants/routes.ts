@@ -40,6 +40,9 @@ export const ROUTES = {
     ADMIN: {
         TENANTS: "/admin/tenants",
         TENANT: (id: string) => `/admin/tenants/${id}`,
+        METRICS: "/admin/metrics",
+        EVENT_METRICS: "/admin/event-metrics",
+        EVENT_METRICS_USER_JOURNEY: (userId: string) => `/admin/event-metrics?user=${userId}`,
         INFRASTRUCTURE: "/admin/infrastructure",
         SETTINGS: "/admin/settings",
     },
